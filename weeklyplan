@@ -1,0 +1,32 @@
+Month 1: The Operator (Manual & Blind Automation)
+Goal: Move the robot with confidence and code simple blind movements.
+
+Week 1: Setup, Safety, and Manual Control (Gamepad/Joystick).
+
+Week 2: Python API Basics (Connecting code to robot).
+
+Week 3: "Blind" Pick and Place (Hard-coding coordinates).
+
+Week 4: Grip & Safety (Using torque sensors to feel if you missed the object).
+
+Month 2: The Eyes (Computer Vision)
+Goal: Give the robot sight so it doesn't need hard-coded coordinates.
+
+Week 5: Wrist Camera Access (Getting a video stream into Python).
+
+Week 6: Simple Vision (OpenCV to find a "Red Ball" or specific color).
+
+Week 7: 2D to 3D Math (Converting "Pixel X,Y" to "Robot X,Y,Z").
+
+Week 8: External Camera Setup (Setting up the second camera for global view).
+
+Month 3: The Brain (Voice & Integration)
+Goal: The final Voice-Controlled system.
+
+Week 9: Voice Recognition (Simple "Listen" script).
+
+Week 10: Connection (Voice triggers Vision -> Vision triggers Motion).
+
+Week 11: The "YOLO" Upgrade (Replace color detection with AI object detection).
+
+Week 12: Final Polish (Error handling, demo video, README update).
