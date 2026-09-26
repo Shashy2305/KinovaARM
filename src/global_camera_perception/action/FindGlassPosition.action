@@ -1,0 +1,7 @@
+bool find_glass
+---
+geometry_msgs/Point glass_center
+float32 glass_radius
+geometry_msgs/Point table_center
+---
+string[] process_description

@@ -5,14 +5,41 @@ log/
 __pycache__/
 *.pyc
 
-# Vendor/third-party packages
-src/
+# Vendor/third-party submodules only
 YOLOv12-Based_Object_Detection_and_Live_Tracking/
+src/LRBO/
+src/control_msgs/
+src/easy_handeye2/
+src/easy_handeye2_demo/
+src/gpd/
+src/gpg/
+src/grasp_detection_ros2/
+src/isaac_manipulator/
+src/luxonis/
+src/moveit2/
+src/moveit2_calibration/
+src/moveit_calibration/
+src/oak-examples/
+src/oakd_isaac_ros/
+src/pick_and_place/
+src/picknik_controllers/
+src/pymoveit2/
+src/realtime_tools/
+src/robot_state_publisher/
+src/ros2-aruco-pose-estimation/
+src/ros2_aruco/
+src/ros2_control/
+src/ros2_controllers/
+src/ros2_grasp_library/
+src/ros2_kortex/
+src/ros2_kortex_vision/
+src/ros2_robotiq_gripper/
+src/serial/
+src/ultralytics_ros/
+src/yolo_ros/
 
-# Model weights (large binaries — download separately)
+# Model weights / generated output
 *.pt
-
-# Generated/output files
 *.mp4
 *.backup
 frames_*.gv
