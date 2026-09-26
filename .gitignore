@@ -4,3 +4,24 @@ log/
 __pycache__/
 *.pyc
 .vscode/
+# Third-party/vendor ROS2 packages — not part of this repo
+YOLOv12-Based_Object_Detection_and_Live_Tracking/
+src/LRBO/
+src/gpd/
+src/gpg/
+src/grasp_detection_ros2/
+src/isaac_manipulator/
+src/moveit2/
+src/moveit2_calibration/
+src/moveit_calibration/
+src/oak-examples/
+src/pick_and_place/
+src/ros2-aruco-pose-estimation/
+src/ros2_aruco/
+src/ros2_control/
+src/ros2_grasp_library/
+src/ros2_kortex/
+src/ros2_kortex_vision/
+src/ros2_robotiq_gripper/
+src/ultralytics_ros/
+src/yolo_ros/
