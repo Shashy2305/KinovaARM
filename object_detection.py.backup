@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""
+object_detection.py
+
+Subscribes to the RealSense RGB and aligned depth images.
+Runs YOLOv8 to detect the desired object (default: bottle).
+Deprojection converts the bounding box center pixel -> 3D point in camera frame.
+Publishes a BboxCoords message with 2D bbox + 3D position for grasp_detection.
+
+LIVE WINDOW: Opens a cv2 window automatically showing detections in real time.
+Press 'q' to quit.
+"""
+
+import rclpy
+from rclpy.node import Node
+
+import cv2
+import numpy as np
+from ultralytics import YOLO
+
+from sensor_msgs.msg import Image, CameraInfo
+from std_msgs.msg import String
+from cv_bridge import CvBridge
+
+import json
+import threading
+
+
+class ObjectDetectionNode(Node):
+
+    def __init__(self):
+        super().__init__('object_detection')
+
+        # --- Parameters ---
+        self.declare_parameter('desired_object', 'bottle')
+        self.desired_object = self.get_parameter('desired_object').value
+        self.get_logger().info(f'Looking for object class: {self.desired_object}')
+
+        # --- YOLOv8 model ---
+        self.get_logger().info('Loading YOLOv8 model...')
+        self.model = YOLO('yolov8n.pt')  # downloads automatically on first run
+        self.get_logger().info('YOLOv8 model loaded.')
+
+        # --- Camera intrinsics (filled once CameraInfo arrives) ---
+        self.fx = None
+        self.fy = None
+        self.cx = None
+        self.cy = None
+
+        # --- State ---
+        self.bridge = CvBridge()
+        self.latest_depth = None        # aligned depth image (numpy, uint16, mm)
+        self.latest_display_frame = None  # frame to show in live window
+        self.frame_lock = threading.Lock()
+
+        # --- Subscribers ---
+        self.create_subscription(
+            CameraInfo,
+            '/global_camera/global_camera/color/camera_info',
+            self.camera_info_cb,
+            10
+        )
+        self.create_subscription(
+            Image,
+            '/global_camera/global_camera/aligned_depth_to_color/image_raw',
+            self.depth_cb,
+            10
+        )
+        self.create_subscription(
+            Image,
+            '/global_camera/global_camera/color/image_raw',
+            self.rgb_cb,
+            10
+        )
+
+        # --- Publishers ---
+        self.bbox_pub = self.create_publisher(String, '/object_detection/bbox', 10)
+        self.debug_img_pub = self.create_publisher(Image, '/object_detection/debug_image', 10)
+
+        self.get_logger().info('Object detection node ready. Live window will open shortly...')
+        self.get_logger().info('Press "q" in the detection window to quit.')
+
+    # ------------------------------------------------------------------
+    def camera_info_cb(self, msg: CameraInfo):
+        if self.fx is None:
+            self.fx = msg.k[0]
+            self.fy = msg.k[4]
+            self.cx = msg.k[2]
+            self.cy = msg.k[5]
+            self.get_logger().info(
+                f'Camera intrinsics received: fx={self.fx:.1f} fy={self.fy:.1f} '
+                f'cx={self.cx:.1f} cy={self.cy:.1f}'
+            )
+
+    # ------------------------------------------------------------------
+    def depth_cb(self, msg: Image):
+        self.latest_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+
+    # ------------------------------------------------------------------
+    def rgb_cb(self, msg: Image):
+        if self.fx is None or self.latest_depth is None:
+            # Still show a waiting frame so the window opens immediately
+            waiting_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(waiting_frame, 'Waiting for camera topics...', (50, 240),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            with self.frame_lock:
+                self.latest_display_frame = waiting_frame
+            return
+
+        # Convert ROS image -> OpenCV BGR
+        bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+        # Run YOLO
+        results = self.model(bgr, verbose=False)
+
+        best_box = None
+        best_conf = 0.0
+
+        for result in results:
+            for box in result.boxes:
+                cls_name = self.model.names[int(box.cls)]
+                conf = float(box.conf)
+                if cls_name == self.desired_object and conf > best_conf:
+                    best_conf = conf
+                    best_box = box
+
+        if best_box is not None:
+            x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+
+            # --- Deprojection: center pixel -> 3D point ---
+            u = (x1 + x2) // 2
+            v = (y1 + y2) // 2
+
+            h, w = self.latest_depth.shape
+            u = max(0, min(u, w - 1))
+            v = max(0, min(v, h - 1))
+
+            depth_mm = float(self.latest_depth[v, u])
+            if depth_mm == 0.0:
+                patch = self.latest_depth[
+                    max(0, v-5):min(h, v+5),
+                    max(0, u-5):min(w, u+5)
+                ]
+                nonzero = patch[patch > 0]
+                depth_mm = float(np.median(nonzero)) if len(nonzero) > 0 else 0.0
+
+            depth_m = depth_mm / 1000.0
+
+            x_3d = (u - self.cx) * depth_m / self.fx
+            y_3d = (v - self.cy) * depth_m / self.fy
+            z_3d = depth_m
+
+            # --- Publish bbox + 3D position ---
+            payload = {
+                'class': self.desired_object,
+                'confidence': round(best_conf, 3),
+                'x_min': x1,
+                'y_min': y1,
+                'x_max': x2,
+                'y_max': y2,
+                'cx_3d': round(x_3d, 4),
+                'cy_3d': round(y_3d, 4),
+                'cz_3d': round(z_3d, 4),
+            }
+            msg_out = String()
+            msg_out.data = json.dumps(payload)
+            self.bbox_pub.publish(msg_out)
+
+            # --- Draw on frame ---
+            # Green bounding box
+            cv2.rectangle(bgr, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+            # Label with class, confidence, and 3D position
+            label1 = f'{self.desired_object.upper()}  {best_conf:.0%}'
+            label2 = f'X:{x_3d:.3f}m  Y:{y_3d:.3f}m  Z:{z_3d:.3f}m'
+
+            # Background box for readability
+            cv2.rectangle(bgr, (x1, y1 - 45), (x1 + 280, y1), (0, 255, 0), -1)
+            cv2.putText(bgr, label1, (x1 + 4, y1 - 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 2)
+            cv2.putText(bgr, label2, (x1 + 4, y1 - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
+            # Red dot at center
+            cv2.circle(bgr, (u, v), 6, (0, 0, 255), -1)
+            cv2.circle(bgr, (u, v), 10, (0, 0, 255), 2)
+
+            # Corner status box
+            cv2.rectangle(bgr, (0, 0), (320, 35), (0, 180, 0), -1)
+            cv2.putText(bgr, f'DETECTED: {self.desired_object}  z={z_3d:.2f}m',
+                        (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        else:
+            # Red status box — not detected
+            cv2.rectangle(bgr, (0, 0), (300, 35), (0, 0, 180), -1)
+            cv2.putText(bgr, f'Searching for: {self.desired_object}',
+                        (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        # Instructions overlay
+        cv2.putText(bgr, 'Press Q to quit', (bgr.shape[1] - 180, bgr.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+        # Store for display loop
+        with self.frame_lock:
+            self.latest_display_frame = bgr.copy()
+
+        # Publish debug image to ROS topic as well
+        debug_msg = self.bridge.cv2_to_imgmsg(bgr, encoding='bgr8')
+        debug_msg.header = msg.header
+        self.debug_img_pub.publish(debug_msg)
+
+
+# ------------------------------------------------------------------
+def main(args=None):
+    rclpy.init(args=args)
+    node = ObjectDetectionNode()
+
+    # Run ROS spin in a background thread so cv2 window stays on main thread
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
+
+    # --- Live OpenCV window (main thread) ---
+    cv2.namedWindow('Object Detection', cv2.WINDOW_NORMAL)
+    cv2.resizeWindow('Object Detection', 848, 480)
+
+    print('\n[INFO] Detection window opened. Press "q" to quit.\n')
+
+    try:
+        while rclpy.ok():
+            with node.frame_lock:
+                frame = node.latest_display_frame
+
+            if frame is not None:
+                cv2.imshow('Object Detection', frame)
+            else:
+                # Black screen until first frame arrives
+                blank = np.zeros((480, 848, 3), dtype=np.uint8)
+                cv2.putText(blank, 'Waiting for camera...', (200, 240),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+                cv2.imshow('Object Detection', blank)
+
+            # Press 'q' to quit
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print('[INFO] Quit requested.')
+                break
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cv2.destroyAllWindows()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
