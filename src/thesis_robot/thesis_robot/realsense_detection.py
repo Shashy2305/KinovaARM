@@ -2,7 +2,9 @@
 """
 RealSense D435I object detection node.
 Uses YOLOv8m + HSV color fallback.
-Publishes to /detections_side with robot-frame coords via TF.
+Publishes to /detections_side: camera-frame coords (cx_3d/cy_3d/cz_3d) plus
+the image frame_id. scene_graph_node converts them to base_link through TF
+(base_link -> global_camera_color_optical_frame, the easy_handeye2 result).
 """
 import rclpy, threading, json
 from rclpy.node import Node
@@ -10,9 +12,6 @@ from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2, numpy as np
-import tf2_ros
-import tf2_geometry_msgs
-from geometry_msgs.msg import PointStamped
 
 try:
     from ultralytics import YOLO
@@ -28,10 +27,6 @@ class RealSenseDetection(Node):
         self.fx = self.fy = self.cx = self.cy = None
         self.depth   = None
         self._lock   = threading.Lock()
-
-        # TF for camera->robot transform
-        self.tf_buffer   = tf2_ros.Buffer()
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # YOLO
         self.model = None
@@ -96,19 +91,6 @@ class RealSenseDetection(Node):
         cy3 = (v - self.cy) * depth_m / self.fy
         cz3 = depth_m
         return cx3, cy3, cz3
-
-    def _to_robot_frame(self, cx3, cy3, cz3):
-        """
-        Affine transform: RealSense camera frame -> robot base frame.
-        Calibrated 5-point correspondence, avg error 1.0cm.
-        The fit only models x and y, so z is returned as None (unknown)
-        rather than a fabricated 0.0.
-        """
-        px = [-0.0442,  5.2755,  3.0851, -3.4580]
-        py = [ 1.0619, -3.2731, -2.6431,  3.1335]
-        rx = px[0]*cx3 + px[1]*cy3 + px[2]*cz3 + px[3]
-        ry = py[0]*cx3 + py[1]*cy3 + py[2]*cz3 + py[3]
-        return float(rx), float(ry), None
 
     def _color_detect(self, bgr):
         """HSV color fallback detection."""
@@ -193,7 +175,6 @@ class RealSenseDetection(Node):
             if coords is None:
                 continue
             cx3, cy3, cz3 = coords
-            rx, ry, rz = self._to_robot_frame(cx3, cy3, cz3)
 
             detections.append({
                 'label':      label,
@@ -202,9 +183,6 @@ class RealSenseDetection(Node):
                 'cy_3d':      round(cy3, 4),
                 'cz_3d':      round(cz3, 4),
                 'frame_id':   msg.header.frame_id,
-                'x_robot':    round(rx, 4),
-                'y_robot':    round(ry, 4),
-                'z_robot':    None,
                 'source':     'realsense',
             })
 

@@ -19,14 +19,14 @@ Topics published:
   /global_camera/depth/camera_info
   /global_camera/stereo/points         ← MoveIt2 octomap subscribes here
 
-TF published:
+TF published (by thesis_robot camera_tf_broadcaster, started here):
   base_link → global_camera_link       ← hand-eye calibration result
 
-After calibration — update T_BASE_CAM in oak_camera_node.py:
-  "x", "y", "z"            translation in metres
-  "qx","qy","qz","qw"      rotation quaternion
-  AND update T_WORLD_CAM in perception_module.py (same values as 4×4 matrix)
-  AND update calibration_tf in robot.launch.py
+After calibration — write the result to
+  ~/.ros/handeye_calibration_corrected.yaml
+(translation {x,y,z} + rotation_quat {x,y,z,w}, the format
+handeye_calibration.py writes) and relaunch. No code edits needed.
+Requires the thesis_robot package to be built and sourced.
 
 Verify after launch:
   ros2 topic hz /global_camera/color/image_raw
@@ -46,6 +46,7 @@ else:
 
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -68,5 +69,11 @@ def generate_launch_description():
             output="screen",
             emulate_tty=True,
             env=env,
-        )
+        ),
+        # Single publisher of base_link → global_camera_link
+        Node(
+            package="thesis_robot",
+            executable="camera_tf_broadcaster",
+            output="screen",
+        ),
     ])

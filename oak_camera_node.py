@@ -5,7 +5,7 @@ oak_camera_node.py  —  OAK-D Pro Wide ROS2 driver  (depthai v2.x API)
 Single definitive OAK-D driver. Do NOT use depthai_ros_driver alongside this.
 
 Publishes (matching perception_module.py exactly):
-  /global_camera/color/image_raw       sensor_msgs/Image     BGR8  640×400
+  /global_camera/color/image_raw       sensor_msgs/Image     BGR8  416×256
   /global_camera/color/camera_info     sensor_msgs/CameraInfo
   /global_camera/depth/image_raw       sensor_msgs/Image     16UC1 depth mm
   /global_camera/depth/camera_info     sensor_msgs/CameraInfo
@@ -13,11 +13,11 @@ Publishes (matching perception_module.py exactly):
 
 TF frame: global_camera_link  (matches perception_module CAM_FRAME)
 
-Hand-eye calibration (base_link → global_camera_link):
-  Quaternion : qx=-0.341494  qy=-0.888985  qz=0.299234  qw=0.059552
-  Translation: x=0.48        y=0.72        z=1.0
-  ⚠ Update T_BASE_CAM below after every new calibration run.
-  Must match calibration_tf in cameras.launch.py AND T_WORLD_CAM in pick_and_place.py.
+Hand-eye calibration (base_link → global_camera_link) is NOT published here.
+The single publisher is thesis_robot's camera_tf_broadcaster, which reads the
+calibration from ~/.ros/handeye_calibration_corrected.yaml:
+  ros2 run thesis_robot camera_tf_broadcaster
+(oak_launch.py starts it alongside this node.)
 
 USB 2.0 workaround:
   export DEPTHAI_USB2_MODE=1   → RGB published only, depth/pointcloud skipped.
@@ -37,10 +37,8 @@ import time
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
-from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2, PointField
-from tf2_ros import StaticTransformBroadcaster
 
 import depthai as dai
 
@@ -69,9 +67,8 @@ TOPIC_RGB_INFO   = "/global_camera/color/camera_info"
 TOPIC_DEPTH_INFO = "/global_camera/depth/camera_info"
 TOPIC_SCENE_PC   = "/global_camera/stereo/points"
 
-# ── TF frames (must match perception_module.py) ───────────────────────────────
+# ── TF frame (must match perception_module.py) ────────────────────────────────
 CAM_FRAME  = "global_camera_link"
-BASE_FRAME = "base_link"
 
 # ── Intrinsics @ 416×256 (proportionally scaled from 640×400 EEPROM values) ──
 # scale_x = 416/640 = 0.65,  scale_y = 256/400 = 0.64
@@ -79,19 +76,6 @@ FX = 277.0
 FY = 272.6
 CX = 204.9
 CY = 131.4
-
-# ── Hand-eye calibration: base_link → global_camera_link ─────────────────────
-# ⚠ UPDATE after every easy_handeye2 calibration run.
-# Must also match T_WORLD_CAM in perception_module.py and robot.launch.py.
-T_BASE_CAM = {
-    "x":   0.48,
-    "y":   0.72,
-    "z":   1.0,
-    "qx": -0.341494,
-    "qy": -0.888985,
-    "qz":  0.299234,
-    "qw":  0.059552,
-}
 
 # ── Retry config ─────────────────────────────────────────────────────────────
 RETRY_N     = 10
@@ -111,38 +95,18 @@ class OakCameraNode(Node):
         self.dep_info  = self.create_publisher(CameraInfo,  TOPIC_DEPTH_INFO, 10)
         self.pc_pub    = self.create_publisher(PointCloud2, TOPIC_SCENE_PC,   10)
 
-        # Static TF: base_link → global_camera_link
-        self._tf = StaticTransformBroadcaster(self)
-        self._publish_static_tf()
-
         usb2 = os.environ.get("DEPTHAI_USB2_MODE") == "1"
         self.get_logger().info(
             f"\nOAK-D camera node starting  ({IMG_W}×{IMG_H})\n"
             f"  RGB   → {TOPIC_RGB}\n"
             f"  Depth → {TOPIC_DEPTH}\n"
             f"  PCL   → {TOPIC_SCENE_PC}\n"
-            f"  TF    → {BASE_FRAME} → {CAM_FRAME}\n"
-            f"  USB2 mode: {'ON (depth disabled)' if usb2 else 'OFF'}\n"
-            f"  Calibration: x={T_BASE_CAM['x']:.3f} "
-            f"y={T_BASE_CAM['y']:.3f} z={T_BASE_CAM['z']:.3f}"
+            f"  Frame → {CAM_FRAME}  (base_link TF comes from "
+            f"thesis_robot camera_tf_broadcaster)\n"
+            f"  USB2 mode: {'ON (depth disabled)' if usb2 else 'OFF'}"
         )
 
         threading.Thread(target=self._run, daemon=True).start()
-
-    # ── Static TF ─────────────────────────────────────────────────────────────
-    def _publish_static_tf(self):
-        t = TransformStamped()
-        t.header.stamp    = self.get_clock().now().to_msg()
-        t.header.frame_id = BASE_FRAME
-        t.child_frame_id  = CAM_FRAME
-        t.transform.translation.x = T_BASE_CAM["x"]
-        t.transform.translation.y = T_BASE_CAM["y"]
-        t.transform.translation.z = T_BASE_CAM["z"]
-        t.transform.rotation.x    = T_BASE_CAM["qx"]
-        t.transform.rotation.y    = T_BASE_CAM["qy"]
-        t.transform.rotation.z    = T_BASE_CAM["qz"]
-        t.transform.rotation.w    = T_BASE_CAM["qw"]
-        self._tf.sendTransform(t)
 
     # ── CameraInfo ────────────────────────────────────────────────────────────
     def _camera_info(self, stamp, dist_coeffs=None):
