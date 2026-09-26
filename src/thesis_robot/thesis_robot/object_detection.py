@@ -23,6 +23,7 @@ class ObjectDetectionNode(Node):
         self.get_logger().info(f'YOLOv8 loaded from {model_path}')
 
         self.fx = self.fy = self.cx = self.cy = None
+        self.info_size = None   # (width, height) the intrinsics belong to
         self.bridge = CvBridge()
         self.latest_depth = None
         self.latest_display_frame = None
@@ -47,10 +48,34 @@ class ObjectDetectionNode(Node):
         if self.fx is None:
             self.fx, self.fy = msg.k[0], msg.k[4]
             self.cx, self.cy = msg.k[2], msg.k[5]
-            self.get_logger().info(f'Intrinsics: fx={self.fx:.1f} fy={self.fy:.1f}')
+            self.info_size = (msg.width, msg.height)
+            self.get_logger().info(
+                f'Intrinsics: fx={self.fx:.1f} fy={self.fy:.1f} '
+                f'for {msg.width}x{msg.height}')
 
     def depth_cb(self, msg):
         self.latest_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+
+    @staticmethod
+    def rgb_to_depth_px(u, v, rgb_shape, depth_shape):
+        """Map an RGB pixel to the matching depth pixel using the actual
+        image sizes (depth is aligned to RGB but may differ in resolution)."""
+        rgb_h, rgb_w = rgb_shape[:2]
+        dep_h, dep_w = depth_shape[:2]
+        du = int(u * dep_w / rgb_w)
+        dv = int(v * dep_h / rgb_h)
+        return max(0, min(du, dep_w - 1)), max(0, min(dv, dep_h - 1))
+
+    def depth_at(self, du, dv):
+        """Depth (m) at a depth pixel; median of a 10x10 patch if it is 0."""
+        d = self.latest_depth
+        h, w = d.shape
+        depth_mm = float(d[dv, du])
+        if depth_mm == 0.0:
+            patch = d[max(0, dv-5):min(h, dv+5), max(0, du-5):min(w, du+5)]
+            nz = patch[patch > 0]
+            depth_mm = float(np.median(nz)) if len(nz) > 0 else 0.0
+        return depth_mm / 1000.0
 
     def detect_cap_fallback(self, bgr, depth_img):
         h_img, w_img = bgr.shape[:2]
@@ -69,7 +94,6 @@ class ObjectDetectionNode(Node):
             return None
 
         circles = np.uint16(np.around(circles))
-        h_d, w_d = depth_img.shape
         best = None
         best_score = 0
 
@@ -77,14 +101,8 @@ class ObjectDetectionNode(Node):
             cx, cy, r = int(c[0]), int(c[1]), int(c[2])
 
             # Check depth - bottle cap on table should be 0.2m-1.0m
-            u = max(0, min(cx, w_d-1))
-            v = max(0, min(cy, h_d-1))
-            d_mm = float(depth_img[v, u])
-            if d_mm == 0.0:
-                patch = depth_img[max(0,v-5):min(h_d,v+5), max(0,u-5):min(w_d,u+5)]
-                nz = patch[patch > 0]
-                d_mm = float(np.median(nz)) if len(nz) > 0 else 0.0
-            d_m = d_mm / 1000.0
+            du, dv = self.rgb_to_depth_px(cx, cy, bgr.shape, depth_img.shape)
+            d_m = self.depth_at(du, dv)
             if not (0.2 < d_m < 1.0):
                 continue
 
@@ -120,6 +138,12 @@ class ObjectDetectionNode(Node):
             return
 
         bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        rgb_h, rgb_w = bgr.shape[:2]
+        if self.info_size != (rgb_w, rgb_h):
+            self.get_logger().warn(
+                f'camera_info is {self.info_size[0]}x{self.info_size[1]} but '
+                f'image is {rgb_w}x{rgb_h} — intrinsics do not match, 3D '
+                f'positions will be wrong', throttle_duration_sec=10.0)
         results = self.model(bgr, verbose=False)
 
         best_box = None
@@ -148,21 +172,11 @@ class ObjectDetectionNode(Node):
                 detection_source = 'CAP-FALLBACK'
 
         if detection_source is not None:
-            h, w = self.latest_depth.shape
-            # Scale pixel coords from RGB resolution to depth resolution
-            rgb_h, rgb_w = 720, 1280  # OAK-D RGB output resolution
-            du = int(u * w / rgb_w)
-            dv = int(v * h / rgb_h)
-            du = max(0, min(du, w-1))
-            dv = max(0, min(dv, h-1))
-            u = max(0, min(u, w-1))
-            v = max(0, min(v, h-1))
-            depth_mm = float(self.latest_depth[dv, du])
-            if depth_mm == 0.0:
-                patch = self.latest_depth[max(0,dv-5):min(h,dv+5), max(0,du-5):min(w,du+5)]
-                nz = patch[patch > 0]
-                depth_mm = float(np.median(nz)) if len(nz) > 0 else 0.0
-            depth_m = depth_mm / 1000.0
+            u = max(0, min(u, rgb_w-1))
+            v = max(0, min(v, rgb_h-1))
+            du, dv = self.rgb_to_depth_px(u, v, bgr.shape, self.latest_depth.shape)
+            depth_m = self.depth_at(du, dv)
+            # back-project with RGB pixel + RGB intrinsics
             x_3d = (u - self.cx) * depth_m / self.fx
             y_3d = (v - self.cy) * depth_m / self.fy
             z_3d = depth_m
@@ -190,19 +204,9 @@ class ObjectDetectionNode(Node):
                     bx1,by1,bx2,by2 = map(int, box.xyxy[0])
                     bu = (bx1 + bx2) // 2
                     bv = (by1 + by2) // 2
-                    if self.latest_depth is not None:
-                        bh, bw = self.latest_depth.shape
-                        # Scale RGB coords (1280x720) to depth coords (640x400)
-                        bdu = int(bu * bw / 1280)
-                        bdv = int(bv * bh / 720)
-                        bdu = max(0, min(bdu, bw-1))
-                        bdv = max(0, min(bdv, bh-1))
-                        bpatch = self.latest_depth[max(0,bdv-5):min(bh,bdv+5), max(0,bdu-5):min(bw,bdu+5)]
-                        bnz = bpatch[bpatch > 0]
-                        bdepth_mm = float(np.median(bnz)) if len(bnz) > 0 else 0.0
-                    else:
-                        bdepth_mm = 0.0
-                    bdepth_m = bdepth_mm / 1000.0
+                    bdu, bdv = self.rgb_to_depth_px(
+                        bu, bv, bgr.shape, self.latest_depth.shape)
+                    bdepth_m = self.depth_at(bdu, bdv)
                     # Use original RGB coords for back-projection with RGB intrinsics
                     bx3d = (bu - self.cx) * bdepth_m / self.fx if self.fx else 0.0
                     by3d = (bv - self.cy) * bdepth_m / self.fy if self.fy else 0.0
