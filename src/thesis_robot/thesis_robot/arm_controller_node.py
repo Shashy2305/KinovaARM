@@ -2,6 +2,7 @@
 """
 Arm Controller Node — executes validated action plans on the Kinova Gen3.
 Subscribes to:  /action_plan
+                /scene_snapshot  (object positions for `pick`, base_link)
 Publishes to:   /arm_status, /pick_place_status
 """
 import rclpy, json, math, time, threading
@@ -31,12 +32,18 @@ class ArmControllerNode(Node):
 
         self.declare_parameter('dry_run', True)
         self.declare_parameter('speed',   0.20)
+        # pick geometry (metres)
+        self.declare_parameter('grasp_z_offset',     0.0)   # added to object z for the grasp height
+        self.declare_parameter('pregrasp_clearance', 0.10)  # min height of pre-grasp above grasp
 
         self.dry_run   = self.get_parameter('dry_run').value
         self.speed     = self.get_parameter('speed').value
+        self.grasp_z_offset     = self.get_parameter('grasp_z_offset').value
+        self.pregrasp_clearance = self.get_parameter('pregrasp_clearance').value
         self.executing = False
         self._lock     = threading.Lock()
         self.moveit2   = None
+        self.latest_scene = {}   # object_id -> {x, y, z, ...} in base_link
 
         # TF buffer for camera -> robot frame transform
         self.tf_buffer   = tf2_ros.Buffer()
@@ -45,6 +52,7 @@ class ArmControllerNode(Node):
         self.status_pub    = self.create_publisher(String, '/arm_status',        10)
         self.pp_status_pub = self.create_publisher(String, '/pick_place_status', 10)
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
+        self.create_subscription(String, '/scene_snapshot', self._scene_callback, 10)
 
         if not self.dry_run:
             self.create_timer(2.0, self._delayed_moveit_init)
@@ -75,6 +83,14 @@ class ArmControllerNode(Node):
             self.get_logger().error(f'MoveIt2 init failed: {e}')
             self.dry_run = True
             self._publish_status('READY [DRY RUN — MoveIt2 failed]')
+
+    def _scene_callback(self, msg):
+        try:
+            scene = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        if isinstance(scene, dict):
+            self.latest_scene = scene
 
     def plan_callback(self, msg):
         with self._lock:
@@ -127,7 +143,9 @@ class ArmControllerNode(Node):
         if act == 'move_to':
             return self._move_to(step['x'], step['y'], step['z'])
         elif act == 'pick':
-            return self._pick(step['object_id'], step.get('approach_z', 0.15))
+            approach_z = step.get('approach_z')
+            return self._pick(step.get('object_id'),
+                              0.15 if approach_z is None else approach_z)
         elif act == 'place':
             return self._place(step['x'], step['y'], step['z'])
         elif act == 'open_gripper':
@@ -165,7 +183,7 @@ class ArmControllerNode(Node):
         return tuple(vals)
 
     # ── PRIMITIVES ───────────────────────────────────────────────────
-    def _move_to(self, x, y, z, speed=None):
+    def _move_to(self, x, y, z, speed=None, cartesian=False):
         try:
             rx, ry, rz = self._transform_to_robot_frame(x, y, z)
         except ValueError as e:
@@ -178,35 +196,73 @@ class ArmControllerNode(Node):
 
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(
-                f'  [DRY RUN] move_to robot({rx:.3f},{ry:.3f},{rz:.3f})')
+                f'  [DRY RUN] move_to robot({rx:.3f},{ry:.3f},{rz:.3f})'
+                f'{" cartesian" if cartesian else ""}')
             time.sleep(0.5)
             return True
         try:
             self.moveit2.move_to_pose(
                 position=[rx, ry, rz],
                 quat_xyzw=[0.0, 0.707, 0.0, 0.707],
-                cartesian=False
+                cartesian=cartesian
             )
-            self.moveit2.wait_until_executed()
+            # pymoveit2 returns False when planning/execution failed
+            if self.moveit2.wait_until_executed() is False:
+                self.get_logger().error(
+                    f'move_to ({rx:.3f},{ry:.3f},{rz:.3f}) not executed')
+                return False
             return True
         except Exception as e:
             self.get_logger().error(f'move_to failed: {e}')
             return False
 
+    def _lookup_object(self, object_id):
+        """Latest base_link position of object_id from /scene_snapshot,
+        as (x, y, z), or None if it cannot be grasped."""
+        obj = self.latest_scene.get(object_id)
+        if obj is None:
+            self.get_logger().error(
+                f'pick: {object_id!r} not in scene '
+                f'(known: {sorted(self.latest_scene)})')
+            return None
+        if obj.get('z') is None:
+            self.get_logger().error(f'pick: {object_id} has unknown height')
+            return None
+        if obj.get('stale'):
+            self.get_logger().warn(
+                f'pick: {object_id} is stale — using last seen position')
+        return obj.get('x'), obj.get('y'), obj.get('z')
+
     def _pick(self, object_id, approach_z=0.15):
-        if self.dry_run or self.moveit2 is None:
-            self.get_logger().info(
-                f'  [DRY RUN] pick {object_id} approach_z={approach_z:.3f}')
-            time.sleep(1.0)
-            return True
-        try:
-            self._open_gripper()
-            time.sleep(0.5)
-            self._close_gripper()
-            return True
-        except Exception as e:
-            self.get_logger().error(f'pick failed: {e}')
+        """Open, move above the object, descend straight down, close,
+        lift straight back up. Any failed step fails the pick."""
+        pos = self._lookup_object(object_id)
+        if pos is None:
             return False
+        try:
+            ox, oy, oz = (float(v) for v in pos)
+            grasp_z = oz + self.grasp_z_offset
+            pre_z   = max(float(approach_z), grasp_z + self.pregrasp_clearance)
+        except (TypeError, ValueError) as e:
+            self.get_logger().error(f'pick: bad position for {object_id}: {e}')
+            return False
+
+        self.get_logger().info(
+            f'pick {object_id} at ({ox:.3f},{oy:.3f},{oz:.3f}) — '
+            f'pre-grasp z={pre_z:.3f}, grasp z={grasp_z:.3f}')
+        steps = [
+            ('open gripper', lambda: self._open_gripper()),
+            ('pre-grasp',    lambda: self._move_to(ox, oy, pre_z)),
+            ('descend',      lambda: self._move_to(ox, oy, grasp_z, cartesian=True)),
+            ('close gripper', lambda: self._close_gripper()),
+            ('lift',         lambda: self._move_to(ox, oy, pre_z, cartesian=True)),
+        ]
+        for name, action in steps:
+            self._publish_pp_status(f'pick {object_id}: {name}')
+            if not action():
+                self.get_logger().error(f'pick {object_id} failed at: {name}')
+                return False
+        return True
 
     def _place(self, x, y, z):
         try:
@@ -229,7 +285,10 @@ class ArmControllerNode(Node):
                 quat_xyzw=[0.0, 0.707, 0.0, 0.707],
                 cartesian=False
             )
-            self.moveit2.wait_until_executed()
+            if self.moveit2.wait_until_executed() is False:
+                self.get_logger().error(
+                    f'place ({rx:.3f},{ry:.3f},{rz:.3f}) not executed')
+                return False   # don't release the object somewhere else
             self._open_gripper()
             return True
         except Exception as e:
@@ -287,7 +346,8 @@ class ArmControllerNode(Node):
         for attempt in range(5):
             try:
                 self.moveit2.move_to_configuration(HOME_JOINTS)
-                self.moveit2.wait_until_executed()
+                if self.moveit2.wait_until_executed() is False:
+                    raise RuntimeError('home trajectory not executed')
                 return True
             except Exception as e:
                 err = str(e)
