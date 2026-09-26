@@ -4,7 +4,7 @@ Arm Controller Node — executes validated action plans on the Kinova Gen3.
 Subscribes to:  /action_plan
 Publishes to:   /arm_status, /pick_place_status
 """
-import rclpy, json, time, threading
+import rclpy, json, math, time, threading
 import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped
@@ -145,18 +145,32 @@ class ArmControllerNode(Node):
     # ── TF TRANSFORM ─────────────────────────────────────────────────
     def _transform_to_robot_frame(self, x, y, z):
         """
-        Coords from scene graph are already in robot frame
-        (calibrated by RealSense point correspondence).
-        Pass through directly.
+        Plan coordinates carry no frame of their own. They are base_link by
+        contract: scene_graph_node is the single place where camera-frame
+        detections are converted (via TF) and it only publishes base_link.
+        So no transform happens here — only a check that the numbers are real.
         """
+        vals = []
+        for name, v in (('x', x), ('y', y), ('z', z)):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise ValueError(f'{name}={v!r} is not a number')
+            if not math.isfinite(v):
+                raise ValueError(f'{name}={v} is not finite')
+            vals.append(v)
         self.get_logger().info(
-            f'Using robot frame coords: ({float(x):.3f},{float(y):.3f},{float(z):.3f})'
+            f'Using base_link coords: ({vals[0]:.3f},{vals[1]:.3f},{vals[2]:.3f})'
         )
-        return float(x), float(y), float(z)
+        return tuple(vals)
 
     # ── PRIMITIVES ───────────────────────────────────────────────────
     def _move_to(self, x, y, z, speed=None):
-        rx, ry, rz = self._transform_to_robot_frame(x, y, z)
+        try:
+            rx, ry, rz = self._transform_to_robot_frame(x, y, z)
+        except ValueError as e:
+            self.get_logger().error(f'move_to rejected: {e}')
+            return False
         # Safety clamp to workspace
         rx = max(0.10, min(0.55, rx))
         ry = max(-0.35, min(0.35, ry))
@@ -195,7 +209,11 @@ class ArmControllerNode(Node):
             return False
 
     def _place(self, x, y, z):
-        rx, ry, rz = self._transform_to_robot_frame(x, y, z)
+        try:
+            rx, ry, rz = self._transform_to_robot_frame(x, y, z)
+        except ValueError as e:
+            self.get_logger().error(f'place rejected: {e}')
+            return False
         rx = max(0.10, min(0.55, rx))
         ry = max(-0.35, min(0.35, ry))
         rz = max(0.08, min(0.50, rz))

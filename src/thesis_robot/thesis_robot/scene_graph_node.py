@@ -3,18 +3,27 @@
 Scene Graph Node — builds and maintains a live world model.
 
 Subscribes to:
-  /detections        (std_msgs/String — JSON list from yolo_detector)
+  /detections, /detections_side, /detections_fused
+                     (std_msgs/String — JSON detection lists)
 
 Publishes to:
   /scene_snapshot    (std_msgs/String — JSON world model for LLM)
+                     All x/y/z are in base_link; z is null when unknown.
 
 Your thesis contribution: structured spatial world model with
 predicates (reachable, near, left_of) that ground the LLM's
 understanding of the physical workspace.
 """
-import rclpy, json, time
+import rclpy, json, math, time
 from rclpy.node import Node
 from std_msgs.msg import String
+from geometry_msgs.msg import PointStamped
+import tf2_ros
+import tf2_geometry_msgs  # noqa: F401 — registers PointStamped with tf2
+
+# Every coordinate stored in the scene (and therefore every coordinate the
+# LLM plans with and arm_controller executes) is in this frame.
+BASE_FRAME = 'base_link'
 
 # Robot workspace bounds (metres, in base_link frame)
 WORKSPACE = {'x': (0.08, 0.60), 'y': (-0.40, 0.40), 'z': (-0.50, 2.00)}
@@ -29,6 +38,10 @@ class SceneGraphNode(Node):
         # ── scene storage ────────────────────────────────────────────
         # { object_id: { label, x, y, z, confidence, last_seen, stale } }
         self.scene = {}
+
+        # TF buffer for camera frame -> base_link
+        self.tf_buffer   = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         # ── subscribers ──────────────────────────────────────────────
         self.create_subscription(
@@ -74,14 +87,10 @@ class SceneGraphNode(Node):
             if conf < 0.45:
                 continue  # skip low confidence
 
-            # Get 3D position — handle both formats from senior's nodes
-            # object_detection.py publishes cx_3d/cy_3d/cz_3d
-            # depth_3d_node.py will publish x_robot/y_robot/z_robot
-            x = float(det.get('x_robot') or det.get('cx_3d') or 0.0)
-            y = float(det.get('y_robot') or det.get('cy_3d') or 0.0)
-            z_raw = float(det.get('z_robot') or det.get('cz_3d') or 0.0)
-            # If z > 0.5m it's camera depth not table height — use 0.0
-            z = 0.0 if z_raw > 0.5 else z_raw
+            pos = self._resolve_base_xyz(det, label)
+            if pos is None:
+                continue
+            x, y, z = pos
 
             # Generate stable object ID: label + index
             obj_id = self._get_or_create_id(label, x, y)
@@ -90,7 +99,7 @@ class SceneGraphNode(Node):
                 'label':      label,
                 'x':          round(x, 4),
                 'y':          round(y, 4),
-                'z':          round(z, 4),
+                'z':          round(z, 4) if z is not None else None,
                 'confidence': round(conf, 3),
                 'last_seen':  now,
                 'stale':      False,
@@ -161,6 +170,8 @@ class SceneGraphNode(Node):
 
     # ── SPATIAL PREDICATES ───────────────────────────────────────────
     def _is_reachable(self, x, y, z):
+        if z is None:
+            return False  # height unknown — cannot claim it is graspable
         return (WORKSPACE['x'][0] <= x <= WORKSPACE['x'][1] and
                 WORKSPACE['y'][0] <= y <= WORKSPACE['y'][1] and
                 WORKSPACE['z'][0] <= z <= WORKSPACE['z'][1])
@@ -177,6 +188,60 @@ class SceneGraphNode(Node):
         return (a['y'] - b['y']) > 0.08
 
     # ── HELPERS ──────────────────────────────────────────────────────
+    def _resolve_base_xyz(self, det, label):
+        """
+        Return (x, y, z) of a detection in BASE_FRAME, or None to drop it.
+
+        A detection must carry one of:
+          x_robot / y_robot [/ z_robot]   already in base_link
+                                          (z_robot may be null = height unknown)
+          cx_3d / cy_3d / cz_3d + frame_id  camera-frame point, moved to
+                                            base_link through TF
+        Anything else is dropped: camera-frame numbers are never used as
+        robot-frame numbers.
+        """
+        def num(key):
+            v = det.get(key)
+            if v is None:
+                return None
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return v if math.isfinite(v) else None
+
+        x, y = num('x_robot'), num('y_robot')
+        if x is not None and y is not None:
+            return x, y, num('z_robot')
+
+        cx, cy, cz = num('cx_3d'), num('cy_3d'), num('cz_3d')
+        frame_id = det.get('frame_id')
+        if None in (cx, cy, cz) or not frame_id:
+            self.get_logger().warn(
+                f'Dropping {label}: no base_link coords and no '
+                f'camera coords + frame_id',
+                throttle_duration_sec=5.0)
+            return None
+        if cz <= 0.0:
+            return None  # no valid depth at this pixel
+
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                BASE_FRAME, frame_id, rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            self.get_logger().warn(
+                f'Dropping {label}: no TF {frame_id} -> {BASE_FRAME}: {e}',
+                throttle_duration_sec=5.0)
+            return None
+
+        pt = PointStamped()
+        pt.header.frame_id = frame_id
+        pt.point.x, pt.point.y, pt.point.z = cx, cy, cz
+        p = tf2_geometry_msgs.do_transform_point(pt, tf).point
+        # plain floats: tf2 may return numpy scalars, which json can't encode
+        return float(p.x), float(p.y), float(p.z)
+
     def _get_or_create_id(self, label, x, y):
         """
         Return existing ID if an object with this label is already

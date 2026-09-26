@@ -113,9 +113,11 @@ class FusionNode(Node):
                         'cx_3d':   best_rs[1]['cx_3d'],
                         'cy_3d':   best_rs[1]['cy_3d'],
                         'cz_3d':   best_rs[1]['cz_3d'],
-                        'x_robot': best_rs[1].get('x_robot', oak_det.get('x_robot',0)),
-                        'y_robot': best_rs[1].get('y_robot', oak_det.get('y_robot',0)),
-                        'z_robot': best_rs[1].get('z_robot', oak_det.get('z_robot',0)),
+                        # camera coords now belong to the RealSense frame
+                        'frame_id': best_rs[1].get('frame_id'),
+                        'x_robot': best_rs[1].get('x_robot', oak_det.get('x_robot')),
+                        'y_robot': best_rs[1].get('y_robot', oak_det.get('y_robot')),
+                        'z_robot': best_rs[1].get('z_robot', oak_det.get('z_robot')),
                         'source':  'fused_rs',
                     })
                     fused.append(merged)
@@ -140,6 +142,12 @@ class FusionNode(Node):
                         'cx_3d':   best_rs[1]['cx_3d'],
                         'cy_3d':   best_rs[1]['cy_3d'],
                         'cz_3d':   best_rs[1]['cz_3d'],
+                        # camera coords now belong to the RealSense frame;
+                        # carry its robot coords too so nothing is mixed
+                        'frame_id': best_rs[1].get('frame_id'),
+                        'x_robot': best_rs[1].get('x_robot'),
+                        'y_robot': best_rs[1].get('y_robot'),
+                        'z_robot': best_rs[1].get('z_robot'),
                         'source':  'fused_both',
                     })
                     fused.append(merged)

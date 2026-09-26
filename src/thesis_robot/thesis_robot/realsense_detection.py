@@ -101,12 +101,14 @@ class RealSenseDetection(Node):
         """
         Affine transform: RealSense camera frame -> robot base frame.
         Calibrated 5-point correspondence, avg error 1.0cm.
+        The fit only models x and y, so z is returned as None (unknown)
+        rather than a fabricated 0.0.
         """
         px = [-0.0442,  5.2755,  3.0851, -3.4580]
         py = [ 1.0619, -3.2731, -2.6431,  3.1335]
         rx = px[0]*cx3 + px[1]*cy3 + px[2]*cz3 + px[3]
         ry = py[0]*cx3 + py[1]*cy3 + py[2]*cz3 + py[3]
-        return float(rx), float(ry), 0.0
+        return float(rx), float(ry), None
 
     def _color_detect(self, bgr):
         """HSV color fallback detection."""
@@ -199,9 +201,10 @@ class RealSenseDetection(Node):
                 'cx_3d':      round(cx3, 4),
                 'cy_3d':      round(cy3, 4),
                 'cz_3d':      round(cz3, 4),
+                'frame_id':   msg.header.frame_id,
                 'x_robot':    round(rx, 4),
                 'y_robot':    round(ry, 4),
-                'z_robot':    round(rz, 4),
+                'z_robot':    None,
                 'source':     'realsense',
             })
 
