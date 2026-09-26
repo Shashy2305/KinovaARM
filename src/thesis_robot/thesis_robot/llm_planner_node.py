@@ -13,7 +13,7 @@ Publishes to:
 Your thesis contribution: LLM-based task decomposition grounded
 in a live scene graph, with pre-execution safety validation.
 """
-import rclpy, json, time, threading, ollama
+import rclpy, json, math, time, threading, ollama
 from rclpy.node import Node
 from std_msgs.msg import String
 
@@ -52,42 +52,62 @@ RESPOND WITH EXACTLY THIS JSON STRUCTURE — no other format:
 def validate_plan(plan, scene):
     """
     Scan entire plan for safety violations before first move.
-    Returns (is_safe: bool, reason: str)
+    Returns (is_safe: bool, reason: str, warnings: list[str]).
+    Warnings do not block the plan (e.g. picking a stale object).
     """
+    warnings = []
     if not isinstance(plan, list) or len(plan) == 0:
-        return False, "Plan is empty or not a list"
+        return False, "Plan is empty or not a list", warnings
 
     for i, step in enumerate(plan):
+        if not isinstance(step, dict):
+            return False, f"Step {i}: not an object ({step!r})", warnings
         act = step.get('action', '')
+
+        # Every coordinate present must be a real number (null z is possible
+        # now that the scene reports unknown heights as null)
+        for k in ['x', 'y', 'z', 'approach_z']:
+            if k in step and not _is_number(step[k]):
+                return False, f"Step {i} ({act}): {k}={step[k]!r} is not a number", warnings
 
         # Z floor check
         for k in ['z', 'approach_z']:
             if k in step and step[k] < 0.08:
-                return False, f"Step {i} ({act}): {k}={step[k]:.3f} violates floor"
+                return False, f"Step {i} ({act}): {k}={step[k]:.3f} violates floor", warnings
 
         # approach_z must be high enough
         if act == 'pick':
             if step.get('approach_z', 1.0) < 0.15:
-                return False, f"Step {i}: approach_z={step.get('approach_z')} too low"
-            # Object must exist in scene
-            oid = step.get('object_id', '')
-            if oid and oid not in scene:
-                return False, f"Step {i}: object_id '{oid}' not in scene"
-            # Object must not be stale
-            if oid and scene.get(oid, {}).get('stale', False):
-                self.get_logger().warn(f'Object {oid} is stale but proceeding'); pass  # stale warning only
+                return False, f"Step {i}: approach_z={step.get('approach_z')} too low", warnings
+            # Object must be named and exist in scene
+            oid = step.get('object_id')
+            if not oid:
+                return False, f"Step {i}: pick has no object_id", warnings
+            if oid not in scene:
+                return False, f"Step {i}: object_id '{oid}' not in scene", warnings
+            obj = scene[oid] if isinstance(scene[oid], dict) else {}
+            if obj.get('z') is None:
+                return False, f"Step {i}: '{oid}' has unknown height", warnings
+            # Stale objects: warning only — arm_controller uses the last seen position
+            if obj.get('stale', False):
+                warnings.append(f"Step {i}: object '{oid}' is stale but proceeding")
 
         # Place Z check
         if act == 'place' and step.get('z', 1.0) < 0.10:
-            return False, f"Step {i}: place z={step.get('z'):.3f} too low"
+            return False, f"Step {i}: place z={step.get('z'):.3f} too low", warnings
 
         # Workspace bounds
         if 'x' in step and not (0.10 <= step['x'] <= 0.55):
-            return False, f"Step {i}: x={step['x']:.3f} outside workspace"
+            return False, f"Step {i}: x={step['x']:.3f} outside workspace", warnings
         if 'y' in step and not (-0.35 <= step['y'] <= 0.35):
-            return False, f"Step {i}: y={step['y']:.3f} outside workspace"
+            return False, f"Step {i}: y={step['y']:.3f} outside workspace", warnings
 
-    return True, f"Plan approved — {len(plan)} steps"
+    return True, f"Plan approved — {len(plan)} steps", warnings
+
+
+def _is_number(v):
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
 
 
 class LLMPlannerNode(Node):
@@ -204,7 +224,9 @@ class LLMPlannerNode(Node):
             )
 
             # Validate
-            ok, reason = validate_plan(plan, self.latest_scene)
+            ok, reason, warnings = validate_plan(plan, self.latest_scene)
+            for w in warnings:
+                self.get_logger().warn(w)
 
             if not ok:
                 self.get_logger().warn(f'Plan REJECTED: {reason}')
