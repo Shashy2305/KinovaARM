@@ -4,6 +4,7 @@ install/
 log/
 __pycache__/
 *.pyc
+.cache/
 
 # Vendor/third-party submodules only
 YOLOv12-Based_Object_Detection_and_Live_Tracking/
