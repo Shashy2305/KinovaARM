@@ -140,9 +140,6 @@ ros2 run thesis_robot arm_controller
 ros2 run thesis_robot audio_node
 ```
 
-Do **not** run `yolo_detector` together with the pipeline: it also publishes `/detections`,
-in a format without 3D coordinates.
-
 ### Useful parameters
 
 | Node | Parameter | Default |
@@ -164,15 +161,12 @@ in a format without 3D coordinates.
 
 | Path | What it is |
 |---|---|
-| `src/thesis_robot/` | **The thesis pipeline** (ROS 2 package): the nodes above, plus the older bottle-grasp chain (`bottle_filter` → `bottle_segmentation` → `grasp_detector` → `pick_and_place`, built on `yolo_ros`) |
+| `src/thesis_robot/` | **The thesis pipeline** (ROS 2 package): the nodes above |
 | `oak_camera_node.py`, `oak_launch.py` | OAK-D driver and launch file |
-| `sensor_fusion_node.py`, `pointcloud_fusion.py`, `wrist_pcl_node.py` | Multi-camera point-cloud fusion for MoveIt's octomap (two alternative fusers: `/fused/points` in `base_link`, `/fused_pointcloud` in `world`) |
 | `handeye_calibration.py` (OAK-D), `handeye_calibrationintel.py` (RealSense), `calibration_helper.py`, `auto_calibrate.py`, `check_alignment.py`, marker TF publishers | Hand-eye calibration tools |
-| `src/calib_pkg/`, `src/matlab/`, `src/my_handeye_config/` | Earlier calibration pipelines (checkerboard data collection, MATLAB hand-eye, easy_handeye2 config) |
-| `src/glass_pick_place/`, `src/glass_pick_node.py`, `src/visual_servo_node.py`, `src/demo_node.py`, `src/global_camera_perception/` (C++) | ArUco-based glass pick-and-place track |
-| `src/kinova_moveit2_obb/`, `src/moveit2_obb/` | Gazebo YOLOv8-OBB pick-and-place tutorial (Kinova port and original Franka Panda) |
+| `src/matlab/` | Earlier calibration pipeline (MATLAB hand-eye) |
+| `src/global_camera_perception/` (C++) | Global camera perception (C++) |
 | `robot_keepalive.py`, `three_camera_subscriber.py` | Robot idle keepalive; camera health monitor |
-| `pick_and_place.py` (root), `object_detection.py` (root — actually an older OAK driver), `glass_positions.py`, `src/pick.py` | **Legacy / standalone.** Hard-coded calibrations, bypass TF; `src/pick.py` imports modules that are not in this repo |
 | `01_Setup.md`, `02_Dev_Environment.md`, `weeklyplan` | Original setup notes and 12-week plan (Kortex-API phase) |
 | [`TESTING.md`](TESTING.md) | Staged test plan for the core pipeline on the real arm |
 
@@ -195,7 +189,7 @@ in a format without 3D coordinates.
   are keyed by label, so two cups are ambiguous.
 - **LLM latency** is 11–52 s per plan.
 - **`fusion_node`** matches detections by comparing camera coordinates from two different
-  cameras, which is unreliable. `depth_3d_node` expects fields no current detector sends.
+  cameras, which is unreliable.
 - **Point-cloud fusion:** callbacks not firing in one fusion node was still being debugged.
 - **Lab-machine dependencies:** `robot.launch.py` and `cameras.launch.py` are not in this
   repo, and YOLO weights are loaded from `/home/lab/workspace/ros2_kortex_ws/yolov8m.pt`.
