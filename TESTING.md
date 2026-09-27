@@ -1,6 +1,6 @@
 # Testing the core pipeline on the real arm
 
-Staged checks for the `fix/core-pipeline` changes (frame handling, single OAK-D TF source,
+Staged checks for the core pipeline changes (frame handling, single OAK-D TF source,
 `pick` moving to the object, planner validation). Each stage isolates one thing, and every
 stage that moves the arm comes after the ones that can catch a problem without motion.
 **Stop at the first stage that fails** and note what you saw — the later stages depend on it.

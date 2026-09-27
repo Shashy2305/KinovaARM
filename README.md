@@ -172,6 +172,8 @@ ros2 run thesis_robot audio_node
 | `models/` | `yolov8m.pt` — the YOLO weights, installed into the package share directory at build time (see [Known limitations](#known-limitations)) |
 | `src/matlab/` | Earlier calibration pipeline (MATLAB hand-eye) |
 | `src/global_camera_perception/` (C++) | Global camera perception (C++) |
+| `src/insert_container_client.py` | Standalone action client for `kortex_bringup`'s `InsertContainer` action — a Kortex-API-phase tool, not part of the current voice → LLM → arm pipeline |
+| `src/move_cartesian.py` | Standalone Cartesian-pose helper using the Kortex API directly — same earlier phase, not part of the current pipeline |
 | `utils/` | `robot_keepalive.py`, `three_camera_subscriber.py` — robot idle keepalive; camera health monitor |
 | `docs/` | `01_Setup.md`, `02_Dev_Environment.md`, `weeklyplan` — original setup notes and 12-week plan (Kortex-API phase) |
 | [`TESTING.md`](TESTING.md) | Staged test plan for the core pipeline on the real arm |
