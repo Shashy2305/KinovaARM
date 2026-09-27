@@ -18,10 +18,13 @@ z ∈ [0.08, 0.50] m, but that is not a collision check against the table or obj
 
 ## Stage 0 — Build and preflight (no hardware)
 
-Check out the `fix/core-pipeline` branch in the copy of this repo the lab workspace builds
-`thesis_robot` from, and make sure `oak_camera_node.py` / `oak_launch.py` in
-`~/workspace/ros2_kortex_ws` are the branch versions (that is where `cameras.launch.py`
-looks for `oak_camera_node.py`).
+Check out the `main` branch in the copy of this repo the lab workspace builds
+`thesis_robot` from. `oak_camera_node.py` now lives at `drivers/oak_camera_node.py`
+inside this repo — it is no longer a separate copy outside it. If the lab PC's
+`cameras.launch.py` still points at an external
+`~/workspace/ros2_kortex_ws/oak_camera_node.py`, delete that copy once
+`drivers/oak_camera_node.py` (via `drivers/oak_launch.py`) is confirmed working, so
+there is only ever one copy.
 
 ```bash
 cd ~/workspace/ros2_kortex_ws

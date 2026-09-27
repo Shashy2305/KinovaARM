@@ -6,8 +6,10 @@ Publishes to /detections_side: camera-frame coords (cx_3d/cy_3d/cz_3d) plus
 the image frame_id. scene_graph_node converts them to base_link through TF
 (base_link -> global_camera_color_optical_frame, the easy_handeye2 result).
 """
+import os
 import rclpy, threading, json
 from rclpy.node import Node
+from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from cv_bridge import CvBridge
@@ -31,7 +33,10 @@ class RealSenseDetection(Node):
         # YOLO
         self.model = None
         if YOLO_AVAILABLE:
-            model_path = '/home/lab/workspace/ros2_kortex_ws/yolov8m.pt'
+            default_model_path = os.path.join(
+                get_package_share_directory('thesis_robot'), 'models', 'yolov8m.pt')
+            self.declare_parameter('model_path', default_model_path)
+            model_path = self.get_parameter('model_path').value
             try:
                 self.model = YOLO(model_path)
                 self.get_logger().info(f'YOLOv8m loaded')

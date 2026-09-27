@@ -104,6 +104,10 @@ Requires ROS 2 (developed and tested on **Jazzy**), MoveIt 2, `ros2_kortex`,
 The vendor packages are **not** in this repo (see `.gitignore`); they live in the lab
 workspace `~/workspace/ros2_kortex_ws`.
 
+This repo is now the single source of truth for `oak_camera_node.py` and the YOLO
+weights — both used to live outside it (see [Known limitations](#known-limitations)).
+Build and run everything below from **this repo's root**:
+
 ```bash
 cd ~/workspace/ros2_kortex_ws && colcon build --packages-select thesis_robot
 source install/setup.bash
@@ -121,7 +125,7 @@ ros2 launch kinova_gen3_7dof_robotiq_2f_140_moveit_config cameras.launch.py robo
 #    OAK-D calibration TF (oak_camera_node.py no longer publishes it)
 ros2 run thesis_robot camera_tf_broadcaster
 #    Alternative: cameras.launch.py launch_oak_camera:=false, then
-#    ros2 launch ~/workspace/ros2_kortex_ws/oak_launch.py   (camera + TF together)
+#    ros2 launch drivers/oak_launch.py   (camera + TF together, run from this repo's root)
 #    Never start the OAK-D twice — the second driver fails with "OAK-D busy".
 
 # 3. perception
@@ -162,12 +166,14 @@ ros2 run thesis_robot audio_node
 | Path | What it is |
 |---|---|
 | `src/thesis_robot/` | **The thesis pipeline** (ROS 2 package): the nodes above |
-| `oak_camera_node.py`, `oak_launch.py` | OAK-D driver and launch file |
-| `handeye_calibration.py` (OAK-D), `handeye_calibrationintel.py` (RealSense), `calibration_helper.py`, `auto_calibrate.py`, `check_alignment.py`, marker TF publishers | Hand-eye calibration tools |
+| `drivers/` | `oak_camera_node.py`, `oak_launch.py`, `oak_launch_usb2.py` — OAK-D driver and launch files |
+| `calibration/` | `handeye_calibration.py` (OAK-D), `handeye_calibrationintel.py` (RealSense), `calibration_helper.py`, `auto_calibrate.py`, `auto_calibration_poses.py`, `check_alignment.py` — hand-eye calibration tools |
+| `calibration/markers/` | `aruco_tf_broadcaster.py`, `charuco_tf_publisher.py`, `checker_tf_publisher.py`, `checkerboard_tf_publisher.py` — marker TF publishers |
+| `models/` | `yolov8m.pt` — the YOLO weights, installed into the package share directory at build time (see [Known limitations](#known-limitations)) |
 | `src/matlab/` | Earlier calibration pipeline (MATLAB hand-eye) |
 | `src/global_camera_perception/` (C++) | Global camera perception (C++) |
-| `robot_keepalive.py`, `three_camera_subscriber.py` | Robot idle keepalive; camera health monitor |
-| `01_Setup.md`, `02_Dev_Environment.md`, `weeklyplan` | Original setup notes and 12-week plan (Kortex-API phase) |
+| `utils/` | `robot_keepalive.py`, `three_camera_subscriber.py` — robot idle keepalive; camera health monitor |
+| `docs/` | `01_Setup.md`, `02_Dev_Environment.md`, `weeklyplan` — original setup notes and 12-week plan (Kortex-API phase) |
 | [`TESTING.md`](TESTING.md) | Staged test plan for the core pipeline on the real arm |
 
 ---
@@ -192,4 +198,15 @@ ros2 run thesis_robot audio_node
   cameras, which is unreliable.
 - **Point-cloud fusion:** callbacks not firing in one fusion node was still being debugged.
 - **Lab-machine dependencies:** `robot.launch.py` and `cameras.launch.py` are not in this
-  repo, and YOLO weights are loaded from `/home/lab/workspace/ros2_kortex_ws/yolov8m.pt`.
+  repo.
+- **YOLO weights are now in-repo** (`models/yolov8m.pt`, installed to the
+  `thesis_robot` package's share directory at build time). `object_detection` and
+  `realsense_detection` load it via the `model_path` ROS parameter, which defaults to
+  that installed path — override it with `-p model_path:=/some/other.pt` if needed.
+  The old hardcoded absolute path
+  (`/home/lab/workspace/ros2_kortex_ws/yolov8m.pt`) is gone.
+- **`oak_camera_node.py` moved in-repo** (now `drivers/oak_camera_node.py`). If the
+  lab PC still runs a separate copy from `~/workspace/ros2_kortex_ws/oak_camera_node.py`,
+  **delete that external copy** once `drivers/oak_camera_node.py` (via
+  `ros2 launch drivers/oak_launch.py` or `python3 drivers/oak_camera_node.py`, both run
+  from this repo's root) is confirmed working — this repo should be the only copy.

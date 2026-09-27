@@ -11,10 +11,10 @@ Workflow (same as MathWorks example):
   4. Press C to detect board in all saved images and compute result
   5. Copy printed values into robot_launch_fixed.py calibration_tf block
 
-Run order:
+Run order (from the repo root):
   Terminal 1: ros2 launch ... robot_launch_fixed.py robot_ip:=192.168.1.10
-  Terminal 2: python3 oak_camera_node.py
-  Terminal 3: python3 handeye_calibration.py
+  Terminal 2: python3 drivers/oak_camera_node.py
+  Terminal 3: python3 calibration/handeye_calibration.py
 """
 
 import rclpy

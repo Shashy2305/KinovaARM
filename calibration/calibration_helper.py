@@ -14,9 +14,9 @@ Workflow:
   4. Once you click Take Sample in RViz, move the arm to the next pose.
      The script detects movement and resets automatically.
 
-Run:
+Run (from the repo root):
   source ~/workspace/ros2_kortex_ws/install/setup.bash
-  python3 ~/workspace/ros2_kortex_ws/calibration_helper.py
+  python3 calibration/calibration_helper.py
 """
 
 import math

@@ -5,9 +5,9 @@ auto_calibrate.py — Moves the Kinova Gen3 through 15 diverse calibration poses
 At each pose it pauses and waits for you to click Take Sample in the MoveIt2
 RViz calibration panel, then press Enter to continue.
 
-Run:
+Run (from the repo root):
   source ~/workspace/ros2_kortex_ws/install/setup.bash
-  python3 ~/workspace/ros2_kortex_ws/auto_calibrate.py
+  python3 calibration/auto_calibrate.py
 """
 
 import rclpy

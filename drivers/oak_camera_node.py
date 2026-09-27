@@ -22,12 +22,12 @@ calibration from ~/.ros/handeye_calibration_corrected.yaml:
 USB 2.0 workaround:
   export DEPTHAI_USB2_MODE=1   → RGB published only, depth/pointcloud skipped.
 
-Run (standalone):
+Run (standalone, from the repo root):
   source ~/workspace/ros2_kortex_ws/install/setup.bash
-  python3 oak_camera_node.py
+  python3 drivers/oak_camera_node.py
 
-Run via launch file:
-  ros2 launch ~/workspace/ros2_kortex_ws/oak_launch.py
+Run via launch file (from the repo root):
+  ros2 launch drivers/oak_launch.py
 """
 
 import os

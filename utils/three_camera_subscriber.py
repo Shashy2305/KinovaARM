@@ -11,9 +11,9 @@ Camera topics:
   OAK-D (standalone)      /global_camera/color/image_raw
                           /global_camera/stereo/points
 
-Run:
+Run (from the repo root):
   source ~/workspace/ros2_kortex_ws/install/setup.bash
-  python3 three_camera_subscriber.py
+  python3 utils/three_camera_subscriber.py
 """
 
 import time

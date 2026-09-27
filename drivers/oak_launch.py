@@ -5,12 +5,12 @@ oak_launch.py  —  Single definitive OAK-D launch script
 Launches oak_camera_node.py ONLY.
 No depthai_ros_driver, no MobileNet, no extra components.
 
-Usage:
+Usage (from the repo root):
   # USB 3.0 — full RGBD + pointcloud:
-  ros2 launch ~/workspace/ros2_kortex_ws/oak_launch.py
+  ros2 launch drivers/oak_launch.py
 
   # USB 2.0 — RGB only, no crash:
-  DEPTHAI_USB2_MODE=1 ros2 launch ~/workspace/ros2_kortex_ws/oak_launch.py
+  DEPTHAI_USB2_MODE=1 ros2 launch drivers/oak_launch.py
 
 Topics published:
   /global_camera/color/image_raw       ← perception_module.py subscribes here

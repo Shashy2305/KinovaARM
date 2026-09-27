@@ -15,9 +15,9 @@ Interpretation:
                      (calibration error causes arm to occlude itself)
   distance > 0.5 m → OK: Robot arm not in its own point cloud
 
-Run:
+Run (from the repo root):
   source ~/workspace/ros2_kortex_ws/install/setup.bash
-  python3 ~/workspace/ros2_kortex_ws/check_alignment.py
+  python3 calibration/check_alignment.py
 """
 
 import threading

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
+import os
 import rclpy
 from rclpy.node import Node
 import cv2
 import numpy as np
 from ultralytics import YOLO
+from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from cv_bridge import CvBridge
@@ -18,7 +20,10 @@ class ObjectDetectionNode(Node):
         self.target_classes = ['bottle', 'cup', 'bowl', 'cell phone', 'remote', 'book', 'scissors', 'vase', 'mouse']
         self.get_logger().info(f'Looking for: {self.desired_object}')
 
-        model_path = '/home/lab/workspace/ros2_kortex_ws/yolov8m.pt'
+        default_model_path = os.path.join(
+            get_package_share_directory('thesis_robot'), 'models', 'yolov8m.pt')
+        self.declare_parameter('model_path', default_model_path)
+        model_path = self.get_parameter('model_path').value
         self.model = YOLO(model_path)
         self.get_logger().info(f'YOLOv8 loaded from {model_path}')
 
