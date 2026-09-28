@@ -3,12 +3,22 @@
 Scene Graph Node — builds and maintains a live world model.
 
 Subscribes to:
-  /detections, /detections_side, /detections_fused
-                     (std_msgs/String — JSON detection lists)
+  /detections, /detections_side, /detections_wrist
+                     (std_msgs/String — JSON detection lists, one topic
+                     per camera: OAK-D, RealSense, Kinova wrist)
 
 Publishes to:
   /scene_snapshot    (std_msgs/String — JSON world model for LLM)
                      All x/y/z are in base_link; z is null when unknown.
+
+Multi-camera fusion happens here, not in a separate fusion_node: every
+detection already arrives with either base_link coordinates or
+camera-frame coordinates + frame_id, so it's normalized to base_link by
+TF regardless of which of the (possibly 3, possibly heterogeneous)
+cameras it came from — see _resolve_base_xyz. When two cameras report the
+same object at nearly the same time, their positions are blended by an
+exponential moving average weighted by confidence (_fuse_position)
+instead of the last writer simply overwriting the others.
 
 Your thesis contribution: structured spatial world model with
 predicates (reachable, near, left_of) that ground the LLM's
@@ -29,6 +39,9 @@ BASE_FRAME = 'base_link'
 WORKSPACE = {'x': (0.08, 0.60), 'y': (-0.40, 0.40), 'z': (-0.50, 2.00)}
 NEAR_THRESHOLD  = 0.12   # metres — objects closer than this are "near"
 STALE_THRESHOLD = 60.0    # seconds — unseen objects get marked stale
+SAME_OBJECT_DIST = 0.15  # metres — detections this close are the same object
+FUSION_MIN_ALPHA = 0.15  # a single low-confidence reading moves the estimate at least this much
+FUSION_MAX_ALPHA = 0.85  # a single high-confidence reading moves the estimate at most this much
 
 class SceneGraphNode(Node):
 
@@ -51,7 +64,7 @@ class SceneGraphNode(Node):
             String, '/detections_side',
             self.detection_callback, 10)
         self.create_subscription(
-            String, '/detections_fused',
+            String, '/detections_wrist',
             self.detection_callback, 10)
 
         # ── publishers ───────────────────────────────────────────────
@@ -94,6 +107,7 @@ class SceneGraphNode(Node):
 
             # Generate stable object ID: label + index
             obj_id = self._get_or_create_id(label, x, y)
+            x, y, z, conf = self._fuse_position(obj_id, x, y, z, conf, now)
 
             self.scene[obj_id] = {
                 'label':      label,
@@ -187,6 +201,29 @@ class SceneGraphNode(Node):
     def _is_right_of(self, a, b):
         return (a['y'] - b['y']) > 0.08
 
+    def _fuse_position(self, obj_id, x, y, z, conf, now):
+        """Blend a new detection into the existing estimate for obj_id,
+        instead of whichever camera happens to publish last overwriting
+        the others. `alpha` (how much this single reading moves the
+        estimate) scales with its confidence, so a confident detection
+        from one camera can correct a shakier one from another without
+        either source ever fully discarding the other's contribution."""
+        existing = self.scene.get(obj_id)
+        if existing is None or existing['stale']:
+            return x, y, z, conf
+
+        alpha = min(FUSION_MAX_ALPHA, max(FUSION_MIN_ALPHA, conf))
+        fx = alpha * x + (1 - alpha) * existing['x']
+        fy = alpha * y + (1 - alpha) * existing['y']
+        if z is None:
+            fz = existing['z']
+        elif existing['z'] is None:
+            fz = z
+        else:
+            fz = alpha * z + (1 - alpha) * existing['z']
+        fconf = max(conf, existing['confidence'])
+        return fx, fy, fz, fconf
+
     # ── HELPERS ──────────────────────────────────────────────────────
     def _resolve_base_xyz(self, det, label):
         """
@@ -251,7 +288,7 @@ class SceneGraphNode(Node):
         for obj_id, obj in self.scene.items():
             if obj['label'] == label:
                 dist = ((obj['x']-x)**2 + (obj['y']-y)**2)**0.5
-                if dist < 0.15:   # same object if within 15cm
+                if dist < SAME_OBJECT_DIST:
                     return obj_id
 
         # New object — assign next index for this label

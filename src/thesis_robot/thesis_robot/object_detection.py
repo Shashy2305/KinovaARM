@@ -34,6 +34,14 @@ class ObjectDetectionNode(Node):
         self.latest_display_frame = None
         self.frame_lock = threading.Lock()
 
+        # Blocked (no detections published) if camera_watchdog flagged this
+        # camera for recalibration after a drop/reconnect. See
+        # camera_watchdog.py / multi_camera_calibrate.py.
+        self._blocked = False
+        self.create_subscription(String,
+            '/camera_calibration_status',
+            self._calibration_status_cb, 10)
+
         self.create_subscription(CameraInfo,
             '/global_camera/color/camera_info',
             self.camera_info_cb, 10)
@@ -48,6 +56,18 @@ class ObjectDetectionNode(Node):
         self.detections_pub = self.create_publisher(String, '/detections', 10)
         self.debug_img_pub = self.create_publisher(Image, '/object_detection/debug_image', 10)
         self.get_logger().info('Node ready. Press q in window to quit.')
+
+    def _calibration_status_cb(self, msg):
+        try:
+            status = json.loads(msg.data).get('oakd', 'ok')
+        except (json.JSONDecodeError, AttributeError):
+            return
+        newly_blocked = status != 'ok'
+        if newly_blocked and not self._blocked:
+            self.get_logger().warn(
+                'oakd flagged for recalibration — blocking detections until '
+                'calibration/multi_camera_calibrate.py is rerun.')
+        self._blocked = newly_blocked
 
     def camera_info_cb(self, msg):
         if self.fx is None:
@@ -134,6 +154,14 @@ class ObjectDetectionNode(Node):
         return int(cx-r), int(cy-r), int(cx+r), int(cy+r), int(cx), int(cy)
 
     def rgb_cb(self, msg):
+        if self._blocked:
+            blocked = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(blocked, 'BLOCKED - needs recalibration', (30, 240),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+            with self.frame_lock:
+                self.latest_display_frame = blocked
+            return
+
         if self.fx is None or self.latest_depth is None:
             waiting = np.zeros((480, 640, 3), dtype=np.uint8)
             cv2.putText(waiting, 'Waiting for camera...', (50, 240),

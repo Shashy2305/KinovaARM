@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
 """
-RealSense D435I object detection node.
-Uses YOLOv8m + HSV color fallback.
-Publishes to /detections_side: camera-frame coords (cx_3d/cy_3d/cz_3d) plus
+Kinova wrist camera object detection node.
+Uses YOLOv8m + HSV color fallback, same pattern as realsense_detection.py.
+Publishes to /detections_wrist: camera-frame coords (cx_3d/cy_3d/cz_3d) plus
 the image frame_id. scene_graph_node converts them to base_link through TF
-(base_link -> global_camera_color_optical_frame, the easy_handeye2 result).
+(base_link -> ... -> wrist frame_id), which comes from the robot's own
+kinematics / kortex_bringup — no hand-eye calibration needed for this camera.
+
+Unverified on hardware (flag before trusting positions from this node):
+  - Topic names below match utils/three_camera_subscriber.py's documented
+    kinova_vision topics, but haven't been re-confirmed here.
+  - Whether /camera/depth/image_raw is pixel-aligned to /camera/color/image_raw.
+    RealSense has an explicit aligned_depth_to_color topic for this;
+    kinova_vision's alignment is not confirmed. If it isn't aligned, the
+    backprojected z below will be wrong at object edges/occlusion boundaries.
 """
 import os
 import rclpy, threading, json
@@ -21,23 +30,15 @@ try:
 except:
     YOLO_AVAILABLE = False
 
-class RealSenseDetection(Node):
+class WristDetection(Node):
     def __init__(self):
-        super().__init__('realsense_detection')
+        super().__init__('wrist_detection')
 
         self.bridge  = CvBridge()
         self.fx = self.fy = self.cx = self.cy = None
         self.depth   = None
         self._lock   = threading.Lock()
 
-        # Blocked (no detections published) if camera_watchdog flagged this
-        # camera for recalibration after a drop/reconnect. See
-        # camera_watchdog.py / multi_camera_calibrate.py.
-        self._blocked = False
-        self.create_subscription(
-            String, '/camera_calibration_status', self._calibration_status_cb, 10)
-
-        # YOLO
         self.model = None
         if YOLO_AVAILABLE:
             default_model_path = os.path.join(
@@ -46,7 +47,7 @@ class RealSenseDetection(Node):
             model_path = self.get_parameter('model_path').value
             try:
                 self.model = YOLO(model_path)
-                self.get_logger().info(f'YOLOv8m loaded')
+                self.get_logger().info('YOLOv8m loaded')
             except Exception as e:
                 self.get_logger().warn(f'YOLO failed: {e} — using color detection only')
 
@@ -55,29 +56,19 @@ class RealSenseDetection(Node):
             'remote', 'book', 'scissors', 'vase', 'mouse'
         ]
 
-        # Subscriptions — use aligned depth (perfect alignment with RGB)
-        self.create_subscription(
-            Image, '/global_camera/global_camera/color/image_raw', self._rgb_cb, 10)
-        self.create_subscription(
-            Image, '/global_camera/global_camera/aligned_depth_to_color/image_raw',
-            self._depth_cb, 10)
-        self.create_subscription(
-            CameraInfo, '/global_camera/global_camera/color/camera_info', self._info_cb, 10)
+        self.declare_parameter('image_topic', '/camera/color/image_raw')
+        self.declare_parameter('depth_topic', '/camera/depth/image_raw')
+        self.declare_parameter('info_topic', '/camera/color/camera_info')
 
-        self.det_pub = self.create_publisher(String, '/detections_side', 10)
-        self.get_logger().info('RealSense detection node ready')
+        self.create_subscription(
+            Image, self.get_parameter('image_topic').value, self._rgb_cb, 10)
+        self.create_subscription(
+            Image, self.get_parameter('depth_topic').value, self._depth_cb, 10)
+        self.create_subscription(
+            CameraInfo, self.get_parameter('info_topic').value, self._info_cb, 10)
 
-    def _calibration_status_cb(self, msg):
-        try:
-            status = json.loads(msg.data).get('realsense', 'ok')
-        except (json.JSONDecodeError, AttributeError):
-            return
-        newly_blocked = status != 'ok'
-        if newly_blocked and not self._blocked:
-            self.get_logger().warn(
-                'realsense flagged for recalibration — blocking detections '
-                'until calibration/multi_camera_calibrate.py is rerun.')
-        self._blocked = newly_blocked
+        self.det_pub = self.create_publisher(String, '/detections_wrist', 10)
+        self.get_logger().info('Wrist camera detection node ready')
 
     def _info_cb(self, msg):
         if self.fx is None:
@@ -86,12 +77,12 @@ class RealSenseDetection(Node):
             self.cx = msg.k[2]
             self.cy = msg.k[5]
             self.get_logger().info(
-                f'RealSense intrinsics: fx={self.fx:.1f} '
+                f'Wrist camera intrinsics: fx={self.fx:.1f} '
                 f'cx={self.cx:.1f} cy={self.cy:.1f}')
 
     def _depth_cb(self, msg):
         with self._lock:
-            self.depth = self.bridge.imgmsg_to_cv2(msg, '16UC1')
+            self.depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
 
     def _get_depth(self, u, v):
         with self._lock:
@@ -106,10 +97,13 @@ class RealSenseDetection(Node):
             valid = patch[patch > 0]
             if len(valid) == 0:
                 return 0.0
-            return float(np.median(valid)) / 1000.0
+            # depth may be 16UC1 (mm) or 32FC1 (m) depending on kinova_vision
+            # config; treat values as millimetres unless already sub-10 range.
+            med = float(np.median(valid))
+            return med / 1000.0 if med > 10.0 else med
 
     def _backproject(self, u, v, depth_m):
-        if depth_m < 0.1 or self.fx is None:
+        if depth_m < 0.05 or self.fx is None:
             return None
         cx3 = (u - self.cx) * depth_m / self.fx
         cy3 = (v - self.cy) * depth_m / self.fy
@@ -151,18 +145,16 @@ class RealSenseDetection(Node):
         return detections
 
     def _rgb_cb(self, msg):
-        if self._blocked or self.fx is None:
+        if self.fx is None:
             return
 
         try:
-            rgb = self.bridge.imgmsg_to_cv2(msg, 'rgb8')
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        except Exception as e:
+            bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        except Exception:
             return
 
         raw_detections = []
 
-        # YOLO detection
         if self.model is not None:
             try:
                 results = self.model(bgr, verbose=False)
@@ -181,7 +173,6 @@ class RealSenseDetection(Node):
             except Exception as e:
                 self.get_logger().warn(f'YOLO error: {e}')
 
-        # Color fallback if YOLO found nothing
         if not raw_detections:
             raw_detections = self._color_detect(bgr)
 
@@ -189,11 +180,9 @@ class RealSenseDetection(Node):
             return
 
         detections = []
-        display = bgr.copy()
-
         for label, conf, u, v in raw_detections:
             depth_m = self._get_depth(u, v)
-            if depth_m < 0.1:
+            if depth_m < 0.05:
                 continue
             coords = self._backproject(u, v, depth_m)
             if coords is None:
@@ -207,29 +196,22 @@ class RealSenseDetection(Node):
                 'cy_3d':      round(cy3, 4),
                 'cz_3d':      round(cz3, 4),
                 'frame_id':   msg.header.frame_id,
-                'source':     'realsense',
+                'source':     'wrist',
             })
-
-            cv2.circle(display, (u,v), 6, (0,255,0), -1)
-            cv2.putText(display,
-                f"{label} {conf:.0%} z={depth_m:.2f}m",
-                (u+8, v), cv2.FONT_HERSHEY_SIMPLEX,
-                0.5, (0,255,0), 2)
 
         if detections:
             self.det_pub.publish(String(data=json.dumps(detections)))
 
-        cv2.imshow('RealSense Detection', display)
-        cv2.waitKey(1)
-
 def main(args=None):
     rclpy.init(args=args)
-    node = RealSenseDetection()
+    node = WristDetection()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    cv2.destroyAllWindows()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
