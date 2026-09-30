@@ -24,7 +24,7 @@ Your thesis contribution: structured spatial world model with
 predicates (reachable, near, left_of) that ground the LLM's
 understanding of the physical workspace.
 """
-import rclpy, json, math, time
+import os, rclpy, json, math, time, yaml
 from rclpy.node import Node
 from std_msgs.msg import String
 from geometry_msgs.msg import PointStamped
@@ -35,18 +35,46 @@ import tf2_geometry_msgs  # noqa: F401 — registers PointStamped with tf2
 # LLM plans with and arm_controller executes) is in this frame.
 BASE_FRAME = 'base_link'
 
-# Robot workspace bounds (metres, in base_link frame)
-WORKSPACE = {'x': (0.08, 0.60), 'y': (-0.40, 0.40), 'z': (-0.50, 2.00)}
+# Robot workspace bounds (metres, in base_link frame) — fallback used only
+# if ~/.ros/workspace_bounds.yaml doesn't exist. Prefer defining these with
+# calibration/define_workspace_boundary.py (click the table's corners in a
+# camera view) over hand-editing these numbers — see _load_workspace().
+DEFAULT_WORKSPACE = {'x': (0.08, 0.60), 'y': (-0.40, 0.40), 'z': (-0.50, 2.00)}
+WORKSPACE_BOUNDS_FILE = os.path.expanduser('~/.ros/workspace_bounds.yaml')
 NEAR_THRESHOLD  = 0.12   # metres — objects closer than this are "near"
 STALE_THRESHOLD = 60.0    # seconds — unseen objects get marked stale
 SAME_OBJECT_DIST = 0.15  # metres — detections this close are the same object
 FUSION_MIN_ALPHA = 0.15  # a single low-confidence reading moves the estimate at least this much
 FUSION_MAX_ALPHA = 0.85  # a single high-confidence reading moves the estimate at most this much
 
+
+def _load_workspace(logger):
+    """Load WORKSPACE bounds from workspace_bounds.yaml if present (written
+    by calibration/define_workspace_boundary.py), else fall back to
+    DEFAULT_WORKSPACE."""
+    if not os.path.exists(WORKSPACE_BOUNDS_FILE):
+        logger.info(
+            f'No {WORKSPACE_BOUNDS_FILE} — using DEFAULT_WORKSPACE. Run '
+            f'calibration/define_workspace_boundary.py to define this by '
+            f'clicking the table instead of hand-editing scene_graph_node.py.')
+        return DEFAULT_WORKSPACE
+    try:
+        with open(WORKSPACE_BOUNDS_FILE) as f:
+            data = yaml.safe_load(f)
+        bounds = {axis: tuple(data[axis]) for axis in ('x', 'y', 'z')}
+        logger.info(f'Loaded workspace bounds from {WORKSPACE_BOUNDS_FILE}: {bounds}')
+        return bounds
+    except (OSError, yaml.YAMLError, KeyError, TypeError) as e:
+        logger.error(
+            f'Invalid {WORKSPACE_BOUNDS_FILE} ({e}) — using DEFAULT_WORKSPACE instead.')
+        return DEFAULT_WORKSPACE
+
+
 class SceneGraphNode(Node):
 
     def __init__(self):
         super().__init__('scene_graph_node')
+        self.workspace = _load_workspace(self.get_logger())
 
         # ── scene storage ────────────────────────────────────────────
         # { object_id: { label, x, y, z, confidence, last_seen, stale } }
@@ -186,9 +214,9 @@ class SceneGraphNode(Node):
     def _is_reachable(self, x, y, z):
         if z is None:
             return False  # height unknown — cannot claim it is graspable
-        return (WORKSPACE['x'][0] <= x <= WORKSPACE['x'][1] and
-                WORKSPACE['y'][0] <= y <= WORKSPACE['y'][1] and
-                WORKSPACE['z'][0] <= z <= WORKSPACE['z'][1])
+        return (self.workspace['x'][0] <= x <= self.workspace['x'][1] and
+                self.workspace['y'][0] <= y <= self.workspace['y'][1] and
+                self.workspace['z'][0] <= z <= self.workspace['z'][1])
 
     def _is_near(self, a, b):
         dist = ((a['x']-b['x'])**2 + (a['y']-b['y'])**2)**0.5

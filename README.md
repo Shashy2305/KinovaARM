@@ -142,6 +142,22 @@ camera may have moved. `object_detection`/`realsense_detection` stop publishing 
 camera (logged, and the debug image says `BLOCKED`) until `multi_camera_calibrate.py` is rerun
 with the board back in view, which clears the flag.
 
+### Workspace boundary
+
+`scene_graph_node`'s `reachable` flag (and the `left_of`/`right_of`/`near` relations, which key
+off it) checks each detection against a workspace bounding box. Instead of hand-editing that
+box's numbers in `scene_graph_node.py`:
+
+```bash
+python3 calibration/define_workspace_boundary.py
+```
+
+Click the table's corners in the live camera feed (any camera — pass `-p camera:=realsense` or
+`-p camera:=wrist` for a different one than the OAK-D default), press `c` to compute the
+bounding box from the clicked points and save it to `~/.ros/workspace_bounds.yaml`, then
+restart `scene_graph_node` to pick it up. If that file doesn't exist, `scene_graph_node` falls
+back to its hardcoded `DEFAULT_WORKSPACE`.
+
 `handeye_calibration.py`/`handeye_calibrationintel.py` (the older moving-EE-marker, 15+-pose,
 `cv2.calibrateHandEye` method) are superseded by the above for normal use, but are left in the
 repo — they're a more accurate but manual/offline alternative if extreme precision is ever
@@ -240,6 +256,8 @@ ros2 run thesis_robot audio_node
 | `drivers/` | `oak_camera_node.py`, `oak_launch.py`, `oak_launch_usb2.py` — OAK-D driver and launch files |
 | `calibration/multi_camera_calibrate.py` | Current calibration routine — wrist-camera-anchored, marker-based, run on demand for OAK-D/RealSense |
 | `calibration/multi_camera_view.py` | Live 3-camera viewer with a per-camera board-detected indicator — check this before running the routine above |
+| `calibration/generate_charuco_board.py` | Renders a print-ready ChArUco board PNG at the correct physical scale |
+| `calibration/define_workspace_boundary.py` | Click the table's corners in a live camera feed to set `scene_graph_node`'s reachable-workspace bounding box, instead of hand-editing numbers |
 | `calibration/` (rest) | `handeye_calibration.py` (OAK-D), `handeye_calibrationintel.py` (RealSense), `calibration_helper.py`, `auto_calibrate.py`, `auto_calibration_poses.py`, `check_alignment.py` — older moving-EE-marker hand-eye tools, superseded but kept as a manual/offline alternative (currently broken on this machine's OpenCV — see "Camera calibration (TF)") |
 | `calibration/markers/charuco_detector.py` | Shared ChArUco board setup/pose detection (current `cv2.aruco` API), used by `multi_camera_calibrate.py` |
 | `calibration/markers/` (rest) | `aruco_tf_broadcaster.py`, `charuco_tf_publisher.py`, `checker_tf_publisher.py`, `checkerboard_tf_publisher.py` — older single-shot marker TF publishers used during `handeye_calibration.py` sessions |
