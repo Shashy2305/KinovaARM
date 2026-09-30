@@ -99,18 +99,31 @@ known mounting position.
 | `base_link → global_camera_color_optical_frame` (RealSense) | `thesis_robot camera_tf_broadcaster`, second instance | `~/.ros/realsense_calibration.yaml`, written by `calibration/multi_camera_calibrate.py` |
 | `base_link → <wrist frame>` | Kinova URDF / `kinova_vision` / `kortex_bringup` | factory kinematic chain — never (re)calibrated |
 
-**How OAK-D and RealSense get calibrated:** place a ChArUco board (same spec as
-`handeye_calibration.py`'s: 5×7 squares, 40mm/20mm, `DICT_6X6_250`) somewhere near the robot
-base where the wrist camera and the camera(s) being calibrated can all see it, then run:
+**How OAK-D and RealSense get calibrated:** print the ChArUco board (same spec as
+`handeye_calibration.py`'s: 5×7 squares, 40mm/20mm, `DICT_6X6_250` —
+`calibration/generate_charuco_board.py` renders a print-ready PNG at the correct scale).
+Check what each camera can actually see with:
+
+```bash
+python3 calibration/multi_camera_view.py
+```
+
+— one window, all three feeds, each with a green border + axes drawn on it the moment that
+camera sees the board. Then run:
 
 ```bash
 python3 calibration/multi_camera_calibrate.py
 ```
 
-This uses the **wrist camera as the calibration anchor** — its `base_link → wrist` transform
-is already exact from the robot's own kinematics, so seeing the board from the wrist camera
-gives `base_link → board` for free, with no offline hand-eye session. OAK-D and RealSense each
-solve their own `camera → board` from a single frame, and the script composes the two to get
+This calibrates **one camera at a time**, paired with the wrist camera — it does NOT need
+OAK-D and RealSense to see the board simultaneously, since the wrist camera can be jogged to
+follow the board wherever you place it for each one in turn. For each camera, the script
+prompts you to position the board so the wrist camera and that one camera both see it, then
+waits for both. This uses the **wrist camera as the calibration anchor** — its
+`base_link → wrist` transform is already exact from the robot's own kinematics, so seeing the
+board from the wrist camera gives `base_link → board` for free, with no offline hand-eye
+session. The target camera solves its own `camera → board` from a single frame, and the
+script composes the two to get
 `base_link → camera` for each, writing it to that camera's YAML. **Restart that camera's
 `camera_tf_broadcaster` instance** to pick up the new file (it only reads it at startup):
 
@@ -225,6 +238,7 @@ ros2 run thesis_robot audio_node
 | `src/thesis_robot/` | **The thesis pipeline** (ROS 2 package): the nodes above |
 | `drivers/` | `oak_camera_node.py`, `oak_launch.py`, `oak_launch_usb2.py` — OAK-D driver and launch files |
 | `calibration/multi_camera_calibrate.py` | Current calibration routine — wrist-camera-anchored, marker-based, run on demand for OAK-D/RealSense |
+| `calibration/multi_camera_view.py` | Live 3-camera viewer with a per-camera board-detected indicator — check this before running the routine above |
 | `calibration/` (rest) | `handeye_calibration.py` (OAK-D), `handeye_calibrationintel.py` (RealSense), `calibration_helper.py`, `auto_calibrate.py`, `auto_calibration_poses.py`, `check_alignment.py` — older moving-EE-marker hand-eye tools, superseded but kept as a manual/offline alternative (currently broken on this machine's OpenCV — see "Camera calibration (TF)") |
 | `calibration/markers/charuco_detector.py` | Shared ChArUco board setup/pose detection (current `cv2.aruco` API), used by `multi_camera_calibrate.py` |
 | `calibration/markers/` (rest) | `aruco_tf_broadcaster.py`, `charuco_tf_publisher.py`, `checker_tf_publisher.py`, `checkerboard_tf_publisher.py` — older single-shot marker TF publishers used during `handeye_calibration.py` sessions |

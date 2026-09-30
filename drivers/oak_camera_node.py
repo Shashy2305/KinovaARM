@@ -22,9 +22,22 @@ calibration from ~/.ros/handeye_calibration_corrected.yaml:
 USB 2.0 workaround:
   export DEPTHAI_USB2_MODE=1   → RGB published only, depth/pointcloud skipped.
 
+Resolution: overridable via the `image_width`/`image_height` ROS parameters
+(default 416x256, unchanged). Intrinsics are read from the OAK-D's own EEPROM
+calibration and scaled to whatever resolution is actually configured, so
+overriding these is always accurate — not just a proportional guess.
+
+CAUTION: 416x256 was chosen specifically to share a USB 2.1 hub with the
+RealSense without XLink bandwidth errors. Running at a higher resolution
+continuously, on the same hub as the RealSense, risks reintroducing that.
+Prefer using a higher resolution only for a one-off capture (e.g. during
+calibration) and returning to the default for normal operation, unless
+you've confirmed the higher rate doesn't drop frames on your USB topology.
+
 Run (standalone, from the repo root):
   source ~/workspace/ros2_kortex_ws/install/setup.bash
   python3 drivers/oak_camera_node.py
+  python3 drivers/oak_camera_node.py --ros-args -p image_width:=1280 -p image_height:=800
 
 Run via launch file (from the repo root):
   ros2 launch drivers/oak_launch.py
@@ -55,9 +68,10 @@ if _DAI_MAJOR != 2:
     )
 
 # ── Resolution ───────────────────────────────────────────────────────────────
-# 416×256 reduces USB bandwidth by ~57% vs 640×400, preventing XLink errors
-# when sharing a USB 2.1 hub with the RealSense D435I.
-IMG_W, IMG_H = 416, 256
+# 416×256 (the default) reduces USB bandwidth by ~57% vs 640×400, preventing
+# XLink errors when sharing a USB 2.1 hub with the RealSense D435I. Overridable
+# via the image_width/image_height ROS parameters — see module docstring.
+DEFAULT_IMG_W, DEFAULT_IMG_H = 416, 256
 PC_STEP      = 1          # point-cloud subsampling (1=dense, 2=half, 4=fast)
 
 # ── Topic names — SINGLE SOURCE OF TRUTH (must match perception_module.py) ───
@@ -70,13 +84,6 @@ TOPIC_SCENE_PC   = "/global_camera/stereo/points"
 # ── TF frame (must match perception_module.py) ────────────────────────────────
 CAM_FRAME  = "global_camera_link"
 
-# ── Intrinsics @ 416×256 (proportionally scaled from 640×400 EEPROM values) ──
-# scale_x = 416/640 = 0.65,  scale_y = 256/400 = 0.64
-FX = 277.0
-FY = 272.6
-CX = 204.9
-CY = 131.4
-
 # ── Retry config ─────────────────────────────────────────────────────────────
 RETRY_N     = 10
 RETRY_DELAY = 3.0
@@ -88,6 +95,14 @@ class OakCameraNode(Node):
         super().__init__("oak_camera_node")
         self.bridge = CvBridge()
 
+        self.declare_parameter('image_width', DEFAULT_IMG_W)
+        self.declare_parameter('image_height', DEFAULT_IMG_H)
+        self.img_w = self.get_parameter('image_width').value
+        self.img_h = self.get_parameter('image_height').value
+        # Set from the OAK-D's own EEPROM calibration once connected
+        # (see _run_pipeline) — placeholder until then.
+        self.fx = self.fy = self.cx = self.cy = None
+
         # Publishers
         self.rgb_pub   = self.create_publisher(Image,       TOPIC_RGB,        10)
         self.rgb_info  = self.create_publisher(CameraInfo,  TOPIC_RGB_INFO,   10)
@@ -97,7 +112,7 @@ class OakCameraNode(Node):
 
         usb2 = os.environ.get("DEPTHAI_USB2_MODE") == "1"
         self.get_logger().info(
-            f"\nOAK-D camera node starting  ({IMG_W}×{IMG_H})\n"
+            f"\nOAK-D camera node starting  ({self.img_w}×{self.img_h})\n"
             f"  RGB   → {TOPIC_RGB}\n"
             f"  Depth → {TOPIC_DEPTH}\n"
             f"  PCL   → {TOPIC_SCENE_PC}\n"
@@ -113,13 +128,13 @@ class OakCameraNode(Node):
         msg = CameraInfo()
         msg.header.stamp     = stamp
         msg.header.frame_id  = CAM_FRAME
-        msg.width            = IMG_W
-        msg.height           = IMG_H
+        msg.width            = self.img_w
+        msg.height           = self.img_h
         msg.distortion_model = "plumb_bob"
         msg.d  = dist_coeffs if dist_coeffs else [0.0] * 5
-        msg.k  = [FX,  0.0, CX,  0.0, FY,  CY,  0.0, 0.0, 1.0]
+        msg.k  = [self.fx, 0.0,     self.cx, 0.0,     self.fy, self.cy, 0.0, 0.0, 1.0]
         msg.r  = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        msg.p  = [FX,  0.0, CX,  0.0, 0.0, FY,  CY,  0.0, 0.0, 0.0, 1.0, 0.0]
+        msg.p  = [self.fx, 0.0,     self.cx, 0.0,     0.0, self.fy, self.cy, 0.0, 0.0, 0.0, 1.0, 0.0]
         return msg
 
     # ── Point cloud ───────────────────────────────────────────────────────────
@@ -132,8 +147,8 @@ class OakCameraNode(Node):
         z = depth_mm[vv, uu].astype(np.float32) * 0.001  # mm → m
         valid = (z > 0.15) & (z < 3.0)
         z  = z[valid];  uu = uu[valid];  vv = vv[valid]
-        x  = (uu - CX) * z / FX
-        y  = (vv - CY) * z / FY
+        x  = (uu - self.cx) * z / self.fx
+        y  = (vv - self.cy) * z / self.fy
 
         b = rgb_bgr[vv, uu, 0].astype(np.uint32)
         g = rgb_bgr[vv, uu, 1].astype(np.uint32)
@@ -170,7 +185,7 @@ class OakCameraNode(Node):
         cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
         cam_rgb.setInterleaved(False)
         cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-        cam_rgb.setPreviewSize(IMG_W, IMG_H)
+        cam_rgb.setPreviewSize(self.img_w, self.img_h)
         cam_rgb.setPreviewKeepAspectRatio(False)
         xout_rgb = pipeline.create(dai.node.XLinkOut)
         xout_rgb.setStreamName("rgb")
@@ -190,7 +205,7 @@ class OakCameraNode(Node):
                 dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
             stereo.setLeftRightCheck(True)
             stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)  # align depth to RGB
-            stereo.setOutputSize(IMG_W, IMG_H)                 # match RGB resolution
+            stereo.setOutputSize(self.img_w, self.img_h)       # match RGB resolution
             mono_l.out.link(stereo.left)
             mono_r.out.link(stereo.right)
 
@@ -243,17 +258,32 @@ class OakCameraNode(Node):
             return
 
         with device:
-            # Read EEPROM distortion coefficients
+            # Read EEPROM calibration — intrinsics scaled to whatever
+            # resolution is actually configured (self.img_w/self.img_h), not
+            # a hardcoded proportional guess, so overriding the resolution
+            # parameters always gets correct intrinsics.
             try:
-                calib       = device.readCalibration()
-                dist        = calib.getDistortionCoefficients(
-                    dai.CameraBoardSocket.CAM_A)
+                calib = device.readCalibration()
+                K = calib.getCameraIntrinsics(
+                    dai.CameraBoardSocket.CAM_A, self.img_w, self.img_h)
+                self.fx, self.fy = K[0][0], K[1][1]
+                self.cx, self.cy = K[0][2], K[1][2]
+                dist = calib.getDistortionCoefficients(dai.CameraBoardSocket.CAM_A)
                 dist_coeffs = list(dist[:5]) if len(dist) >= 5 else list(dist)
-            except Exception:
+            except Exception as e:
+                self.get_logger().error(
+                    f"Could not read OAK-D EEPROM calibration ({e}) — "
+                    f"falling back to the old approximate 416x256 values, "
+                    f"scaled proportionally. These will be WRONG if "
+                    f"image_width/image_height differ from 416x256.")
+                scale_x, scale_y = self.img_w / 640.0, self.img_h / 400.0
+                self.fx, self.fy = 426.15 * scale_x, 425.94 * scale_y
+                self.cx, self.cy = 315.23 * scale_x, 205.31 * scale_y
                 dist_coeffs = [0.0] * 5
 
             self.get_logger().info(
-                f"OAK-D connected  FX={FX:.2f} FY={FY:.2f} CX={CX:.2f} CY={CY:.2f}\n"
+                f"OAK-D connected  ({self.img_w}x{self.img_h})  "
+                f"FX={self.fx:.2f} FY={self.fy:.2f} CX={self.cx:.2f} CY={self.cy:.2f}\n"
                 f"  dist={[round(d, 4) for d in dist_coeffs]}"
             )
 

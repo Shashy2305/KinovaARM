@@ -13,15 +13,23 @@ This script instead uses the one camera whose extrinsic is already exact
 and needs no calibration at all: the Kinova wrist camera, whose pose is
 known from the robot's own kinematic chain (base_link -> ... -> wrist
 camera frame, published by the robot's own URDF / kortex_bringup TF —
-no code here computes it). Put a ChArUco board somewhere near the robot
-base where the wrist camera, OAK-D and RealSense can all see it, and this
-script:
+no code here computes it).
+
+It calibrates ONE camera at a time, pairing it with the wrist camera:
+for each camera being calibrated, you're prompted to position the board
+so BOTH the wrist camera and that one other camera can see it (jogging
+the arm as needed). Only two cameras ever need to agree at once — the
+wrist doesn't need OAK-D and RealSense to also be looking at the same
+spot simultaneously, since it just follows the board to wherever you put
+it for each one in turn. For each camera in turn, the script:
 
   1. looks up base_link -> wrist_camera_frame from TF (already published),
-  2. detects the board from the wrist camera to get base_link -> marker,
-  3. detects the board from OAK-D and/or RealSense to get camera -> marker,
-  4. composes (2) and (3) to get base_link -> camera for each of them,
-  5. writes each to a YAML file that `camera_tf_broadcaster`
+  2. detects the board from the wrist camera RIGHT NOW to get
+     base_link -> marker (recomputed fresh each time, since the board
+     moves between cameras),
+  3. detects the board from that camera to get camera -> marker,
+  4. composes (2) and (3) to get base_link -> camera,
+  5. writes it to a YAML file that `camera_tf_broadcaster`
      (static_tf_broadcaster.py) already knows how to load.
 
 The board can then be removed — nothing at runtime depends on it being
@@ -31,11 +39,11 @@ flags it and detection nodes stop publishing for it (see README) until
 this script is run again with the board back in view.
 
 Usage:
-  # 1. Put the ChArUco board near the robot base.
-  # 2. Jog the arm (RViz / joystick) to a pose where the WRIST camera can
-  #    see the board. This script does NOT move the arm by default —
-  #    that's on you, since there's no safe generic "look at my own base"
-  #    pose for every possible board placement.
+  # For each camera, jog the arm so the wrist camera sees the board
+  # wherever you've placed/held it for that camera, then press Enter when
+  # prompted. This script does NOT move the arm by default — that's on
+  # you, since there's no safe generic "look at the board" pose that
+  # works for every placement.
   python3 calibration/multi_camera_calibrate.py
 
   # Optional: skip a camera that isn't connected right now.
@@ -48,6 +56,7 @@ Usage:
 """
 import os
 import sys
+import threading
 import time
 
 import numpy as np
@@ -88,9 +97,11 @@ class CameraCapture:
         self.frame_id = msg.header.frame_id
 
     def _on_info(self, msg):
-        if self.K is None:
-            self.K = np.array(msg.k).reshape(3, 3)
-            self.dist = np.array(msg.d)
+        # Always update (not just once) — if a camera driver is restarted
+        # at a different resolution while this is running, stale
+        # intrinsics would silently produce a wrong calibration.
+        self.K = np.array(msg.k).reshape(3, 3)
+        self.dist = np.array(msg.d)
 
     @property
     def ready(self):
@@ -182,11 +193,19 @@ class MultiCameraCalibrate(Node):
                 self.get_parameter('realsense_info_topic').value)
 
     def _spin_until(self, predicate, timeout_sec):
+        # Spinning happens continuously on a background thread (started in
+        # main()), including while input() blocks the main thread — so this
+        # just polls, it does not spin itself. Calling rclpy.spin_once()
+        # here too, on top of a concurrently-running spin thread, would
+        # race on the same node. A lookup_transform(..., timeout=...) call
+        # right after this returns relies on that background thread too:
+        # without it, such a call blocks for its full timeout with nothing
+        # processing the pending TF message and always fails.
         deadline = time.monotonic() + timeout_sec
         while time.monotonic() < deadline:
-            rclpy.spin_once(self, timeout_sec=0.1)
             if predicate():
                 return True
+            time.sleep(0.05)
         return False
 
     def _maybe_move_arm(self):
@@ -212,61 +231,59 @@ class MultiCameraCalibrate(Node):
         moveit2.move_to_configuration(joint_positions=joints)
         moveit2.wait_until_executed()
 
-    def run(self):
-        self._maybe_move_arm()
-
-        self.get_logger().info('Waiting for wrist camera frame + ChArUco detection...')
-        found_wrist = self._spin_until(
-            lambda: self.wrist.ready and detect_pose(
-                self.detector, self.board, self.wrist.gray, self.wrist.K, self.wrist.dist
-            ) is not None,
-            CAPTURE_TIMEOUT_SEC)
-
-        if not found_wrist:
-            self.get_logger().fatal(
-                'Could not see the ChArUco board from the wrist camera within '
-                f'{CAPTURE_TIMEOUT_SEC:.0f}s. The wrist camera is the calibration '
-                'anchor — nothing can be calibrated without it. Jog the arm so the '
-                'wrist camera has a clear view of the board and try again.')
-            return False
-
+    def _anchor_from_wrist(self):
+        """Compute base_link -> marker from the wrist camera's CURRENT
+        detection. Called fresh for each target camera (not once at the
+        start) so the board only has to be visible to the wrist camera and
+        ONE other camera at a time, not all cameras simultaneously — the
+        wrist can be jogged to follow the board wherever it's placed."""
         wrist_rvec, wrist_tvec = detect_pose(
             self.detector, self.board, self.wrist.gray, self.wrist.K, self.wrist.dist)
         T_wrist_marker = rt_to_matrix(wrist_rvec, wrist_tvec)
 
-        try:
-            tf_base_wrist = self.tf_buffer.lookup_transform(
-                self.base_frame, self.wrist.frame_id, rclpy.time.Time(),
-                timeout=rclpy.duration.Duration(seconds=2.0))
-        except Exception as e:
-            self.get_logger().fatal(
-                f'No TF {self.base_frame} -> {self.wrist.frame_id} — is the robot '
-                f'bringup (URDF / kortex_bringup) running? ({e})')
-            return False
-
+        tf_base_wrist = self.tf_buffer.lookup_transform(
+            self.base_frame, self.wrist.frame_id, rclpy.time.Time(),
+            timeout=rclpy.duration.Duration(seconds=2.0))
         T_base_wrist = tf_to_matrix(tf_base_wrist)
-        T_base_marker = T_base_wrist @ T_wrist_marker
-        self.get_logger().info(
-            f'Anchor OK — marker pose established in {self.base_frame} '
-            f'via wrist camera (frame {self.wrist.frame_id}).')
+        return T_base_wrist @ T_wrist_marker
+
+    def run(self):
+        self._maybe_move_arm()
 
         any_calibrated = False
         for name, cam in self.cams.items():
             calib_file = os.path.expanduser(
                 self.get_parameter(f'{name}_calib_file').value)
 
-            self.get_logger().info(f'Waiting for {name} to see the board...')
+            input(
+                f'\nPosition the ChArUco board so BOTH the wrist camera and '
+                f'{name} can see it (jog the arm as needed), then press '
+                f'Enter — waiting up to {CAPTURE_TIMEOUT_SEC:.0f}s once you do...')
+
             found = self._spin_until(
-                lambda c=cam: c.ready and detect_pose(
-                    self.detector, self.board, c.gray, c.K, c.dist) is not None,
+                lambda c=cam: (
+                    self.wrist.ready and c.ready
+                    and detect_pose(self.detector, self.board, self.wrist.gray,
+                                     self.wrist.K, self.wrist.dist) is not None
+                    and detect_pose(self.detector, self.board, c.gray,
+                                     c.K, c.dist) is not None
+                ),
                 CAPTURE_TIMEOUT_SEC)
 
             if not found:
                 self.get_logger().warn(
-                    f'{name}: no frames or board not visible within '
-                    f'{CAPTURE_TIMEOUT_SEC:.0f}s — skipping. Its existing '
-                    f'calibration (if any) is left untouched, but if it was '
-                    f'flagged for recalibration it stays blocked.')
+                    f'{name}: wrist camera and {name} did not both see the '
+                    f'board within {CAPTURE_TIMEOUT_SEC:.0f}s — skipping. Its '
+                    f'existing calibration (if any) is left untouched, but if '
+                    f'it was flagged for recalibration it stays blocked.')
+                continue
+
+            try:
+                T_base_marker = self._anchor_from_wrist()
+            except Exception as e:
+                self.get_logger().warn(
+                    f'{name}: lost the wrist camera\'s TF/detection right at '
+                    f'capture time ({e}) — skipping, try again.')
                 continue
 
             rvec, tvec = detect_pose(self.detector, self.board, cam.gray, cam.K, cam.dist)
@@ -301,11 +318,26 @@ class MultiCameraCalibrate(Node):
 def main():
     rclpy.init()
     node = MultiCameraCalibrate()
+    # Spin continuously on a background thread for this node's whole
+    # lifetime — including while input() blocks the main thread waiting
+    # for you to position the board. Without this, TF/image/info messages
+    # only get processed during the brief windows _spin_until polls, which
+    # can be too short for tf_static's transient-local message to arrive,
+    # or blocking calls like lookup_transform(..., timeout=...) just hang
+    # for their full timeout with nothing servicing the pending message.
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
     try:
         ok = node.run()
     finally:
-        node.destroy_node()
+        # Shut down the context FIRST so the spin thread's rclpy.spin(node)
+        # call returns on its own, then join it, THEN destroy the node —
+        # destroying the node while the spin thread might still be inside
+        # spin() racing on the same entities is what caused the "terminate
+        # called without an active exception" abort on exit.
         rclpy.shutdown()
+        spin_thread.join(timeout=2.0)
+        node.destroy_node()
     sys.exit(0 if ok else 1)
 
 

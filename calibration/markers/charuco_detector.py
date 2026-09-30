@@ -9,15 +9,21 @@ scripts in this directory — were removed in OpenCV >= 4.7. This machine
 runs OpenCV 4.13, where those calls raise AttributeError. New code should
 import from here rather than copy the legacy pattern.
 
-Board spec matches handeye_calibration.py's physical board (same printed
-board can be reused): 5x7 squares, 40mm squares, 20mm markers, DICT_6X6_250.
+Board spec: 5x7 squares, DICT_6X6_250. SQUARE_M/MARKER_M are set to the
+board actually printed and measured for this setup (35mm squares — the PNG
+from generate_charuco_board.py was printed at ~87.5% scale rather than the
+intended 100%; measured with a ruler rather than reprinting). If you
+reprint at true 100% scale (verify with a ruler!), these must go back to
+0.040/0.020 to match handeye_calibration.py's board spec — whatever the
+physical board actually is, this constant must match it exactly, or every
+calibration pose using this board will be systematically wrong.
 """
 import cv2
 
 SQUARES_X = 5
 SQUARES_Y = 7
-SQUARE_M = 0.040
-MARKER_M = 0.020
+SQUARE_M = 0.035
+MARKER_M = 0.0175
 ARUCO_DICT = cv2.aruco.DICT_6X6_250
 MIN_CHARUCO_CORNERS = 6
 

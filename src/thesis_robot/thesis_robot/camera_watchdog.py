@@ -25,7 +25,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
-STALE_SEC = 3.0
+STALE_SEC = 6.0
 CHECK_PERIOD_SEC = 0.5
 FLAG_DIR = os.path.expanduser('~/.ros')
 
