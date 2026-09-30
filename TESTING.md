@@ -11,8 +11,11 @@ the arm can tell us: gripper values, gripper orientation, real depth, and how fa
 calibration is.
 
 **Safety for every stage that moves:** one person on the E-stop, workspace clear, start with
-`-p speed:=0.10`. `arm_controller` clamps targets to x ∈ [0.10, 0.55], y ∈ [-0.35, 0.35],
-z ∈ [0.08, 0.50] m, but that is not a collision check against the table or objects.
+`-p speed:=0.10`. `arm_controller` clamps targets to x ∈ [0.10, 0.60], y ∈ [-0.35, 0.35],
+z ∈ [0.08, 0.50] m (x upper bound widened from 0.55 on 2026-09-30, once the actual calibrated
+cup position came in 7mm over it — a reach-extent adjustment, not a collision-safety one; the
+z floor is deliberately unchanged), but that is not a collision check against the table or
+objects.
 
 ---
 

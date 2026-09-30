@@ -37,7 +37,7 @@ AVAILABLE ACTIONS — use only these, no others:
   {"action":"go_home"}
   {"action":"null_space_adjust", "objective":"clear_camera"}
 
-WORKSPACE BOUNDS: x=[0.10, 0.55]  y=[-0.35, 0.35]  z=[0.08, 0.50]
+WORKSPACE BOUNDS: x=[0.10, 0.60]  y=[-0.35, 0.35]  z=[0.08, 0.50]
 
 RESPOND WITH EXACTLY THIS JSON STRUCTURE — no other format:
 {
@@ -96,8 +96,9 @@ def validate_plan(plan, scene):
         if act == 'place' and step.get('z', 1.0) < 0.10:
             return False, f"Step {i}: place z={step.get('z'):.3f} too low", warnings
 
-        # Workspace bounds
-        if 'x' in step and not (0.10 <= step['x'] <= 0.55):
+        # Workspace bounds — x upper bound matches arm_controller_node.py's
+        # clamp (0.60, widened 2026-09-30; see its comment for why)
+        if 'x' in step and not (0.10 <= step['x'] <= 0.60):
             return False, f"Step {i}: x={step['x']:.3f} outside workspace", warnings
         if 'y' in step and not (-0.35 <= step['y'] <= 0.35):
             return False, f"Step {i}: y={step['y']:.3f} outside workspace", warnings
@@ -186,10 +187,27 @@ class LLMPlannerNode(Node):
                 self.get_logger().warn('No scene data — publish to /scene_snapshot first')
                 return
 
-            # Build prompt
+            # Build prompt — only send reachable objects. Unreachable
+            # background clutter (false-positive YOLO/color detections
+            # outside the workspace, common with this scene's noise) was
+            # blowing the full scene up past 40KB / ~11k tokens, which
+            # overflows Ollama's default context window and made the model
+            # return an empty plan with empty reasoning every time rather
+            # than actually failing loudly. Validation below still checks
+            # against the FULL scene, not this filtered view, so the plan
+            # is never less safe — the LLM just can't reference something
+            # it was never told the arm can't reach anyway.
+            prompt_scene = {
+                obj_id: obj for obj_id, obj in self.latest_scene.items()
+                if obj.get('reachable')
+            }
+            if not prompt_scene:
+                self.get_logger().warn(
+                    f'No reachable objects in scene ({len(self.latest_scene)} '
+                    f'total, 0 reachable) — sending the LLM an empty world state.')
             user_msg = (
                 f"CURRENT WORLD STATE:\n"
-                f"{json.dumps(self.latest_scene, indent=2)}\n\n"
+                f"{json.dumps(prompt_scene, indent=2)}\n\n"
                 f"ENGINEER COMMAND: \"{command}\"\n\n"
                 f"Reason step by step, then output the JSON."
             )

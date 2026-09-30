@@ -205,8 +205,13 @@ class ArmControllerNode(Node):
         except ValueError as e:
             self.get_logger().error(f'move_to rejected: {e}')
             return False
-        # Safety clamp to workspace
-        rx = max(0.10, min(0.55, rx))
+        # Safety clamp to workspace. x upper bound widened 0.55->0.60 on
+        # 2026-09-30 after the actual calibrated cup position (x=0.558)
+        # came in 7mm over the old limit -- a reach-extent adjustment, not
+        # a collision-safety one. z floor (table-collision protection,
+        # TESTING.md RULE 1) deliberately left alone; grasp_z_offset is the
+        # right lever for a detected-surface-vs-grasp-height gap, not this.
+        rx = max(0.10, min(0.60, rx))
         ry = max(-0.35, min(0.35, ry))
         rz = max(0.08, min(0.50, rz))
 
@@ -286,7 +291,7 @@ class ArmControllerNode(Node):
         except ValueError as e:
             self.get_logger().error(f'place rejected: {e}')
             return False
-        rx = max(0.10, min(0.55, rx))
+        rx = max(0.10, min(0.60, rx))  # see _move_to's clamp for why 0.60
         ry = max(-0.35, min(0.35, ry))
         rz = max(0.08, min(0.50, rz))
 
