@@ -236,6 +236,7 @@ ros2 run thesis_robot audio_node
 | Path | What it is |
 |---|---|
 | `src/thesis_robot/` | **The thesis pipeline** (ROS 2 package): the nodes above |
+| [`robot_bringup/`](robot_bringup/README.md) | Backup of the `ros2_kortex` packages that actually run `robot.launch.py`/`cameras.launch.py` (MoveIt config, gripper wiring) — these were entirely untracked by git on the lab PC before 2026-09-29, meaning zero backup for either this project's or a labmate's bringup config. See its own README for what's there and how to restore it. |
 | `drivers/` | `oak_camera_node.py`, `oak_launch.py`, `oak_launch_usb2.py` — OAK-D driver and launch files |
 | `calibration/multi_camera_calibrate.py` | Current calibration routine — wrist-camera-anchored, marker-based, run on demand for OAK-D/RealSense |
 | `calibration/multi_camera_view.py` | Live 3-camera viewer with a per-camera board-detected indicator — check this before running the routine above |
@@ -281,10 +282,11 @@ ros2 run thesis_robot audio_node
   means more negative `y` in `base_link` (the robot's view, not the speaker's), and relations
   are keyed by label, so two cups are ambiguous.
 - **LLM latency** is 11–52 s per plan.
-- **Lab-machine dependencies:** `robot.launch.py` and `cameras.launch.py` are not in this
-  repo, and `cameras.launch.py`'s own RealSense `static_transform_publisher` needs to be
-  removed there so it doesn't fight the new `camera_tf_broadcaster` instance (see "Camera
-  calibration (TF)") — this repo can't make that change since the file lives outside it.
+- **Lab-machine dependencies:** `robot.launch.py` and `cameras.launch.py` themselves still
+  don't run from this repo — they run from `~/workspace/ros2_kortex_ws`, and `robot_bringup/`
+  is a manual snapshot of that, not a live one (see its README). `cameras.launch.py`'s own
+  RealSense `static_transform_publisher` also needs to be removed there so it doesn't fight
+  the new `camera_tf_broadcaster` instance (see "Camera calibration (TF)").
 - **YOLO weights are now in-repo** (`models/yolov8m.pt`, installed to the
   `thesis_robot` package's share directory at build time). `object_detection` and
   `realsense_detection` load it via the `model_path` ROS parameter, which defaults to

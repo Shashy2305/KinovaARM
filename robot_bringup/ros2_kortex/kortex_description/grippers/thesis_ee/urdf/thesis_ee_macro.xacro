@@ -1,0 +1,166 @@
+<?xml version="1.0"?>
+<robot name="thesis_ee_model" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!--
+  FRAME REFERENCE — thesis_ee
+  All transforms relative to end_effector_link
+  ═══════════════════════════════════════════════════
+  thesis_ee           xyz="0 0 0"        rpy="0 0 -1.5707963"
+                      → mounting flange frame
+
+  pen_tip             xyz="0 0 -0.15452" rpy="0 0 0"
+                      → 117.26mm box + 37.26mm pen = 154.52mm
+                      → verify: ros2 run tf2_ros tf2_echo end_effector_link pen_tip
+                      → expected: z ≈ -0.155 m
+
+  assembly_tip        xyz="0 0 -0.15452" rpy="0 0 0"
+                      → same as pen_tip, kept for SRDF compatibility
+
+  camera_color_frame  xyz="-0.0494305 0.049587 0.00395126"
+                      qx=0.200804 qy=0.290464 qz=0.442318 qw=0.824417
+                      → wrist camera color (hand-eye calibrated, easy_handeye2)
+
+  camera_depth_frame  xyz="-0.0689305 0.044587 0.00395126"
+                      qx=0.200804 qy=0.290464 qz=0.442318 qw=0.824417
+                      → wrist camera depth (-19.5mm X, -5mm Y offset from color)
+
+  finger_link         xyz="0 0 0" rpy="0 0 0"
+                      → dummy link for hardware interface (no physical joint)
+  ═══════════════════════════════════════════════════
+
+    thesis_ee_macro.xacro
+    Rigid end-effector assembly for the thesis writing task.
+
+    Parts:
+      - elbow.STL        : PETG mounting bracket attaching to Gen3 tool flange
+      - Full_Assembly.STL: composite writing tool attaching to the elbow
+
+    COORDINATE CONVENTIONS:
+      Both STLs are exported from the same SolidWorks assembly with the SW
+      origin coincident with the Gen3 tool-flange face (where the elbow bolts
+      onto end_effector_link). Per dimensions.pdf:
+        SW +Z = along the tool axis, away from the arm (pen direction)
+        SW +Y = lateral, toward the assembly box (the 117 mm offset)
+        SW +X = small in-plane offset (the 2.88 mm offset)
+      Kinova end_effector_link convention (pen-down posture):
+        EE -Z = along the tool axis (pen direction)
+      Mapping (proper right-handed rotation, det = +1):
+        SW +Z -> EE -Z     SW +Y -> EE +X     SW +X -> EE +Y
+      URDF rpy producing this rotation:  rpy="0 1.5707963 -1.5707963"
+      Applied to both visuals (and the Full_Assembly collision) at xyz="0 0 0".
+
+    PEN TIP in EE frame (along tool axis, EE -Z direction):
+        xyz = (0, 0, -0.11726) m   [117.26 mm flange-to-box face]
+    ASSEMBLY TIP (pen_tip + 37.26 mm stick-out):
+        xyz = (0, 0, -0.15452) m
+
+    MASS PROPERTIES (SolidWorks, full assembly including elbow):
+      Total mass = 1566.76 g = 1.567 kg
+      CoM (SW frame, mm): X=107.70  Y=120.07  Z=145.15
+        -> EE frame: xyz = (0.12007, -0.14515, -0.10770) m
+      Inertia at CoM, axis-relabelled SW -> EE:
+        Ixx_EE = Lyy_SW = 0.021982
+        Iyy_EE = Lzz_SW = 0.005741
+        Izz_EE = Lxx_SW = 0.021976
+        Ixy_EE = -Lyz_SW = -0.0001843
+        Ixz_EE = -Lxy_SW = +0.0000105
+        Iyz_EE = +Lxz_SW = -0.0001164
+  -->
+
+  <xacro:macro name="load_gripper" params="
+    parent
+    prefix
+    use_fake_hardware:=false
+    fake_sensor_commands:=false
+    sim_ignition:=false
+    sim_isaac:=false
+    isaac_joint_commands:=/isaac_joint_commands
+    isaac_joint_states:=/isaac_joint_states
+    com_port:=/dev/ttyUSB0
+    use_internal_bus_gripper_comm:=false
+    moveit_active:=false">
+
+    <link name="${prefix}thesis_ee">
+
+      <!-- Elbow bracket: mounts flush on Gen3 tool flange.
+           10 mm Z+ offset clears the wrist body; rpy maps SW frame -> EE frame
+           with +90 deg yaw to face out from the flange. -->
+      <visual>
+        <origin xyz="-0.050 -0.050 0.003" rpy="1.5707963 0 1.5707963"/>
+        <geometry>
+          <mesh filename="package://kortex_description/grippers/thesis_ee/meshes/elbow.STL"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="thesis_ee_petg">
+          <color rgba="0.55 0.27 0.07 1.0"/>
+        </material>
+      </visual>
+
+      <!-- Full assembly writing tool: same SW origin (EE flange), same rotation. -->
+      <visual>
+        <origin xyz="-0.110 -0.025 -0.202" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://kortex_description/grippers/thesis_ee/meshes/Full_Assembly.STL"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="thesis_ee_grey">
+          <color rgba="0.40 0.40 0.40 1.0"/>
+        </material>
+      </visual>
+
+      <collision>
+        <origin xyz="0 0 0" rpy="0 1.5707963 -1.5707963"/>
+        <geometry>
+          <mesh filename="package://kortex_description/grippers/thesis_ee/meshes/Full_Assembly.STL"
+                scale="0.001 0.001 0.001"/>
+        </geometry>
+      </collision>
+
+      <inertial>
+        <origin xyz="0.12007 -0.14515 -0.10770" rpy="0 0 0"/>
+        <mass value="1.567"/>
+        <inertia ixx="0.021982" ixy="-0.0001843" ixz="0.0000105"
+                                iyy="0.005741"   iyz="-0.0001164"
+                                                 izz="0.021976"/>
+      </inertial>
+    </link>
+
+    <joint name="${prefix}thesis_ee_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child  link="${prefix}thesis_ee"/>
+      <origin xyz="0 0 0" rpy="0 0 -1.5707963"/>
+    </joint>
+
+    <!-- Virtual TCP at the physical pen tip (bottom of tool box + pen protrusion).
+         117.26 mm box depth + 37.26 mm pen stick-out = 154.52 mm total.
+         Verify after rebuild:
+           ros2 run tf2_ros tf2_echo end_effector_link pen_tip
+         Expected: Translation z ≈ -0.155 m -->
+    <link name="${prefix}pen_tip"/>
+    <joint name="${prefix}pen_tip_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child  link="${prefix}pen_tip"/>
+      <origin xyz="0 0 -0.15452" rpy="0 0 0"/>
+    </joint>
+
+    <!-- assembly_tip — same physical location as pen_tip (pen tip endpoint).
+         Both frames are kept for SRDF / task-space planning compatibility. -->
+    <link name="${prefix}assembly_tip"/>
+    <joint name="${prefix}assembly_tip_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child  link="${prefix}assembly_tip"/>
+      <origin xyz="0 0 -0.15452" rpy="0 0 0"/>
+    </joint>
+
+  <!-- Dummy finger_joint to satisfy hardware interface -->
+  <link name="${prefix}finger_link"/>
+  <joint name="${prefix}finger_joint" type="revolute">
+    <parent link="${prefix}thesis_ee"/>
+    <child link="${prefix}finger_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0.0" upper="0.8" effort="200" velocity="1.0"/>
+  </joint>
+
+  </xacro:macro>
+</robot>

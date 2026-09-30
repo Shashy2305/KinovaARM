@@ -1,0 +1,36 @@
+# MoveIt uses this configuration for controller management
+# Real hardware's follow_joint_trajectory execution consistently runs longer than
+# the planned trajectory duration (observed: MoveIt's default scaling=1.1/margin=0.5s
+# gave a ~12s allowance that was hit on every attempt, cancelling the trajectory before
+# the real controller finished - the arm never completed the move even though planning
+# and RViz preview looked fine). Widened so real hardware execution isn't cancelled early.
+# scaling=3.0/margin=3.0 was still not enough for larger single-joint moves (observed:
+# "go vertical", a ~180 deg joint_3 sweep from 'home', hit the resulting ~12s allowance
+# twice in a row and got killed both times - deterministically, at the exact computed
+# bound, not a hardware fault). scaling=6.0/margin=10.0 (~23s for this move) still wasn't
+# enough either - confirmed on hardware the arm was continuously moving the entire time,
+# just slower than that allowance, not stuck/faulted. Widened well past what's been
+# observed needed so a real, still-progressing move doesn't get killed again.
+allowed_execution_duration_scaling: 10.0
+allowed_goal_duration_margin: 20.0
+# Default (0.01 rad) rejects the trajectory outright - STATUS_ABORTED, arm never
+# moves - the instant real encoder noise/settling puts the live joint state even
+# slightly off the planned start state. Sim never shows this since simulated
+# joints match the plan exactly. Widened to tolerate real hardware drift.
+allowed_start_tolerance: 0.05
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+moveit_simple_controller_manager:
+  controller_names:
+    - joint_trajectory_controller
+  joint_trajectory_controller:
+    type: FollowJointTrajectory
+    joints:
+      - joint_1
+      - joint_2
+      - joint_3
+      - joint_4
+      - joint_5
+      - joint_6
+      - joint_7
+    action_ns: follow_joint_trajectory
+    default: true
