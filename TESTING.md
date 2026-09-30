@@ -118,8 +118,10 @@ ros2 action send_goal /robotiq_gripper_controller/gripper_cmd control_msgs/actio
 ```
 
 **Record:** which position is fully open and which is fully closed.
-`arm_controller` currently uses **open = 0.14, closed = 0.02**. If 0.695 closes the
-gripper, those values are reversed — **do not continue to Stage 7** until they are fixed.
+**Verified 2026-09-30: `0.0` is fully open, `0.695` is fully closed** — already the
+`GRIPPER_OPEN`/`GRIPPER_CLOSED` constants in `arm_controller_node.py`. (The `robotiq_gripper_controller`
+itself wasn't even spawned before this date — see `robot_bringup/README.md` — so this
+stage could not have passed earlier regardless of what the constants said.)
 
 ---
 
@@ -131,9 +133,15 @@ Jog the arm so the gripper points straight down with the fingers vertical, then:
 ros2 run tf2_ros tf2_echo base_link end_effector_link    # note the quaternion (xyzw)
 ```
 
-**Pass:** the quaternion matches `[0.0, 0.707, 0.0, 0.707]` — or its negative, which is
-the same rotation. If it is different, record it: that value replaces the constant
-`arm_controller` uses for every move.
+**Pass:** the rotation matrix's third column (the EE's Z-axis expressed in `base_link`) is
+close to `(0, 0, -1)` — i.e. genuinely pointing straight down. Don't compare the raw
+quaternion to a fixed reference value: any rotation about the vertical axis also points
+straight down, so there's no single correct quaternion, only a correct *direction*.
+**Verified 2026-09-30:** `[0.773, 0.635, -0.015, 0.019]` (Z-axis `(0.002, -0.049, -0.999)`,
+~3° off vertical) — already the `GRASP_QUAT_XYZW` constant in `arm_controller_node.py`.
+If you rejog and get a different value with a similarly-vertical Z-axis, that's still a
+valid grasp orientation (just a different wrist roll) — no need to change the constant
+unless the fingers need to be aligned a specific way relative to the object (e.g. a handle).
 
 ---
 

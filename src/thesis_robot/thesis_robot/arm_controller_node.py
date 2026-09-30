@@ -20,9 +20,25 @@ BASE_LINK   = "base_link"
 EE_LINK     = "end_effector_link"
 GROUP_NAME  = "manipulator"
 HOME_JOINTS = [0.0, -0.35, 3.14, -2.27, 0.0, 0.96, 1.57]
-GRIPPER_OPEN   = 0.14
-GRIPPER_CLOSED = 0.02
+# Verified on hardware 2026-09-30 (TESTING.md Stage 3), now that
+# robotiq_gripper_controller is actually spawned (it wasn't before — see
+# robot_bringup/README.md): position 0.0 is fully open, 0.695 is fully
+# closed. The previous 0.14/0.02 values were backwards — 0.14 mostly
+# closes the gripper and 0.02 leaves it nearly fully open, so a pick
+# sequence would never actually grip anything.
+GRIPPER_OPEN   = 0.0
+GRIPPER_CLOSED = 0.695
 CAMERA_FRAME   = "global_camera_link"
+# Verified on hardware 2026-09-30 (TESTING.md Stage 4): jogged the gripper
+# to point straight down, read base_link -> end_effector_link. The old
+# [0, 0.707, 0, 0.707] here was a generic reference value, never confirmed
+# against this specific robot. The rotation matrix from that reading
+# showed the EE's Z-axis as (0.002, -0.049, -0.999) in base_link — i.e.
+# genuinely straight down — so this quaternion is a verified working
+# grasp orientation, not just the one TESTING.md happened to expect (any
+# rotation about the vertical axis also points straight down; this is one
+# such rotation, specifically the one the gripper was actually jogged to).
+GRASP_QUAT_XYZW = [0.773, 0.635, -0.015, 0.019]
 
 
 class ArmControllerNode(Node):
@@ -203,7 +219,7 @@ class ArmControllerNode(Node):
         try:
             self.moveit2.move_to_pose(
                 position=[rx, ry, rz],
-                quat_xyzw=[0.0, 0.707, 0.0, 0.707],
+                quat_xyzw=GRASP_QUAT_XYZW,
                 cartesian=cartesian
             )
             # pymoveit2 returns False when planning/execution failed
@@ -282,7 +298,7 @@ class ArmControllerNode(Node):
         try:
             self.moveit2.move_to_pose(
                 position=[rx, ry, rz],
-                quat_xyzw=[0.0, 0.707, 0.0, 0.707],
+                quat_xyzw=GRASP_QUAT_XYZW,
                 cartesian=False
             )
             if self.moveit2.wait_until_executed() is False:

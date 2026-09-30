@@ -143,6 +143,12 @@ def launch_setup(context, *args, **kwargs):
         condition=UnlessCondition(use_fake_hardware),
     )
 
+    robotiq_gripper_controller_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["robotiq_gripper_controller", "-c", "/controller_manager"],
+    )
+
     # ── MoveIt2 (no OctoMap) ─────────────────────────────────────────────────
     move_group_node = Node(
         package="moveit_ros_move_group",
@@ -211,6 +217,7 @@ def launch_setup(context, *args, **kwargs):
         robot_traj_controller_spawner,
         robot_pos_controller_spawner,
         fault_controller_spawner,
+        robotiq_gripper_controller_spawner,
         move_group_node,
         static_tf,
         robot_keepalive,
