@@ -247,66 +247,97 @@ class MultiCameraCalibrate(Node):
         T_base_wrist = tf_to_matrix(tf_base_wrist)
         return T_base_wrist @ T_wrist_marker
 
+    def board_visible(self, name):
+        """True if the wrist camera AND camera `name` both see the board
+        RIGHT NOW. Non-blocking — used for live "ready to capture?" status
+        (e.g. the dashboard's calibration wizard), unlike capture_camera()
+        which waits up to CAPTURE_TIMEOUT_SEC."""
+        cam = self.cams.get(name)
+        if cam is None:
+            return False
+        return (
+            self.wrist.ready and cam.ready
+            and detect_pose(self.detector, self.board, self.wrist.gray,
+                             self.wrist.K, self.wrist.dist) is not None
+            and detect_pose(self.detector, self.board, cam.gray,
+                             cam.K, cam.dist) is not None
+        )
+
+    def capture_camera(self, name, timeout_sec=CAPTURE_TIMEOUT_SEC):
+        """Detect the board from the wrist camera and camera `name` right
+        now (or within timeout_sec), compute base_link -> camera, and write
+        its calibration YAML. Returns (ok, message, result_dict_or_None).
+
+        Non-interactive — this is the part run() below drives from a
+        terminal prompt, and what a GUI would call directly from a
+        "Capture" button instead, since neither needs the other's
+        interaction style."""
+        cam = self.cams.get(name)
+        if cam is None:
+            return False, f'{name} is not configured for calibration', None
+        calib_file = os.path.expanduser(self.get_parameter(f'{name}_calib_file').value)
+
+        found = self._spin_until(lambda: self.board_visible(name), timeout_sec)
+        if not found:
+            return False, (
+                f'{name}: wrist camera and {name} did not both see the '
+                f'board within {timeout_sec:.0f}s — skipping. Its existing '
+                f'calibration (if any) is left untouched, but if it was '
+                f'flagged for recalibration it stays blocked.'), None
+
+        try:
+            T_base_marker = self._anchor_from_wrist()
+        except Exception as e:
+            return False, (
+                f'{name}: lost the wrist camera\'s TF/detection right at '
+                f'capture time ({e}) — try again.'), None
+
+        rvec, tvec = detect_pose(self.detector, self.board, cam.gray, cam.K, cam.dist)
+        T_cam_marker = rt_to_matrix(rvec, tvec)
+        T_base_cam = T_base_marker @ np.linalg.inv(T_cam_marker)
+        t, q = matrix_to_translation_quat(T_base_cam)
+
+        write_calibration_yaml(
+            calib_file, self.base_frame, cam.frame_id, t, q,
+            note='Computed by multi_camera_calibrate.py, anchored via wrist camera.')
+        clear_recalibration_flag(name)
+
+        result = {
+            'camera': name,
+            'calib_file': calib_file,
+            'parent_frame': self.base_frame,
+            'child_frame': cam.frame_id,
+            'translation': [float(v) for v in t],
+            'rotation_quat': [float(v) for v in q],
+            'restart_cmd': (
+                f'ros2 run thesis_robot camera_tf_broadcaster --ros-args '
+                f'-r __node:={name}_tf_broadcaster '
+                f'-p calibration_file:={calib_file} '
+                f'-p parent_frame:={self.base_frame} -p child_frame:={cam.frame_id}'),
+        }
+        msg = (f'{name}: wrote {calib_file}  t=[{t[0]:.3f},{t[1]:.3f},{t[2]:.3f}]  '
+               f'({self.base_frame} -> {cam.frame_id})')
+        return True, msg, result
+
     def run(self):
         self._maybe_move_arm()
 
         any_calibrated = False
-        for name, cam in self.cams.items():
-            calib_file = os.path.expanduser(
-                self.get_parameter(f'{name}_calib_file').value)
-
+        for name in self.cams:
             input(
                 f'\nPosition the ChArUco board so BOTH the wrist camera and '
                 f'{name} can see it (jog the arm as needed), then press '
                 f'Enter — waiting up to {CAPTURE_TIMEOUT_SEC:.0f}s once you do...')
 
-            found = self._spin_until(
-                lambda c=cam: (
-                    self.wrist.ready and c.ready
-                    and detect_pose(self.detector, self.board, self.wrist.gray,
-                                     self.wrist.K, self.wrist.dist) is not None
-                    and detect_pose(self.detector, self.board, c.gray,
-                                     c.K, c.dist) is not None
-                ),
-                CAPTURE_TIMEOUT_SEC)
-
-            if not found:
-                self.get_logger().warn(
-                    f'{name}: wrist camera and {name} did not both see the '
-                    f'board within {CAPTURE_TIMEOUT_SEC:.0f}s — skipping. Its '
-                    f'existing calibration (if any) is left untouched, but if '
-                    f'it was flagged for recalibration it stays blocked.')
+            ok, msg, result = self.capture_camera(name)
+            if not ok:
+                self.get_logger().warn(msg)
                 continue
 
-            try:
-                T_base_marker = self._anchor_from_wrist()
-            except Exception as e:
-                self.get_logger().warn(
-                    f'{name}: lost the wrist camera\'s TF/detection right at '
-                    f'capture time ({e}) — skipping, try again.')
-                continue
-
-            rvec, tvec = detect_pose(self.detector, self.board, cam.gray, cam.K, cam.dist)
-            T_cam_marker = rt_to_matrix(rvec, tvec)
-            T_base_cam = T_base_marker @ np.linalg.inv(T_cam_marker)
-            t, q = matrix_to_translation_quat(T_base_cam)
-
-            write_calibration_yaml(
-                calib_file, self.base_frame, cam.frame_id, t, q,
-                note=f'Computed by multi_camera_calibrate.py, anchored via wrist camera.')
-            clear_recalibration_flag(name)
             any_calibrated = True
-
-            self.get_logger().info(
-                f'{name}: wrote {calib_file}  '
-                f't=[{t[0]:.3f},{t[1]:.3f},{t[2]:.3f}]  '
-                f'({self.base_frame} -> {cam.frame_id})')
-            self.get_logger().info(
-                f'  >>> Restart its TF broadcaster to pick this up, e.g.:\n'
-                f'      ros2 run thesis_robot camera_tf_broadcaster --ros-args '
-                f'-r __node:={name}_tf_broadcaster '
-                f'-p calibration_file:={calib_file} '
-                f'-p parent_frame:={self.base_frame} -p child_frame:={cam.frame_id}')
+            self.get_logger().info(msg)
+            self.get_logger().info(f'  >>> Restart its TF broadcaster to pick this up, e.g.:\n'
+                                    f'      {result["restart_cmd"]}')
 
         if any_calibrated:
             self.get_logger().info(

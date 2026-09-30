@@ -1,0 +1,68 @@
+// Same-origin relative paths throughout -- vite.config.ts proxies /api to
+// the backend in dev, and in a production build the backend can serve the
+// built frontend itself so this stays same-origin there too. Never
+// hardcode a backend host: that breaks the moment this is opened from a
+// machine other than the one it was written on (this dashboard is
+// explicitly meant to be reachable off the lab PC).
+import type {
+  ActionResult, CaptureResult, ProcessInfo, StatusPayload,
+} from './types'
+
+const BASE = '/api'
+
+async function request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(`${res.status} ${text}`)
+  }
+  return res.json()
+}
+
+export const api = {
+  status: () => request<StatusPayload>('/status'),
+  nodes: () => request<Record<string, ProcessInfo>>('/nodes'),
+  startNode: (id: string) => request<ActionResult>(`/nodes/${id}/start`, { method: 'POST' }),
+  stopNode: (id: string) => request<ActionResult>(`/nodes/${id}/stop`, { method: 'POST' }),
+  nodeLog: (id: string, lines = 200) => request<{ log: string }>(`/nodes/${id}/log?lines=${lines}`),
+  fullBringup: () => request<{ ok: boolean; steps: { proc_id: string; ok: boolean; message: string }[] }>(
+    '/bringup/full', { method: 'POST' }),
+  armGoLive: (confirm_phrase: string) =>
+    request<ActionResult>('/arm_controller/go_live', {
+      method: 'POST',
+      body: JSON.stringify({ confirm_phrase }),
+    }),
+  armGoDryRun: () => request<ActionResult>('/arm_controller/go_dry_run', { method: 'POST' }),
+
+  generateBoard: () => request<ActionResult & { download_url: string }>(
+    '/calibration/generate_board', { method: 'POST' }),
+  boardVisible: (camera: string) =>
+    request<{ wrist_ready: boolean; camera_ready: boolean; board_visible: boolean }>(
+      `/calibration/board_visible/${camera}`),
+  capture: (camera: string) =>
+    request<{ ok: boolean; message: string; result: CaptureResult | null }>(
+      `/calibration/capture/${camera}`, { method: 'POST' }),
+
+  boundaryClick: (camera: string, u: number, v: number) =>
+    request<{ ok: boolean; status: string; num_points: number }>('/workspace_boundary/click', {
+      method: 'POST',
+      body: JSON.stringify({ camera, u, v }),
+    }),
+  boundaryReset: () => request<ActionResult>('/workspace_boundary/reset', { method: 'POST' }),
+  boundarySave: () => request<{ ok: boolean; status: string }>('/workspace_boundary/save', { method: 'POST' }),
+  boundaryCurrent: () => request<Record<string, unknown>>('/workspace_boundary/current'),
+
+  sendCommand: (text: string) =>
+    request<ActionResult>('/command', { method: 'POST', body: JSON.stringify({ text }) }),
+}
+
+export function cameraStreamUrl(camera: string) {
+  return `${BASE}/camera/${camera}/stream`
+}
+
+export function boardPngUrl() {
+  return `${BASE}/calibration/board.png?t=${Date.now()}`
+}

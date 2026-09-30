@@ -45,3 +45,10 @@ src/yolo_ros/
 *.backup
 frames_*.gv
 frames_*.pdf
+
+# Dashboard
+dashboard/frontend/node_modules/
+dashboard/frontend/dist/
+dashboard/backend/__pycache__/
+dashboard/backend/app/**/__pycache__/
+calibration/charuco_board_dashboard.png

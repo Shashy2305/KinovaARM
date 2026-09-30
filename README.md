@@ -253,6 +253,7 @@ ros2 run thesis_robot audio_node
 |---|---|
 | `src/thesis_robot/` | **The thesis pipeline** (ROS 2 package): the nodes above |
 | [`robot_bringup/`](robot_bringup/README.md) | Backup of the `ros2_kortex` packages that actually run `robot.launch.py`/`cameras.launch.py` (MoveIt config, gripper wiring) — these were entirely untracked by git on the lab PC before 2026-09-29, meaning zero backup for either this project's or a labmate's bringup config. See its own README for what's there and how to restore it. |
+| [`dashboard/`](dashboard/README.md) | Web demo dashboard (React + FastAPI): live camera view, calibration wizard, workspace boundary, node start/stop, scene view, command console — see its own README for how to run it and the design notes worth knowing before changing it |
 | `drivers/` | `oak_camera_node.py`, `oak_launch.py`, `oak_launch_usb2.py` — OAK-D driver and launch files |
 | `calibration/multi_camera_calibrate.py` | Current calibration routine — wrist-camera-anchored, marker-based, run on demand for OAK-D/RealSense |
 | `calibration/multi_camera_view.py` | Live 3-camera viewer with a per-camera board-detected indicator — check this before running the routine above |
