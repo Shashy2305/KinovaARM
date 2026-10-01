@@ -51,8 +51,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ camera, u, v }),
     }),
-  boundaryReset: () => request<ActionResult>('/workspace_boundary/reset', { method: 'POST' }),
-  boundarySave: () => request<{ ok: boolean; status: string }>('/workspace_boundary/save', { method: 'POST' }),
+  boundaryReset: (camera: string) =>
+    request<ActionResult>(`/workspace_boundary/reset?camera=${camera}`, { method: 'POST' }),
+  boundarySave: (camera: string) =>
+    request<{ ok: boolean; status: string }>(`/workspace_boundary/save?camera=${camera}`, { method: 'POST' }),
   boundaryCurrent: () => request<Record<string, unknown>>('/workspace_boundary/current'),
 
   sendCommand: (text: string) =>

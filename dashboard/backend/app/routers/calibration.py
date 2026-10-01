@@ -56,17 +56,24 @@ def capture(camera_name: str):
     return {'ok': ok, 'message': msg, 'result': result}
 
 
+BOUNDARY_CAMERAS = ('oakd', 'realsense', 'wrist')
+
+
 class ClickRequest(BaseModel):
     camera: str
     u: int
     v: int
 
 
+def _boundary_tool_or_404(camera: str):
+    if camera not in BOUNDARY_CAMERAS:
+        raise HTTPException(404, f'{camera!r} is not a valid camera — choose from {BOUNDARY_CAMERAS}')
+    return ros_bridge.get_or_create_boundary_tool(camera)
+
+
 @router.post('/workspace_boundary/click')
 def boundary_click(req: ClickRequest):
-    if req.camera != 'oakd':
-        raise HTTPException(400, 'Workspace boundary is currently only wired to the oakd camera.')
-    tool = ros_bridge.get_or_create_boundary_tool()
+    tool = _boundary_tool_or_404(req.camera)
     tool.click(req.u, req.v)
     return {
         'ok': True,
@@ -76,8 +83,8 @@ def boundary_click(req: ClickRequest):
 
 
 @router.post('/workspace_boundary/reset')
-def boundary_reset():
-    tool = ros_bridge.get_or_create_boundary_tool()
+def boundary_reset(camera: str = 'oakd'):
+    tool = _boundary_tool_or_404(camera)
     tool.clicked_base_xyz.clear()
     tool.clicked_pixels.clear()
     tool.last_click_status = 'reset'
@@ -85,8 +92,8 @@ def boundary_reset():
 
 
 @router.post('/workspace_boundary/save')
-def boundary_save():
-    tool = ros_bridge.get_or_create_boundary_tool()
+def boundary_save(camera: str = 'oakd'):
+    tool = _boundary_tool_or_404(camera)
     ok = tool.compute_and_save()
     return {'ok': ok, 'status': tool.last_click_status}
 

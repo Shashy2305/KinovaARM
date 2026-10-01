@@ -244,7 +244,7 @@ def get_bridge():
 
 # ── lazily-created calibration-tool nodes, same rclpy context/executor ──
 _calibrator = None
-_boundary_tool = None
+_boundary_tools = {}  # camera_name -> DefineWorkspaceBoundary instance
 
 
 def get_or_create_calibrator():
@@ -257,11 +257,21 @@ def get_or_create_calibrator():
     return _calibrator
 
 
-def get_or_create_boundary_tool():
-    global _boundary_tool
+def get_or_create_boundary_tool(camera_name='oakd'):
+    """One DefineWorkspaceBoundary instance per camera, not just oakd --
+    OAK-D is both far from the table and the camera with the most
+    calibration uncertainty, so a pixel-click error there turns into a
+    much bigger real-world error than the same click on, say, the wrist
+    camera (which has zero calibration error, being driven by exact
+    kinematics, and can be jogged right up to each corner). Switching
+    camera_name starts a fresh point list for that camera's own tool --
+    points aren't shared across cameras, so pick one camera for a whole
+    boundary-definition session rather than mixing."""
+    global _boundary_tools
     executor = _ensure_executor()
-    if _boundary_tool is None:
+    if camera_name not in _boundary_tools:
         from define_workspace_boundary import DefineWorkspaceBoundary  # noqa
-        _boundary_tool = DefineWorkspaceBoundary('oakd')
-        executor.add_node(_boundary_tool)
-    return _boundary_tool
+        tool = DefineWorkspaceBoundary(camera_name)
+        executor.add_node(tool)
+        _boundary_tools[camera_name] = tool
+    return _boundary_tools[camera_name]

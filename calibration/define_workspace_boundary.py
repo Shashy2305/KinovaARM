@@ -57,11 +57,24 @@ CAMERAS = {
 
 OUT_FILE = os.path.expanduser('~/.ros/workspace_bounds.yaml')
 Z_PAD_M = 0.30  # default z range is table height +/- this, since we only click x/y
+# Kinova Gen3 7DOF max horizontal reach from base_link, plus a little
+# slack. A click producing a point beyond this is almost certainly a bad
+# click (wrong pixel, camera calibration error, background bleed into
+# frame) rather than a real corner of the reachable area -- this exact
+# failure mode shipped silently to workspace_bounds.yaml once already
+# (OAK-D, clicked from too far away) and wasn't caught until a much later
+# pipeline stage. Refuse to save rather than repeat that.
+MAX_PLAUSIBLE_REACH_M = 0.95
 
 
 class DefineWorkspaceBoundary(Node):
     def __init__(self, camera_name):
-        super().__init__('define_workspace_boundary')
+        # Node name includes camera_name so multiple instances (one per
+        # camera) can coexist in the same rclpy context without colliding --
+        # needed once something creates more than one of these at a time
+        # (the dashboard does, to let you pick which camera to click on).
+        super().__init__(f'define_workspace_boundary_{camera_name}')
+        self.camera_name = camera_name
         topics = CAMERAS[camera_name]
         self.bridge = CvBridge()
         self.bgr = None
@@ -140,6 +153,22 @@ class DefineWorkspaceBoundary(Node):
         if len(self.clicked_base_xyz) < 2:
             self.last_click_status = 'need at least 2 points — click more corners'
             return False
+
+        implausible = [
+            (i, x, y, (x ** 2 + y ** 2) ** 0.5)
+            for i, (x, y, _z) in enumerate(self.clicked_base_xyz, start=1)
+            if (x ** 2 + y ** 2) ** 0.5 > MAX_PLAUSIBLE_REACH_M
+        ]
+        if implausible:
+            worst = max(implausible, key=lambda t: t[3])
+            self.last_click_status = (
+                f'point {worst[0]} is {worst[3]:.2f}m from base_link — beyond the '
+                f'arm\'s plausible reach ({MAX_PLAUSIBLE_REACH_M}m). Not saving. '
+                f'Likely a misclick, or this camera is too far/uncertain for an '
+                f'accurate click here — try a closer camera (wrist works best: '
+                f'jog the arm right up to each corner) or reset and re-click.')
+            return False
+
         xs = [p[0] for p in self.clicked_base_xyz]
         ys = [p[1] for p in self.clicked_base_xyz]
         zs = [p[2] for p in self.clicked_base_xyz]

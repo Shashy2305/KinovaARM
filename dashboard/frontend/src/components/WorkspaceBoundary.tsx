@@ -3,11 +3,28 @@ import { api, cameraStreamUrl } from '../lib/api'
 
 interface Marker { x: number; y: number }
 
+const CAMERAS = [
+  { id: 'wrist', label: 'Wrist', note: 'Best accuracy — jog the arm up close to each corner before clicking.' },
+  { id: 'oakd', label: 'OAK-D', note: 'Usually far from the table — clicks here are the least precise.' },
+  { id: 'realsense', label: 'RealSense', note: 'Fixed-mount, moderate distance.' },
+] as const
+
+type CameraId = (typeof CAMERAS)[number]['id']
+
 export function WorkspaceBoundary() {
   const imgRef = useRef<HTMLImageElement>(null)
+  const [camera, setCamera] = useState<CameraId>('wrist')
   const [markers, setMarkers] = useState<Marker[]>([])
   const [status, setStatus] = useState<string | null>(null)
   const [numPoints, setNumPoints] = useState(0)
+  const [saving, setSaving] = useState(false)
+
+  function switchCamera(next: CameraId) {
+    setCamera(next)
+    setMarkers([])
+    setNumPoints(0)
+    setStatus(`switched to ${next} — points from other cameras don't carry over, this is a fresh session`)
+  }
 
   // Click coordinates must be translated from the DISPLAYED (CSS-scaled)
   // image size to the camera's NATIVE pixel size before going to the
@@ -32,23 +49,31 @@ export function WorkspaceBoundary() {
     const v = Math.round(yInRendered / scale)
 
     setMarkers((m) => [...m, { x: e.clientX - rect.left, y: e.clientY - rect.top }])
-    api.boundaryClick('oakd', u, v).then((res) => {
+    api.boundaryClick(camera, u, v).then((res) => {
       setStatus(res.status)
       setNumPoints(res.num_points)
     }).catch((err) => setStatus(String(err)))
   }
 
   async function reset() {
-    await api.boundaryReset()
+    await api.boundaryReset(camera)
     setMarkers([])
     setNumPoints(0)
     setStatus('reset')
   }
 
   async function save() {
-    const res = await api.boundarySave()
-    setStatus(res.status)
+    setSaving(true)
+    try {
+      const res = await api.boundarySave(camera)
+      setStatus(res.status)
+    } finally {
+      setSaving(false)
+    }
   }
+
+  const activeCam = CAMERAS.find((c) => c.id === camera)!
+  const rejected = status?.toLowerCase().includes('not saving')
 
   return (
     <div className="panel">
@@ -56,21 +81,34 @@ export function WorkspaceBoundary() {
         <h2 className="font-semibold text-sm tracking-tight">Workspace Boundary</h2>
         <div className="flex gap-2">
           <button className="btn" onClick={reset}>Reset</button>
-          <button className="btn btn-primary" disabled={numPoints < 2} onClick={save}>
-            Save ({numPoints} pts)
+          <button className="btn btn-primary" disabled={numPoints < 2 || saving} onClick={save}>
+            {saving ? 'Saving…' : `Save (${numPoints} pts)`}
           </button>
         </div>
       </div>
-      <div className="p-4">
-        <p className="text-xs text-(--color-text-dim) mb-3">
-          Click the corners of the area the arm can actually reach — not just the visible table
-          edges. At least 2 points (opposite corners).
-        </p>
-        <div className="relative rounded-lg overflow-hidden border border-(--color-border) cursor-crosshair select-none">
+      <div className="p-5">
+        <div className="flex gap-2 mb-3">
+          {CAMERAS.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => switchCamera(c.id)}
+              className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-all ${
+                camera === c.id
+                  ? 'bg-gradient-to-r from-(--color-brand-from) to-(--color-brand-to) text-white'
+                  : 'bg-white/[0.04] text-(--color-text-dim) hover:text-(--color-text)'
+              }`}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-(--color-text-dim) mb-4">{activeCam.note}</p>
+
+        <div className="relative rounded-xl overflow-hidden border border-(--color-border) cursor-crosshair select-none">
           <img
             ref={imgRef}
-            src={cameraStreamUrl('oakd')}
-            alt="OAK-D"
+            src={cameraStreamUrl(camera)}
+            alt={activeCam.label}
             className="w-full aspect-video object-cover block"
             onClick={handleClick}
           />
@@ -87,7 +125,11 @@ export function WorkspaceBoundary() {
             </div>
           ))}
         </div>
-        {status && <div className="text-xs font-mono mt-2 text-(--color-text-dim)">{status}</div>}
+        {status && (
+          <div className={`text-xs font-mono mt-2 ${rejected ? 'text-(--color-red)' : 'text-(--color-text-dim)'}`}>
+            {status}
+          </div>
+        )}
       </div>
     </div>
   )
