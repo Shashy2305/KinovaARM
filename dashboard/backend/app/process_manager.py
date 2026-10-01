@@ -31,29 +31,43 @@ class ProcessManager:
         self._procs = {pid: ManagedProcess(pid) for pid in config.PROCESSES}
 
     # ── inspection ───────────────────────────────────────────────────
-    def _matching_pids(self, signature):
-        """PIDs of any process (ours or external) whose command line
-        contains `signature`."""
-        matches = []
+    def _snapshot_cmdlines(self):
+        """One system-wide process scan, {pid: cmdline}. Scanning once and
+        matching signatures against this in memory, instead of re-running
+        psutil.process_iter() per signature, is the difference between one
+        /proc walk and twelve -- with ~600 processes on this shared lab
+        machine, twelve walks every 0.5s WS tick was ~250ms of synchronous
+        work landing straight on the asyncio event loop thread (nothing
+        here awaited it), which is what was stalling/hanging the backend:
+        see routers/status.py's ws_status for the other half of the fix."""
+        snapshot = {}
         for p in psutil.process_iter(['pid', 'cmdline']):
             try:
-                cmdline = ' '.join(p.info['cmdline'] or [])
+                snapshot[p.info['pid']] = ' '.join(p.info['cmdline'] or [])
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-            if signature and signature in cmdline:
-                matches.append(p.info['pid'])
-        return matches
+        return snapshot
 
-    def status(self, proc_id):
+    def _matching_pids(self, signature, cmdlines):
+        """PIDs (from a pre-fetched {pid: cmdline} snapshot) whose command
+        line contains `signature`."""
+        if not signature:
+            return []
+        return [pid for pid, cmdline in cmdlines.items() if signature in cmdline]
+
+    def status(self, proc_id, cmdlines=None):
         """Returns one of: 'stopped', 'starting', 'running', 'running_external',
         'conflict' (this AND something matching a conflict_signature are
-        both alive)."""
+        both alive). Pass a pre-fetched cmdlines snapshot (_snapshot_cmdlines)
+        when checking several processes at once -- see all_status()."""
+        if cmdlines is None:
+            cmdlines = self._snapshot_cmdlines()
         cfg = config.PROCESSES[proc_id]
         mp = self._procs[proc_id]
 
         owned_alive = mp.popen is not None and mp.popen.poll() is None
         external_pids = [
-            pid for pid in self._matching_pids(cfg['signature'])
+            pid for pid in self._matching_pids(cfg['signature'], cmdlines)
             if not (owned_alive and pid == mp.popen.pid)
         ]
 
@@ -61,7 +75,7 @@ class ProcessManager:
             if other_sig == cfg['signature']:
                 continue
             conflict_pids = [
-                pid for pid in self._matching_pids(other_sig)
+                pid for pid in self._matching_pids(other_sig, cmdlines)
                 if pid not in external_pids
             ]
             if conflict_pids and (owned_alive or external_pids):
@@ -81,8 +95,9 @@ class ProcessManager:
         was a real bug during development: the WS feed used to send only
         {proc_id: status_string}, and every component reading it via the WS
         silently rendered nothing, needing a full page inspection to find)."""
+        cmdlines = self._snapshot_cmdlines()
         return {
-            pid: {**{k: v for k, v in cfg.items() if k != 'cmd'}, 'status': self.status(pid)}
+            pid: {**{k: v for k, v in cfg.items() if k != 'cmd'}, 'status': self.status(pid, cmdlines)}
             for pid, cfg in config.PROCESSES.items()
         }
 
@@ -125,7 +140,7 @@ class ProcessManager:
                 pass
             mp.popen = None
 
-        for pid in self._matching_pids(cfg['signature']):
+        for pid in self._matching_pids(cfg['signature'], self._snapshot_cmdlines()):
             try:
                 os.kill(pid, signal.SIGTERM)
                 stopped_any = True
@@ -175,8 +190,9 @@ class ProcessManager:
 
         # Kill the stale external OAK-D copy (NOT our own, which isn't
         # started yet at this point) and the old RealSense TF publisher.
+        cmdlines = self._snapshot_cmdlines()
         killed_oak = 0
-        for pid in self._matching_pids('oak_camera_node.py'):
+        for pid in self._matching_pids('oak_camera_node.py', cmdlines):
             try:
                 os.kill(pid, signal.SIGTERM)
                 killed_oak += 1
@@ -187,7 +203,7 @@ class ProcessManager:
                        else 'none found (already clean).'})
 
         killed_tf = 0
-        for pid in self._matching_pids('calibration_tf_publisher'):
+        for pid in self._matching_pids('calibration_tf_publisher', cmdlines):
             try:
                 os.kill(pid, signal.SIGTERM)
                 killed_tf += 1

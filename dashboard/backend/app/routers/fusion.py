@@ -17,7 +17,12 @@ async def ws_fusion(websocket: WebSocket):
     bridge = ros_bridge.get_bridge()
     try:
         while True:
-            points = bridge.get_fused_points()
+            # get_fused_points() does up to one TF lookup_transform (0.2s
+            # timeout) per camera -- synchronously, it can block for up to
+            # ~0.6s. Same event-loop-stall risk as status.py's all_status():
+            # off-thread it so a slow TF lookup doesn't freeze every other
+            # connection this backend is serving.
+            points = await asyncio.to_thread(bridge.get_fused_points)
             await websocket.send_bytes(points.tobytes())
             await asyncio.sleep(0.25)
     except WebSocketDisconnect:

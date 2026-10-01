@@ -221,7 +221,11 @@ def _ensure_executor():
     global _executor, _executor_thread
     init_ros()
     if _executor is None:
-        _executor = rclpy.executors.MultiThreadedExecutor()
+        # Defaults to os.cpu_count() worker threads (32 on this machine) --
+        # massive overkill for the handful of subscriptions this backend
+        # has (bridge + up to 3 boundary tools + 1 calibrator). Capping it
+        # keeps the process's baseline thread count sane.
+        _executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
         _executor_thread = threading.Thread(target=_executor.spin, daemon=True)
         _executor_thread.start()
     return _executor
