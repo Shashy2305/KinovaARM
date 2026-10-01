@@ -19,12 +19,24 @@ import time
 import cv2
 import numpy as np
 import rclpy
+import tf2_ros
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from scipy.spatial.transform import Rotation
+from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 
 from . import config
+
+# camera name -> (point cloud topic, has_rgb, fixed display color if no rgb)
+POINTCLOUD_TOPICS = {
+    'oakd':      {'topic': '/global_camera/stereo/points', 'rgb': True},
+    'realsense': {'topic': '/global_camera/global_camera/depth/color/points', 'rgb': True},
+    'wrist':     {'topic': '/camera/depth/color/points', 'rgb': False, 'tint': (0.55, 0.75, 1.0)},
+}
+MAX_POINTS_PER_CAMERA = 3000
+BASE_FRAME = 'base_link'
 
 REPO_ROOT = os.path.expanduser('~/Shashproject')
 sys.path.insert(0, os.path.join(REPO_ROOT, 'calibration'))
@@ -73,6 +85,23 @@ class RosBridge(Node):
 
         self.voice_pub = self.create_publisher(String, '/voice_command', 10)
 
+        # Point clouds for the 3D fusion view. Only the latest raw message
+        # per camera is kept here (cheap) -- decoding/transforming/
+        # downsampling happens lazily in get_fused_points(), rate-limited by
+        # whoever calls it (the fusion WS loop), not by camera framerate.
+        self._pc_lock = threading.Lock()
+        self._latest_pc = {name: None for name in POINTCLOUD_TOPICS}
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        for name, cfg in POINTCLOUD_TOPICS.items():
+            self.create_subscription(
+                PointCloud2, cfg['topic'],
+                lambda msg, n=name: self._on_pointcloud(n, msg), 1)
+
+    def _on_pointcloud(self, name, msg):
+        with self._pc_lock:
+            self._latest_pc[name] = msg
+
     def _mk_status_cb(self, key):
         def cb(msg):
             with self._lock:
@@ -114,6 +143,64 @@ class RosBridge(Node):
 
     def publish_voice_command(self, text):
         self.voice_pub.publish(String(data=text))
+
+    def get_fused_points(self):
+        """Decode, TF-transform into base_link, and downsample each
+        camera's latest point cloud, returning one interleaved
+        [x,y,z,r,g,b, x,y,z,r,g,b, ...] float32 array (colors in 0-1) --
+        this IS the actual sensor fusion (positions registered into one
+        common frame via the same calibration the rest of the pipeline
+        uses), not just three images shown side by side like the
+        MultiCameraView tiles are."""
+        with self._pc_lock:
+            snapshot = dict(self._latest_pc)
+
+        chunks = []
+        for name, cfg in POINTCLOUD_TOPICS.items():
+            msg = snapshot.get(name)
+            if msg is None:
+                continue
+            try:
+                field_names = ['x', 'y', 'z', 'rgb'] if cfg['rgb'] else ['x', 'y', 'z']
+                pts = point_cloud2.read_points(msg, field_names=field_names, skip_nans=True)
+                if len(pts) == 0:
+                    continue
+                xyz = np.column_stack([pts['x'], pts['y'], pts['z']]).astype(np.float32)
+
+                if len(xyz) > MAX_POINTS_PER_CAMERA:
+                    idx = np.random.choice(len(xyz), MAX_POINTS_PER_CAMERA, replace=False)
+                    xyz = xyz[idx]
+                    pts = pts[idx]
+
+                try:
+                    tf = self.tf_buffer.lookup_transform(
+                        BASE_FRAME, msg.header.frame_id, rclpy.time.Time(),
+                        timeout=rclpy.duration.Duration(seconds=0.2))
+                except Exception:
+                    continue  # no TF yet for this camera -- skip this round, not fatal
+                q = tf.transform.rotation
+                t = tf.transform.translation
+                R = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+                xyz_base = (R @ xyz.T).T + np.array([t.x, t.y, t.z], dtype=np.float32)
+
+                if cfg['rgb']:
+                    rgb_u32 = pts['rgb'].view(np.uint32)
+                    r = ((rgb_u32 >> 16) & 0xFF).astype(np.float32) / 255.0
+                    g = ((rgb_u32 >> 8) & 0xFF).astype(np.float32) / 255.0
+                    b = (rgb_u32 & 0xFF).astype(np.float32) / 255.0
+                    rgb = np.column_stack([r, g, b])
+                else:
+                    rgb = np.tile(np.array(cfg['tint'], dtype=np.float32), (len(xyz_base), 1))
+
+                interleaved = np.hstack([xyz_base, rgb]).astype(np.float32)
+                chunks.append(interleaved)
+            except Exception as e:
+                self.get_logger().warn(f'get_fused_points: {name} failed: {e}', throttle_duration_sec=5.0)
+                continue
+
+        if not chunks:
+            return np.zeros((0, 6), dtype=np.float32)
+        return np.vstack(chunks)
 
 
 _bridge = None

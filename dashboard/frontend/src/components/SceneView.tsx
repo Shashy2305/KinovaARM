@@ -52,7 +52,7 @@ export function SceneView({ scene }: { scene: RosStatus['scene_snapshot'] }) {
               <rect
                 x={Math.min(x0, x1)} y={Math.min(y0, y1)}
                 width={Math.abs(x1 - x0)} height={Math.abs(y1 - y0)}
-                fill="rgba(34,211,238,0.06)" stroke="var(--color-cyan)" strokeDasharray="4 3"
+                fill="rgba(56,189,248,0.06)" stroke="var(--color-cyan)" strokeDasharray="4 3"
               />
             )
           })()}

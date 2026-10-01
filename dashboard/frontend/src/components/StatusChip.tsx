@@ -1,9 +1,9 @@
 type Tone = 'ok' | 'warn' | 'bad' | 'neutral'
 
 const TONE_STYLES: Record<Tone, string> = {
-  ok: 'text-(--color-green) border-(--color-green)/40 bg-(--color-green)/10',
-  warn: 'text-(--color-amber) border-(--color-amber)/40 bg-(--color-amber)/10',
-  bad: 'text-(--color-red) border-(--color-red)/40 bg-(--color-red)/10',
+  ok: 'text-(--color-green) border-(--color-green)/35 bg-(--color-green)/10',
+  warn: 'text-(--color-amber) border-(--color-amber)/35 bg-(--color-amber)/10',
+  bad: 'text-(--color-red) border-(--color-red)/35 bg-(--color-red)/10',
   neutral: 'text-(--color-text-dim) border-(--color-border-bright) bg-white/[0.02]',
 }
 
