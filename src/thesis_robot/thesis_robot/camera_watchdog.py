@@ -32,6 +32,7 @@ FLAG_DIR = os.path.expanduser('~/.ros')
 CAMERAS = {
     'oakd': '/global_camera/color/image_raw',
     'realsense': '/global_camera/global_camera/color/image_raw',
+    'realsense2': '/global_camera_2/global_camera_2/color/image_raw',
 }
 
 

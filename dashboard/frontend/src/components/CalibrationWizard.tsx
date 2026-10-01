@@ -5,6 +5,7 @@ import type { CaptureResult } from '../lib/types'
 const TARGETS = [
   { id: 'oakd', label: 'OAK-D' },
   { id: 'realsense', label: 'RealSense' },
+  { id: 'realsense2', label: 'RealSense 2' },
 ] as const
 
 function CameraCapturePanel({ camera, label }: { camera: string; label: string }) {

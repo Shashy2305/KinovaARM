@@ -31,9 +31,10 @@ from . import config
 
 # camera name -> (point cloud topic, has_rgb, fixed display color if no rgb)
 POINTCLOUD_TOPICS = {
-    'oakd':      {'topic': '/global_camera/stereo/points', 'rgb': True},
-    'realsense': {'topic': '/global_camera/global_camera/depth/color/points', 'rgb': True},
-    'wrist':     {'topic': '/camera/depth/color/points', 'rgb': False, 'tint': (0.55, 0.75, 1.0)},
+    'oakd':       {'topic': '/global_camera/stereo/points', 'rgb': True},
+    'realsense':  {'topic': '/global_camera/global_camera/depth/color/points', 'rgb': True},
+    'realsense2': {'topic': '/global_camera_2/global_camera_2/depth/color/points', 'rgb': True},
+    'wrist':      {'topic': '/camera/depth/color/points', 'rgb': False, 'tint': (0.55, 0.75, 1.0)},
 }
 MAX_POINTS_PER_CAMERA = 3000
 BASE_FRAME = 'base_link'

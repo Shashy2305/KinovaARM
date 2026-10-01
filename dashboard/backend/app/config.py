@@ -24,9 +24,10 @@ ROS_ENV_CMD = (
 )
 
 CAMERA_TOPICS = {
-    'oakd':      {'image': '/global_camera/color/image_raw'},
-    'realsense': {'image': '/global_camera/global_camera/color/image_raw'},
-    'wrist':     {'image': '/camera/color/image_raw'},
+    'oakd':       {'image': '/global_camera/color/image_raw'},
+    'realsense':  {'image': '/global_camera/global_camera/color/image_raw'},
+    'realsense2': {'image': '/global_camera_2/global_camera_2/color/image_raw'},
+    'wrist':      {'image': '/camera/color/image_raw'},
 }
 
 # category groups the Node Control grid in the UI; hardware_affecting drives
@@ -91,6 +92,22 @@ PROCESSES = {
         ),
         'signature': 'realsense_tf_broadcaster',
     },
+    'realsense2_tf_broadcaster': {
+        'label': 'RealSense #2 TF broadcaster',
+        'category': 'cameras',
+        'hardware_affecting': False,
+        # NOT in FULL_BRINGUP_ORDER: starting this before
+        # ~/.ros/realsense2_calibration.yaml exists will make the node
+        # refuse to start (see static_tf_broadcaster.py's fallback fix) --
+        # calibrate this camera via the Calibration tab first.
+        'cmd': (
+            f'{ROS_ENV_CMD} ros2 run thesis_robot camera_tf_broadcaster --ros-args '
+            '-r __node:=realsense2_tf_broadcaster '
+            '-p calibration_file:=~/.ros/realsense2_calibration.yaml '
+            '-p parent_frame:=base_link -p child_frame:=global_camera_2_color_optical_frame'
+        ),
+        'signature': 'realsense2_tf_broadcaster',
+    },
     'camera_watchdog': {
         'label': 'Camera watchdog',
         'category': 'cameras',
@@ -111,6 +128,16 @@ PROCESSES = {
         'hardware_affecting': False,
         'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot realsense_detection',
         'signature': 'thesis_robot/lib/thesis_robot/realsense_detection',
+    },
+    'realsense2_detection': {
+        'label': 'RealSense #2 detection',
+        'category': 'perception',
+        'hardware_affecting': False,
+        # NOT in FULL_BRINGUP_ORDER yet -- see realsense2_tf_broadcaster.
+        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot realsense2_detection',
+        # Careful: must not also match 'realsense_detection' as a substring
+        # (process_manager.py's duplicate-guard greps ps aux for this).
+        'signature': 'thesis_robot/lib/thesis_robot/realsense2_detection',
     },
     'wrist_detection': {
         'label': 'Wrist camera detection',

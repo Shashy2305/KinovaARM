@@ -4,6 +4,7 @@ import { cameraStreamUrl } from '../lib/api'
 const CAMERAS = [
   { id: 'oakd', label: 'OAK-D' },
   { id: 'realsense', label: 'RealSense' },
+  { id: 'realsense2', label: 'RealSense 2' },
   { id: 'wrist', label: 'Wrist' },
 ] as const
 
@@ -18,7 +19,7 @@ export function MultiCameraView() {
           ↻ Reload streams
         </button>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-px bg-(--color-border)">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-px bg-(--color-border)">
         {CAMERAS.map((cam) => (
           <div key={cam.id} className="bg-(--color-panel) relative aspect-video">
             <img

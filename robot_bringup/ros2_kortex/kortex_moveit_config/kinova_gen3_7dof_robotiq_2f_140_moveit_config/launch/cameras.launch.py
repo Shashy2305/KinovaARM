@@ -84,6 +84,9 @@ def launch_setup(context, *args, **kwargs):
     robot_ip            = LaunchConfiguration("robot_ip")
     launch_wrist_camera = LaunchConfiguration("launch_wrist_camera")
     launch_oak_camera   = LaunchConfiguration("launch_oak_camera")
+    launch_realsense_2  = LaunchConfiguration("launch_realsense_2")
+    realsense_serial    = LaunchConfiguration("realsense_serial")
+    realsense2_serial   = LaunchConfiguration("realsense2_serial")
 
     # ── Global RealSense D435I calibration TFs ───────────────────────────────
     # eye-to-base: base_link → global_camera_color_optical_frame
@@ -147,12 +150,55 @@ def launch_setup(context, *args, **kwargs):
         respawn_delay=3.0,
         parameters=[{
             "camera_name":                    "global_camera",
+            # Empty string = "any device" (unchanged single-camera behaviour).
+            # Once a second D435i is plugged in, BOTH this and realsense2_node
+            # need a serial_no filter, or realsense2_camera_node's device
+            # pick between them is undefined -- see realsense_serial /
+            # realsense2_serial launch args.
+            "serial_no":                      realsense_serial.perform(context),
             "align_depth.enable":             True,
             "pointcloud.enable":              True,
             "pointcloud.stream_filter":       2,
             "pointcloud.stream_index_filter": 0,
             "enable_sync":                    False,
             # USB 2.1 bandwidth limit — switch to 640x480x15 on USB 3.0
+            "depth_module.profile":           "424x240x15",
+            "rgb_camera.profile":             "424x240x15",
+            "enable_color":                   True,
+            "enable_depth":                   True,
+            "publish_tf":                     False,
+            "enable_accel":                   False,
+            "enable_gyro":                    False,
+        }],
+    )
+
+    # ── Second RealSense D435I (optional) ────────────────────────────────────
+    # Off by default (launch_realsense_2:=false) -- zero change to existing
+    # behaviour until explicitly enabled. Unlike the first RealSense, this
+    # one gets NO hardcoded calibration_tf here: its base_link extrinsic is
+    # unknown until calibration/multi_camera_calibrate.py is run for it (same
+    # wrist-anchored procedure used for OAK-D/RealSense #1), which writes
+    # ~/.ros/realsense2_calibration.yaml for the dashboard's generic
+    # camera_tf_broadcaster (realsense2_tf_broadcaster) to load. Guessing
+    # numbers here would be worse than not publishing a transform at all --
+    # this feeds directly into grasp-pose fusion.
+    realsense2_node = Node(
+        package="realsense2_camera",
+        executable="realsense2_camera_node",
+        name="global_camera_2",
+        namespace="global_camera_2",
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+        condition=IfCondition(launch_realsense_2),
+        parameters=[{
+            "camera_name":                    "global_camera_2",
+            "serial_no":                      realsense2_serial.perform(context),
+            "align_depth.enable":             True,
+            "pointcloud.enable":              True,
+            "pointcloud.stream_filter":       2,
+            "pointcloud.stream_index_filter": 0,
+            "enable_sync":                    False,
             "depth_module.profile":           "424x240x15",
             "rgb_camera.profile":             "424x240x15",
             "enable_color":                   True,
@@ -238,6 +284,7 @@ def launch_setup(context, *args, **kwargs):
         depth_optical_tf,
         usb_check,
         realsense_node,
+        realsense2_node,
         usb_cleanup,
         wrist_camera_delayed,
         wrist_pcl,
@@ -259,6 +306,24 @@ def generate_launch_description():
             "launch_oak_camera",
             default_value="true",
             description="Launch OAK-D via oak_camera_node.py (depthai v3 standalone driver)."),
+        DeclareLaunchArgument(
+            "launch_realsense_2",
+            default_value="false",
+            description="Launch a second RealSense D435i (global_camera_2 namespace)."),
+        DeclareLaunchArgument(
+            "realsense_serial",
+            default_value="",
+            description="Serial number to pin the first RealSense to. Empty = any device "
+                         "(fine with exactly one D435i connected; REQUIRED once a second "
+                         "is plugged in, or device assignment is undefined). "
+                         "Get it via: python3 -c \"import pyrealsense2 as rs; "
+                         "[print(d.get_info(rs.camera_info.serial_number)) for d in "
+                         "rs.context().query_devices()]\""),
+        DeclareLaunchArgument(
+            "realsense2_serial",
+            default_value="",
+            description="Serial number to pin the second RealSense to. Required when "
+                         "launch_realsense_2:=true and more than one D435i is connected."),
     ]
 
     return LaunchDescription(

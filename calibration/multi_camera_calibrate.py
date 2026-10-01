@@ -49,6 +49,11 @@ Usage:
   # Optional: skip a camera that isn't connected right now.
   python3 calibration/multi_camera_calibrate.py --ros-args -p calibrate_oakd:=false
 
+  # Optional: calibrate_realsense2 is on by default (harmless no-op if that
+  # camera isn't connected/launched) -- turn it off explicitly if you want
+  # to skip it:
+  python3 calibration/multi_camera_calibrate.py --ros-args -p calibrate_realsense2:=false
+
   # Optional: once you've found a joint configuration that reliably shows
   # the board to the wrist camera, you can let the script drive to it:
   python3 calibration/multi_camera_calibrate.py --ros-args \
@@ -161,14 +166,24 @@ class MultiCameraCalibrate(Node):
         self.declare_parameter('calibration_view_joints', [0.0])
         self.declare_parameter('calibrate_oakd', True)
         self.declare_parameter('calibrate_realsense', True)
+        # Defaults True like calibrate_oakd/calibrate_realsense -- subscribing
+        # to a topic nothing publishes yet (camera not plugged in, or
+        # cameras.launch.py's launch_realsense_2:=false) is harmless, and
+        # this way the dashboard's calibrator (which constructs this node
+        # with no param overrides) picks realsense2 up automatically the
+        # moment the camera and its driver are actually running.
+        self.declare_parameter('calibrate_realsense2', True)
         self.declare_parameter('wrist_image_topic', '/camera/color/image_raw')
         self.declare_parameter('wrist_info_topic', '/camera/color/camera_info')
         self.declare_parameter('oakd_image_topic', '/global_camera/color/image_raw')
         self.declare_parameter('oakd_info_topic', '/global_camera/color/camera_info')
         self.declare_parameter('realsense_image_topic', '/global_camera/global_camera/color/image_raw')
         self.declare_parameter('realsense_info_topic', '/global_camera/global_camera/color/camera_info')
+        self.declare_parameter('realsense2_image_topic', '/global_camera_2/global_camera_2/color/image_raw')
+        self.declare_parameter('realsense2_info_topic', '/global_camera_2/global_camera_2/color/camera_info')
         self.declare_parameter('oakd_calib_file', '~/.ros/oakd_calibration.yaml')
         self.declare_parameter('realsense_calib_file', '~/.ros/realsense_calibration.yaml')
+        self.declare_parameter('realsense2_calib_file', '~/.ros/realsense2_calibration.yaml')
 
         self.base_frame = self.get_parameter('base_frame').value
         self.board, self.detector = make_board_and_detector()
@@ -191,6 +206,11 @@ class MultiCameraCalibrate(Node):
                 self, 'realsense',
                 self.get_parameter('realsense_image_topic').value,
                 self.get_parameter('realsense_info_topic').value)
+        if self.get_parameter('calibrate_realsense2').value:
+            self.cams['realsense2'] = CameraCapture(
+                self, 'realsense2',
+                self.get_parameter('realsense2_image_topic').value,
+                self.get_parameter('realsense2_info_topic').value)
 
     def _spin_until(self, predicate, timeout_sec):
         # Spinning happens continuously on a background thread (started in

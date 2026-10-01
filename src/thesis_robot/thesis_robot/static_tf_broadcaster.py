@@ -72,11 +72,28 @@ class StaticTFBroadcaster(Node):
         self.broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         if not os.path.exists(calib_path):
-            self.get_logger().warn(
-                f'No calibration found at {calib_path} — using last known '
-                f'OAK-D calibration. Run handeye_calibration.py to generate one.'
-            )
-            t, q = FALLBACK_T, FALLBACK_Q
+            # FALLBACK_T/Q is specifically OAK-D's last known calibration --
+            # safe to fall back to ONLY when this instance is actually
+            # broadcasting for OAK-D's frame. For any other camera (e.g. a
+            # newly added one with no calibration run yet), silently
+            # broadcasting OAK-D's transform under a different child_frame
+            # would be a wrong transform presented as a real one, straight
+            # into grasp-pose fusion -- refuse to start instead, same as the
+            # invalid-file case below.
+            if child == 'global_camera_link':
+                self.get_logger().warn(
+                    f'No calibration found at {calib_path} — using last known '
+                    f'OAK-D calibration. Run multi_camera_calibrate.py to generate one.'
+                )
+                t, q = FALLBACK_T, FALLBACK_Q
+            else:
+                self.get_logger().fatal(
+                    f'No calibration found at {calib_path} for {parent} -> {child} — '
+                    f'refusing to start (there is no generic fallback for a camera '
+                    f'that has never been calibrated). Run '
+                    f'calibration/multi_camera_calibrate.py for this camera first.'
+                )
+                raise SystemExit(1)
         else:
             try:
                 t, q = load_calibration(calib_path, parent, child)

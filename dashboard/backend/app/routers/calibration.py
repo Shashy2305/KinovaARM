@@ -33,12 +33,15 @@ def board_png():
     return FileResponse(BOARD_PNG, media_type='image/png')
 
 
+CALIBRATION_TARGETS = ('oakd', 'realsense', 'realsense2')
+
+
 @router.get('/calibration/board_visible/{camera_name}')
 def board_visible(camera_name: str):
     """Live status for the wizard: does the wrist camera AND camera_name
     both see the board right now? Non-blocking, safe to poll."""
-    if camera_name not in ('oakd', 'realsense'):
-        raise HTTPException(404, f'{camera_name!r} is not a calibration target (only oakd/realsense)')
+    if camera_name not in CALIBRATION_TARGETS:
+        raise HTTPException(404, f'{camera_name!r} is not a calibration target (only {CALIBRATION_TARGETS})')
     calibrator = ros_bridge.get_or_create_calibrator()
     return {
         'wrist_ready': calibrator.wrist.ready,
@@ -49,8 +52,8 @@ def board_visible(camera_name: str):
 
 @router.post('/calibration/capture/{camera_name}')
 def capture(camera_name: str):
-    if camera_name not in ('oakd', 'realsense'):
-        raise HTTPException(404, f'{camera_name!r} is not a calibration target (only oakd/realsense)')
+    if camera_name not in CALIBRATION_TARGETS:
+        raise HTTPException(404, f'{camera_name!r} is not a calibration target (only {CALIBRATION_TARGETS})')
     calibrator = ros_bridge.get_or_create_calibrator()
     ok, msg, result = calibrator.capture_camera(camera_name, timeout_sec=3.0)
     return {'ok': ok, 'message': msg, 'result': result}

@@ -48,6 +48,11 @@ CAMERAS = {
         'depth': '/global_camera/global_camera/aligned_depth_to_color/image_raw',
         'info': '/global_camera/global_camera/color/camera_info',
     },
+    'realsense2': {
+        'image': '/global_camera_2/global_camera_2/color/image_raw',
+        'depth': '/global_camera_2/global_camera_2/aligned_depth_to_color/image_raw',
+        'info': '/global_camera_2/global_camera_2/color/camera_info',
+    },
     'wrist': {
         'image': '/camera/color/image_raw',
         'depth': '/camera/depth/image_raw',
