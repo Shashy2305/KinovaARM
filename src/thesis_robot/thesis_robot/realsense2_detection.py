@@ -32,6 +32,10 @@ class RealSense2Detection(Node):
         self.fx = self.fy = self.cx = self.cy = None
         self.depth   = None
         self._lock   = threading.Lock()
+        # Debug preview window needs a real X11/Wayland display -- fine with
+        # someone logged into the GUI session, fatal (Qt xcb plugin abort)
+        # running headless over SSH, which is how this node runs on REAL-1.
+        self._has_display = bool(os.environ.get('DISPLAY'))
 
         # Blocked (no detections published) if camera_watchdog flagged this
         # camera for recalibration after a drop/reconnect. See
@@ -222,8 +226,9 @@ class RealSense2Detection(Node):
         if detections:
             self.det_pub.publish(String(data=json.dumps(detections)))
 
-        cv2.imshow('RealSense #2 Detection', display)
-        cv2.waitKey(1)
+        if self._has_display:
+            cv2.imshow('RealSense #2 Detection', display)
+            cv2.waitKey(1)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -232,7 +237,8 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    cv2.destroyAllWindows()
+    if node._has_display:
+        cv2.destroyAllWindows()
 
 if __name__ == '__main__':
     main()

@@ -11,6 +11,7 @@ from std_msgs.msg import String
 from cv_bridge import CvBridge
 import json
 import threading
+import time
 
 class ObjectDetectionNode(Node):
     def __init__(self):
@@ -288,12 +289,23 @@ def main(args=None):
     spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
     spin_thread.start()
 
-    cv2.namedWindow('Object Detection', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Object Detection', 848, 480)
-    print('\n[INFO] Window open. Press q to quit.\n')
+    # The debug preview window needs a real X11/Wayland display -- fine on
+    # a desk with someone logged into the GUI session, fatal (Qt xcb
+    # plugin abort) when this runs headless over SSH, which is how this
+    # node runs on REAL-1. Skip the window entirely rather than crash.
+    has_display = bool(os.environ.get('DISPLAY'))
+    if has_display:
+        cv2.namedWindow('Object Detection', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Object Detection', 848, 480)
+        print('\n[INFO] Window open. Press q to quit.\n')
+    else:
+        node.get_logger().info('No DISPLAY set — running headless, no preview window.')
 
     try:
         while rclpy.ok():
+            if not has_display:
+                time.sleep(0.5)
+                continue
             with node.frame_lock:
                 frame = node.latest_display_frame
             if frame is not None:
@@ -308,7 +320,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        cv2.destroyAllWindows()
+        if has_display:
+            cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()
 
