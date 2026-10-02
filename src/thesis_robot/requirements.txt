@@ -7,3 +7,14 @@ opencv-python>=4.8.0
 open3d>=0.17.0
 scipy>=1.10.0
 pyttsx3>=2.90
+pyyaml>=6.0
+
+# Object detection (object_detection.py, realsense_detection.py,
+# realsense2_detection.py, wrist_detection.py)
+ultralytics==8.4.50
+
+# Camera drivers -- depthai for drivers/oak_camera_node.py (OAK-D),
+# pyrealsense2 for RealSense serial/intrinsics lookups used throughout
+# calibration/ and the dashboard
+depthai==2.32.0.0
+pyrealsense2==2.56.5.9235
