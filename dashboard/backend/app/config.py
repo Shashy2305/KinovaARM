@@ -11,16 +11,26 @@ against the exact two-OAK-D-drivers class of bug hit during development.
 """
 import os
 
-REPO_ROOT = os.path.expanduser('~/Shashproject')
-WORKSPACE_ROOT = os.path.expanduser('~/workspace/ros2_kortex_ws')
+# Overridable via env so this same config works unmodified on any machine
+# this repo gets checked out on (different machines keep this repo and the
+# ros2_kortex workspace at different absolute paths -- e.g. the lab
+# laptop uses the defaults below, REAL-1 sets SHASHPROJECT_REPO_ROOT /
+# SHASHPROJECT_WORKSPACE_ROOT to its /mnt/ros_workspace/... paths).
+REPO_ROOT = os.environ.get('SHASHPROJECT_REPO_ROOT', os.path.expanduser('~/Shashproject'))
+WORKSPACE_ROOT = os.environ.get('SHASHPROJECT_WORKSPACE_ROOT', os.path.expanduser('~/workspace/ros2_kortex_ws'))
 LOG_DIR = os.path.expanduser('~/.ros/dashboard_logs')
 ROBOT_IP = os.environ.get('KINOVA_ROBOT_IP', '192.168.1.10')
+# Only set where heavy Python deps (ultralytics, depthai, pyrealsense2, ...)
+# live in a dedicated venv rather than being installed directly -- empty
+# string is a no-op so this stays harmless where there's no venv.
+VENV_ACTIVATE = os.environ.get('SHASHPROJECT_VENV_ACTIVATE', '')
 
 ROS_ENV_CMD = (
     'source /opt/ros/humble/setup.bash && '
     f'source {WORKSPACE_ROOT}/install/setup.bash && '
     f'source {REPO_ROOT}/install/setup.bash && '
-    'export ROS_DOMAIN_ID=42 && '
+    + (f'source {VENV_ACTIVATE} && ' if VENV_ACTIVATE else '')
+    + 'export ROS_DOMAIN_ID=42 && '
 )
 
 CAMERA_TOPICS = {
