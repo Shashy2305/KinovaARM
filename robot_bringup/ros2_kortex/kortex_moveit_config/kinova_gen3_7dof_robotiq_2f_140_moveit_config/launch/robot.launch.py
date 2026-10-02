@@ -104,10 +104,19 @@ def launch_setup(context, *args, **kwargs):
         parameters=[ros2_controllers_path],
         remappings=[("/controller_manager/robot_description", "/robot_description")],
         output="both",
-        # CycloneDDS gives lower-latency intra-process transport; this helps
-        # the 1 kHz ros2_control loop avoid BaseCyclicClient timeout errors
-        # when the system is under load during startup.
-        additional_env={"RMW_IMPLEMENTATION": "rmw_cyclonedds_cpp"},
+        # NOTE: previously forced RMW_IMPLEMENTATION=rmw_cyclonedds_cpp here
+        # (for lower-latency intra-process transport, to help the 1kHz
+        # ros2_control loop avoid BaseCyclicClient timeouts under load).
+        # Removed: this made ros2_control_node the ONLY node in the whole
+        # launch using CycloneDDS while every spawner/other node uses the
+        # system default (rmw_fastrtps_cpp) -- that cross-vendor DDS mix is
+        # what was deadlocking controller_manager's service layer (every
+        # executor thread piling on one internal rclcpp mutex, confirmed via
+        # gdb; reproduced identically on two different machines/builds,
+        # ruling out hardware/build causes). If BaseCyclicClient timeouts
+        # reappear under load, set RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+        # globally (for every node in this launch, not just this one) rather
+        # than reintroducing a mismatch.
     )
 
     robot_state_publisher = Node(
@@ -205,6 +214,50 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(launch_rviz),
     )
 
+    # ── Serialize controller spawners ───────────────────────────────────────
+    # Launching all 5 spawners at once (as this file used to) makes 5
+    # concurrent clients hit controller_manager's services during its own
+    # startup -- this reliably deadlocks ros2_control_node's
+    # MultiThreadedExecutor on some machines/builds (every thread piles up
+    # on the executor's internal wait-set mutex, confirmed via gdb; matches
+    # ros-controls/ros2_control#265 upstream). Chaining each spawner off the
+    # previous one's exit keeps controller_manager's service layer to at
+    # most one (or two, for the last pair) concurrent client at a time.
+    delay_traj_controller_after_joint_state_broadcaster = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=joint_state_broadcaster_spawner,
+            on_exit=[robot_traj_controller_spawner],
+        )
+    )
+
+    delay_pos_controller_after_traj_controller = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=robot_traj_controller_spawner,
+            on_exit=[robot_pos_controller_spawner],
+        )
+    )
+
+    # robotiq_gripper_controller_spawner (unconditional) comes before
+    # fault_controller_spawner (conditional, skipped under fake hardware) in
+    # the chain -- if it were last, a skipped fault_controller_spawner would
+    # never fire the OnProcessExit that triggers it, since that event only
+    # fires for a process that actually ran. Putting the always-runs spawner
+    # first, and the maybe-skipped one last (nothing depends on its exit),
+    # keeps full serialization correct in both use_fake_hardware states.
+    delay_gripper_controller_after_pos_controller = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=robot_pos_controller_spawner,
+            on_exit=[robotiq_gripper_controller_spawner],
+        )
+    )
+
+    delay_fault_controller_after_gripper_controller = RegisterEventHandler(
+        event_handler=OnProcessExit(
+            target_action=robotiq_gripper_controller_spawner,
+            on_exit=[fault_controller_spawner],
+        )
+    )
+
     robot_keepalive = ExecuteProcess(
         cmd=["python3", "/home/lab/workspace/ros2_kortex_ws/robot_keepalive.py"],
         output="log",
@@ -214,14 +267,14 @@ def launch_setup(context, *args, **kwargs):
         ros2_control_node,
         robot_state_publisher,
         joint_state_broadcaster_spawner,
-        robot_traj_controller_spawner,
-        robot_pos_controller_spawner,
-        fault_controller_spawner,
-        robotiq_gripper_controller_spawner,
         move_group_node,
         static_tf,
         robot_keepalive,
         delay_rviz_after_joint_state_broadcaster_spawner,
+        delay_traj_controller_after_joint_state_broadcaster,
+        delay_pos_controller_after_traj_controller,
+        delay_gripper_controller_after_pos_controller,
+        delay_fault_controller_after_gripper_controller,
     ]
 
 
