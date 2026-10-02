@@ -308,22 +308,29 @@ def generate_launch_description():
             description="Launch OAK-D via oak_camera_node.py (depthai v3 standalone driver)."),
         DeclareLaunchArgument(
             "launch_realsense_2",
-            default_value="false",
-            description="Launch a second RealSense D435i (global_camera_2 namespace)."),
+            default_value="true",
+            description="Launch a second RealSense (global_camera_2 namespace). On by "
+                         "default now that both units are physically connected — see "
+                         "realsense_serial/realsense2_serial below for how device "
+                         "assignment is kept deterministic."),
         DeclareLaunchArgument(
             "realsense_serial",
-            default_value="",
-            description="Serial number to pin the first RealSense to. Empty = any device "
-                         "(fine with exactly one D435i connected; REQUIRED once a second "
-                         "is plugged in, or device assignment is undefined). "
+            # D435I — the original global_camera. Both serials are pinned
+            # (not left empty/"any device") now that two RealSense units are
+            # connected on the same USB hub — otherwise realsense2_camera_node's
+            # choice of which physical camera becomes which ROS node is
+            # undefined, and could silently swap between runs.
+            default_value="938422070760",
+            description="Serial number to pin the first RealSense to. "
                          "Get it via: python3 -c \"import pyrealsense2 as rs; "
-                         "[print(d.get_info(rs.camera_info.serial_number)) for d in "
+                         "[print(d.get_info(rs.camera_info.name), "
+                         "d.get_info(rs.camera_info.serial_number)) for d in "
                          "rs.context().query_devices()]\""),
         DeclareLaunchArgument(
             "realsense2_serial",
-            default_value="",
-            description="Serial number to pin the second RealSense to. Required when "
-                         "launch_realsense_2:=true and more than one D435i is connected."),
+            # D435 (no IMU) — the newly added global_camera_2.
+            default_value="215322071290",
+            description="Serial number to pin the second RealSense to."),
     ]
 
     return LaunchDescription(
