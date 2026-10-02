@@ -77,6 +77,13 @@ class ProcessManager:
             conflict_pids = [
                 pid for pid in self._matching_pids(other_sig, cmdlines)
                 if pid not in external_pids
+                # A conflict_signature that's a substring of this process's
+                # own signature (e.g. 'oak_camera_node.py' inside
+                # 'drivers/oak_camera_node.py') matches our OWN owned
+                # process too -- exclude it the same way external_pids
+                # already does, or a lone correctly-running driver falsely
+                # reports as conflicting with itself.
+                and not (owned_alive and pid == mp.popen.pid)
             ]
             if conflict_pids and (owned_alive or external_pids):
                 return 'conflict'
