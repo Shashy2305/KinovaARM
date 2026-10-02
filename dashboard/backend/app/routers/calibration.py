@@ -10,7 +10,7 @@ from .. import config, ros_bridge
 
 router = APIRouter()
 
-REPO_ROOT = os.path.expanduser('~/Shashproject')
+REPO_ROOT = config.REPO_ROOT
 BOARD_PNG = os.path.join(REPO_ROOT, 'calibration', 'charuco_board_dashboard.png')
 
 

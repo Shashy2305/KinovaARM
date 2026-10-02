@@ -39,7 +39,7 @@ POINTCLOUD_TOPICS = {
 MAX_POINTS_PER_CAMERA = 3000
 BASE_FRAME = 'base_link'
 
-REPO_ROOT = os.path.expanduser('~/Shashproject')
+REPO_ROOT = config.REPO_ROOT
 sys.path.insert(0, os.path.join(REPO_ROOT, 'calibration'))
 
 _ros_initialized = False
