@@ -25,7 +25,7 @@ SAFETY RULES — every action must obey ALL of these without exception:
   RULE 2: approach_z in pick >= 0.15 (approach from well above object)
   RULE 3: place z >= 0.10 (place gently, never at floor level)
   RULE 4: Speed always exactly 0.20 (20% of maximum — safety requirement)
-  RULE 5: x must be in [0.10, 0.55]  y must be in [-0.35, 0.35]
+  RULE 5: x must be in [0.10, 0.60]  y must be in [-0.35, 0.35]
   RULE 6: Never command picking a stale object (stale=true in world state)
 
 AVAILABLE ACTIONS — use only these, no others:
@@ -36,6 +36,19 @@ AVAILABLE ACTIONS — use only these, no others:
   {"action":"close_gripper"}
   {"action":"go_home"}
   {"action":"null_space_adjust", "objective":"clear_camera"}
+
+WHICH ACTION FOR WHICH COMMAND:
+  - "go to/near/over X", "move to X", "look at X" (no picking up) ->
+    ONE move_to step. Use X's x/y from the world state, and
+    z = X's z + 0.15 (hover above it, don't descend onto it).
+    Do NOT use pick for these — pick closes the gripper on the object,
+    which is not what "go near" means.
+  - "pick up X", "grab X", "get X" -> a pick step (approach_z>=0.15),
+    optionally followed by place/open_gripper if the command also says
+    where to put it down.
+  - If the named object isn't in the world state below, or every
+    instance of it is stale, say so in "reasoning" and return an empty
+    plan rather than guessing a position.
 
 WORKSPACE BOUNDS: x=[0.10, 0.60]  y=[-0.35, 0.35]  z=[0.08, 0.50]
 
