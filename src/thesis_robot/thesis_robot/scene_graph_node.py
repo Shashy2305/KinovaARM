@@ -25,9 +25,12 @@ predicates (reachable, near, left_of) that ground the LLM's
 understanding of the physical workspace.
 """
 import os, rclpy, json, math, time, yaml
+from collections import defaultdict
 from rclpy.node import Node
 from std_msgs.msg import String
 from geometry_msgs.msg import PointStamped
+from scipy.optimize import linear_sum_assignment
+import numpy as np
 import tf2_ros
 import tf2_geometry_msgs  # noqa: F401 — registers PointStamped with tf2
 
@@ -43,6 +46,9 @@ DEFAULT_WORKSPACE = {'x': (0.08, 0.60), 'y': (-0.40, 0.40), 'z': (-0.50, 2.00)}
 WORKSPACE_BOUNDS_FILE = os.path.expanduser('~/.ros/workspace_bounds.yaml')
 NEAR_THRESHOLD  = 0.12   # metres — objects closer than this are "near"
 STALE_THRESHOLD = 60.0    # seconds — unseen objects get marked stale
+GC_THRESHOLD = 300.0     # seconds — stale objects unseen this long are dropped
+                          # entirely, so a ghost track can never sit around
+                          # indefinitely as a candidate for anything
 SAME_OBJECT_DIST = 0.15  # metres — detections this close are the same object
 FUSION_MIN_ALPHA = 0.15  # a single low-confidence reading moves the estimate at least this much
 FUSION_MAX_ALPHA = 0.85  # a single high-confidence reading moves the estimate at most this much
@@ -112,7 +118,15 @@ class SceneGraphNode(Node):
 
     # ── DETECTION CALLBACK ───────────────────────────────────────────
     def detection_callback(self, msg):
-        """Receive YOLO detections and update scene graph."""
+        """Receive YOLO detections and update scene graph.
+
+        Resolves and matches the WHOLE batch from this message together
+        (not one detection at a time) so that when two same-label objects
+        are detected in a single frame, each gets optimally matched to its
+        own existing track rather than both racing for whichever track a
+        naive first-match-wins scan happens to find first. See
+        _match_batch for why this -- and excluding stale tracks from
+        matching -- is what actually fixes occlusion mix-ups."""
         try:
             detections = json.loads(msg.data)
         except json.JSONDecodeError as e:
@@ -124,22 +138,24 @@ class SceneGraphNode(Node):
             detections = [detections]
 
         now = time.time()
+        resolved = []  # [(label, x, y, z, conf), ...]
         for det in detections:
             label = det.get('label') or det.get('class', 'unknown')
             conf  = float(det.get('confidence', 0.0))
-
             if conf < 0.45:
                 continue  # skip low confidence
-
             pos = self._resolve_base_xyz(det, label)
             if pos is None:
                 continue
             x, y, z = pos
+            resolved.append((label, x, y, z, conf))
 
-            # Generate stable object ID: label + index
-            obj_id = self._get_or_create_id(label, x, y)
+        if not resolved:
+            return
+
+        assignments = self._match_batch(resolved)
+        for (label, x, y, z, conf), obj_id in zip(resolved, assignments):
             x, y, z, conf = self._fuse_position(obj_id, x, y, z, conf, now)
-
             self.scene[obj_id] = {
                 'label':      label,
                 'x':          round(x, 4),
@@ -201,10 +217,19 @@ class SceneGraphNode(Node):
 
     # ── STALENESS UPDATE ─────────────────────────────────────────────
     def update_staleness(self):
-        """Mark objects not seen recently as stale."""
+        """Mark objects not seen recently as stale, and drop ones that
+        have been stale for a long time entirely -- otherwise a ghost
+        track from an object that was moved/removed while occluded would
+        sit in self.scene forever, excluded from LLM prompts (stale) and
+        from matching (see _match_batch) but still cluttering /scene_snapshot
+        and still occupying that label's next-index slot."""
         now = time.time()
+        to_drop = []
         for obj_id, obj in self.scene.items():
             age = now - obj['last_seen']
+            if age > GC_THRESHOLD:
+                to_drop.append(obj_id)
+                continue
             was_stale = obj['stale']
             obj['stale'] = age > STALE_THRESHOLD
             if obj['stale'] and not was_stale:
@@ -212,6 +237,9 @@ class SceneGraphNode(Node):
                     f"Object {obj_id} ({obj['label']}) went stale "
                     f"({age:.1f}s since last seen)"
                 )
+        for obj_id in to_drop:
+            self.get_logger().info(f'Dropping {obj_id} — unseen for {GC_THRESHOLD:.0f}s+')
+            del self.scene[obj_id]
 
     # ── SPATIAL PREDICATES ───────────────────────────────────────────
     def _is_reachable(self, x, y, z):
@@ -310,20 +338,82 @@ class SceneGraphNode(Node):
         # plain floats: tf2 may return numpy scalars, which json can't encode
         return float(p.x), float(p.y), float(p.z)
 
-    def _get_or_create_id(self, label, x, y):
-        """
-        Return existing ID if an object with this label is already
-        tracked nearby, otherwise create a new one.
-        Prevents duplicate entries for the same physical object.
-        """
-        for obj_id, obj in self.scene.items():
-            if obj['label'] == label:
-                dist = ((obj['x']-x)**2 + (obj['y']-y)**2)**0.5
-                if dist < SAME_OBJECT_DIST:
-                    return obj_id
+    def _match_batch(self, resolved):
+        """Assign each (label, x, y, z, conf) in `resolved` to a track ID,
+        returning a list of IDs in the same order as `resolved`.
 
-        # New object — assign next index for this label
-        count = sum(1 for oid in self.scene if oid.startswith(label))
+        Two things that make this different from "find the nearest
+        same-label track and reuse its ID" (what this used to do, one
+        detection at a time):
+
+        1. Optimal assignment, not greedy. When a single frame has two
+           detections of the same label (e.g. two cups), matching them
+           one at a time in list order can let the first detection grab
+           the track that was actually closer to the second one, swapping
+           which physical cup each tracked ID refers to. Hungarian
+           assignment (scipy linear_sum_assignment) finds the matching
+           that minimizes TOTAL distance across the whole label group at
+           once, which avoids that.
+
+        2. Stale tracks are never match candidates. A track that hasn't
+           been seen in up to STALE_THRESHOLD seconds has no business
+           silently absorbing a fresh detection just because it happens
+           to land within SAME_OBJECT_DIST of that track's last known (by
+           now possibly stale/wrong) position -- if a different
+           same-label object was set down nearby in the meantime, that
+           silent merge is exactly the "confuses objects after occlusion"
+           bug this replaces. A fresh detection near a stale track simply
+           starts a new track instead; the stale one ages out via
+           update_staleness's GC_THRESHOLD.
+        """
+        by_label = defaultdict(list)
+        for i, (label, x, y, z, conf) in enumerate(resolved):
+            by_label[label].append(i)
+
+        assignments = [None] * len(resolved)
+        for label, idxs in by_label.items():
+            track_ids = [
+                oid for oid, obj in self.scene.items()
+                if obj['label'] == label and not obj['stale']
+            ]
+            if not track_ids:
+                for i in idxs:
+                    assignments[i] = self._new_id(label, assignments)
+                continue
+
+            cost = np.full((len(idxs), len(track_ids)), 1e6)
+            for r, i in enumerate(idxs):
+                _, x, y, _, _ = resolved[i]
+                for c, oid in enumerate(track_ids):
+                    obj = self.scene[oid]
+                    dist = ((obj['x'] - x) ** 2 + (obj['y'] - y) ** 2) ** 0.5
+                    if dist < SAME_OBJECT_DIST:
+                        cost[r, c] = dist
+
+            rows, cols = linear_sum_assignment(cost)
+            matched_tracks = set()
+            for r, c in zip(rows, cols):
+                i = idxs[r]
+                if cost[r, c] >= 1e6:
+                    continue  # no track within SAME_OBJECT_DIST -- new object
+                assignments[i] = track_ids[c]
+                matched_tracks.add(track_ids[c])
+            for i in idxs:
+                if assignments[i] is None:
+                    assignments[i] = self._new_id(label, assignments)
+
+        return assignments
+
+    def _new_id(self, label, assignments_so_far):
+        """A fresh track ID for `label`, distinct from every existing
+        track AND every ID already handed out earlier in this same
+        batch (assignments_so_far may contain not-yet-committed IDs that
+        aren't in self.scene yet)."""
+        used = {oid for oid in self.scene if oid.startswith(f'{label}_')}
+        used |= {oid for oid in assignments_so_far if oid and oid.startswith(f'{label}_')}
+        count = 0
+        while f'{label}_{count:02d}' in used:
+            count += 1
         return f'{label}_{count:02d}'
 
 

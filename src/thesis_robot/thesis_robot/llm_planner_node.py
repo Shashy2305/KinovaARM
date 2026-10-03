@@ -199,7 +199,7 @@ class LLMPlannerNode(Node):
             # it was never told the arm can't reach anyway.
             prompt_scene = {
                 obj_id: obj for obj_id, obj in self.latest_scene.items()
-                if obj.get('reachable')
+                if obj.get('reachable') and not obj.get('stale', False)
             }
             if not prompt_scene:
                 self.get_logger().warn(
