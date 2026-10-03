@@ -50,6 +50,13 @@ GC_THRESHOLD = 300.0     # seconds — stale objects unseen this long are droppe
                           # entirely, so a ghost track can never sit around
                           # indefinitely as a candidate for anything
 SAME_OBJECT_DIST = 0.15  # metres — detections this close are the same object
+# Kinova Gen3 7DOF max horizontal reach from base_link, plus slack -- same
+# bound used by calibration/define_workspace_boundary.py's own plausibility
+# check. A resolved position beyond this is virtually always a bad
+# detection (common with the HSV color-fallback detector misfiring on
+# background clutter, not a real object on the table), not a legitimate
+# occlusion/tracking case -- reject it before it ever becomes a track.
+MAX_PLAUSIBLE_REACH_M = 2.0
 FUSION_MIN_ALPHA = 0.15  # a single low-confidence reading moves the estimate at least this much
 FUSION_MAX_ALPHA = 0.85  # a single high-confidence reading moves the estimate at most this much
 
@@ -308,7 +315,7 @@ class SceneGraphNode(Node):
 
         x, y = num('x_robot'), num('y_robot')
         if x is not None and y is not None:
-            return x, y, num('z_robot')
+            return self._check_plausible(label, x, y, num('z_robot'))
 
         cx, cy, cz = num('cx_3d'), num('cy_3d'), num('cz_3d')
         frame_id = det.get('frame_id')
@@ -336,7 +343,24 @@ class SceneGraphNode(Node):
         pt.point.x, pt.point.y, pt.point.z = cx, cy, cz
         p = tf2_geometry_msgs.do_transform_point(pt, tf).point
         # plain floats: tf2 may return numpy scalars, which json can't encode
-        return float(p.x), float(p.y), float(p.z)
+        return self._check_plausible(label, float(p.x), float(p.y), float(p.z))
+
+    def _check_plausible(self, label, x, y, z):
+        """Reject a resolved position too far from base_link to be a real
+        object on the table -- common with the HSV color-fallback
+        detector misfiring on background clutter (seen in practice:
+        garbage detections 10+ metres away from a bad/noisy depth read),
+        not a legitimate detection that just happens to be far. Returns
+        (x, y, z) unchanged if plausible, else None."""
+        dist = (x ** 2 + y ** 2 + (z or 0.0) ** 2) ** 0.5
+        if dist > MAX_PLAUSIBLE_REACH_M:
+            self.get_logger().warn(
+                f'Dropping {label}: resolved position is {dist:.2f}m from '
+                f'base_link (> {MAX_PLAUSIBLE_REACH_M}m) — almost certainly '
+                f'a bad detection, not a real object.',
+                throttle_duration_sec=5.0)
+            return None
+        return x, y, z
 
     def _match_batch(self, resolved):
         """Assign each (label, x, y, z, conf) in `resolved` to a track ID,
