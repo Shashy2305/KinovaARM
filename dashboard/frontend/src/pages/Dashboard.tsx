@@ -8,6 +8,7 @@ import { SceneView } from '../components/SceneView'
 import { SystemLog } from '../components/SystemLog'
 import { TopStatusBar } from '../components/TopStatusBar'
 import { WorkspaceBoundary } from '../components/WorkspaceBoundary'
+import { TableRecorder } from '../components/TableRecorder'
 import { useStatus } from '../lib/useStatus'
 
 const TABS = [
@@ -15,6 +16,7 @@ const TABS = [
   { id: 'fusion', label: '3D Fusion' },
   { id: 'calibration', label: 'Calibration' },
   { id: 'boundary', label: 'Workspace Boundary' },
+  { id: 'table', label: 'Table Safety' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
@@ -67,6 +69,8 @@ export function Dashboard() {
         {tab === 'calibration' && <CalibrationWizard />}
 
         {tab === 'boundary' && <WorkspaceBoundary />}
+
+        {tab === 'table' && <TableRecorder />}
       </main>
 
       <footer className="px-8 py-4 text-[11px] text-(--color-text-faint) border-t border-(--color-border)">

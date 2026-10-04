@@ -250,6 +250,7 @@ def get_bridge():
 # ── lazily-created calibration-tool nodes, same rclpy context/executor ──
 _calibrator = None
 _boundary_tools = {}  # camera_name -> DefineWorkspaceBoundary instance
+_table_recorder = None
 
 
 def get_or_create_calibrator():
@@ -280,3 +281,13 @@ def get_or_create_boundary_tool(camera_name='oakd'):
         executor.add_node(tool)
         _boundary_tools[camera_name] = tool
     return _boundary_tools[camera_name]
+
+
+def get_or_create_table_recorder():
+    global _table_recorder
+    executor = _ensure_executor()
+    if _table_recorder is None:
+        from .table_recorder import TableRecorder
+        _table_recorder = TableRecorder()
+        executor.add_node(_table_recorder)
+    return _table_recorder

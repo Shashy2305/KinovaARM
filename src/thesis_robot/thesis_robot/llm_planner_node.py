@@ -17,13 +17,16 @@ import rclpy, json, math, time, threading, ollama
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from thesis_robot import safety_geometry as sg
+
 # ── SYSTEM PROMPT ────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a task planner for a Kinova Gen3 7-DOF robotic arm.
 
 SAFETY RULES — every action must obey ALL of these without exception:
-  RULE 1: ALL z values >= 0.08 at minimum
-  RULE 2: approach_z in pick >= 0.15 (approach from well above object)
-  RULE 3: place z >= 0.10 (place gently, never at floor level)
+  RULE 1: ALL z values >= {Z_FLOOR} at minimum (z is the wrist flange height;
+          the fingertips hang ~0.21 m below it, so this keeps them above the table)
+  RULE 2: approach_z in pick >= {Z_FLOOR} (approach from well above object)
+  RULE 3: place z >= {Z_FLOOR} (place gently, never at table level)
   RULE 4: Speed always exactly 0.20 (20% of maximum — safety requirement)
   RULE 5: x must be in [0.10, 0.60]  y must be in [-0.35, 0.35]
   RULE 6: Never command picking a stale object (stale=true in world state)
@@ -40,7 +43,7 @@ AVAILABLE ACTIONS — use only these, no others:
 WHICH ACTION FOR WHICH COMMAND:
   - "go to/near/over X", "move to X", "look at X" (no picking up) ->
     ONE move_to step. Use X's x/y from the world state, and
-    z = X's z + 0.15 (hover above it, don't descend onto it).
+    z = max(X's z + 0.15, {Z_FLOOR}) (hover above it, don't descend onto it).
     Do NOT use pick for these — pick closes the gripper on the object,
     which is not what "go near" means.
   - "pick up X", "grab X", "get X" -> a pick step (approach_z>=0.15),
@@ -50,7 +53,7 @@ WHICH ACTION FOR WHICH COMMAND:
     instance of it is stale, say so in "reasoning" and return an empty
     plan rather than guessing a position.
 
-WORKSPACE BOUNDS: x=[0.10, 0.60]  y=[-0.35, 0.35]  z=[0.08, 0.50]
+WORKSPACE BOUNDS: x=[0.10, 0.60]  y=[-0.35, 0.35]  z=[{Z_FLOOR}, 0.50]
 
 RESPOND WITH EXACTLY THIS JSON STRUCTURE — no other format:
 {
@@ -61,8 +64,47 @@ RESPOND WITH EXACTLY THIS JSON STRUCTURE — no other format:
   ]
 }"""
 
+# ── MOVE_TO HEIGHT CORRECTION ────────────────────────────────────────
+# The system prompt tells the LLM to set move_to's z to "object z + 0.15"
+# (hover above, don't descend onto it), but a 7B local model doesn't
+# follow that arithmetic reliably -- it sometimes copies the object's raw
+# z straight through, which is at/below table height and gets rejected
+# by the floor check below. Since the LLM's x/y *are* reliably copied
+# from the target object, re-derive z from the matched object ourselves
+# instead of trusting the LLM's addition, rather than just rejecting and
+# hoping a retry does better.
+MOVE_TO_HOVER_M = 0.15
+_XY_MATCH_TOL_M = 0.05
+# z_floor comes from safety_geometry.flange_floor_z(): table height + the
+# 0.215 m flange-to-fingertip reach + clearance. (An earlier fixed 0.12
+# minimum here still put the fingertips at the table surface.)
+
+
+def fix_move_to_heights(plan, scene, z_floor):
+    """Mutates move_to steps in place: if a step's (x,y) matches a known
+    scene object closely enough, override z to that object's z + hover
+    offset (never below z_floor), regardless of what the LLM computed."""
+    if not isinstance(plan, list):
+        return plan
+    for step in plan:
+        if not isinstance(step, dict) or step.get('action') != 'move_to':
+            continue
+        if not (_is_number(step.get('x')) and _is_number(step.get('y'))):
+            continue
+        best_id, best_dist = None, _XY_MATCH_TOL_M
+        for obj_id, obj in scene.items():
+            if not isinstance(obj, dict) or obj.get('z') is None:
+                continue
+            dist = ((obj['x'] - step['x']) ** 2 + (obj['y'] - step['y']) ** 2) ** 0.5
+            if dist < best_dist:
+                best_id, best_dist = obj_id, dist
+        if best_id is not None:
+            step['z'] = max(scene[best_id]['z'] + MOVE_TO_HOVER_M, z_floor)
+    return plan
+
+
 # ── SAFETY VALIDATOR ─────────────────────────────────────────────────
-def validate_plan(plan, scene):
+def validate_plan(plan, scene, z_floor=0.08):
     """
     Scan entire plan for safety violations before first move.
     Returns (is_safe: bool, reason: str, warnings: list[str]).
@@ -85,12 +127,12 @@ def validate_plan(plan, scene):
 
         # Z floor check
         for k in ['z', 'approach_z']:
-            if k in step and step[k] < 0.08:
-                return False, f"Step {i} ({act}): {k}={step[k]:.3f} violates floor", warnings
+            if k in step and step[k] < z_floor:
+                return False, f"Step {i} ({act}): {k}={step[k]:.3f} violates floor {z_floor:.3f}", warnings
 
         # approach_z must be high enough
         if act == 'pick':
-            if step.get('approach_z', 1.0) < 0.15:
+            if step.get('approach_z', 1.0) < max(0.15, z_floor):
                 return False, f"Step {i}: approach_z={step.get('approach_z')} too low", warnings
             # Object must be named and exist in scene
             oid = step.get('object_id')
@@ -106,7 +148,7 @@ def validate_plan(plan, scene):
                 warnings.append(f"Step {i}: object '{oid}' is stale but proceeding")
 
         # Place Z check
-        if act == 'place' and step.get('z', 1.0) < 0.10:
+        if act == 'place' and step.get('z', 1.0) < max(0.10, z_floor):
             return False, f"Step {i}: place z={step.get('z'):.3f} too low", warnings
 
         # Workspace bounds — x upper bound matches arm_controller_node.py's
@@ -195,6 +237,14 @@ class LLMPlannerNode(Node):
             self.get_logger().info(f'Command: "{command}"')
             self._publish_status(f'PLANNING: {command}')
 
+            geom, geom_err = sg.load_geometry()
+            z_floor = sg.flange_floor_z(geom)
+            if geom is None:
+                self.get_logger().warn(
+                    f'No table geometry ({geom_err}) — using conservative flange floor '
+                    f'z={z_floor:.2f}. Record the table in the dashboard.')
+            system_prompt = SYSTEM_PROMPT.replace('{Z_FLOOR}', f'{z_floor:.2f}')
+
             if not self.latest_scene:
                 self._publish_status('ERROR: no scene data yet')
                 self.get_logger().warn('No scene data — publish to /scene_snapshot first')
@@ -230,7 +280,7 @@ class LLMPlannerNode(Node):
             response = ollama.chat(
                 model=self.model,
                 messages=[
-                    {'role': 'system', 'content': SYSTEM_PROMPT},
+                    {'role': 'system', 'content': system_prompt},
                     {'role': 'user',   'content': user_msg},
                 ],
                 format='json'
@@ -254,8 +304,11 @@ class LLMPlannerNode(Node):
                 f'{len(plan)} steps | Reasoning: {reasoning[:80]}...'
             )
 
-            # Validate
-            ok, reason, warnings = validate_plan(plan, self.latest_scene)
+            # Re-derive move_to heights from the matched scene object rather
+            # than trusting the LLM's "z + 0.15" arithmetic (see comment on
+            # fix_move_to_heights) — then validate as usual.
+            plan = fix_move_to_heights(plan, self.latest_scene, z_floor)
+            ok, reason, warnings = validate_plan(plan, self.latest_scene, z_floor)
             for w in warnings:
                 self.get_logger().warn(w)
 

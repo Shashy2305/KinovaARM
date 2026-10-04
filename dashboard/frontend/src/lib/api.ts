@@ -8,6 +8,15 @@ import type {
   ActionResult, CaptureResult, ProcessInfo, StatusPayload,
 } from './types'
 
+export interface TableStatus {
+  pose: { x: number; y: number; z: number } | null
+  pose_message: string
+  points: number[][]
+  saved: { table_top_z: number; x: number[]; y: number[]; rear_wall_x: number } | null
+  saved_message: string | null
+  flange_floor_z: number
+}
+
 const BASE = '/api'
 
 async function request<T = unknown>(path: string, init?: RequestInit): Promise<T> {
@@ -56,6 +65,11 @@ export const api = {
   boundarySave: (camera: string) =>
     request<{ ok: boolean; status: string }>(`/workspace_boundary/save?camera=${camera}`, { method: 'POST' }),
   boundaryCurrent: () => request<Record<string, unknown>>('/workspace_boundary/current'),
+
+  tableStatus: () => request<TableStatus>('/table_geometry/status'),
+  tableRecord: () => request<{ ok: boolean; message: string }>('/table_geometry/record', { method: 'POST' }),
+  tableReset: () => request<{ ok: boolean }>('/table_geometry/reset', { method: 'POST' }),
+  tableSave: () => request<{ ok: boolean; message: string }>('/table_geometry/save', { method: 'POST' }),
 
   sendCommand: (text: string) =>
     request<ActionResult>('/command', { method: 'POST', body: JSON.stringify({ text }) }),

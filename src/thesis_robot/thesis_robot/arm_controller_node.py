@@ -12,6 +12,8 @@ from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 from std_msgs.msg import String
 
+from thesis_robot import safety_geometry as sg
+
 JOINT_NAMES = [
     "joint_1", "joint_2", "joint_3", "joint_4",
     "joint_5", "joint_6", "joint_7"
@@ -60,6 +62,8 @@ class ArmControllerNode(Node):
         self._lock     = threading.Lock()
         self.moveit2   = None
         self.latest_scene = {}   # object_id -> {x, y, z, ...} in base_link
+        self._blocked = False    # set when a move was refused/aborted on safety grounds
+        self._block_reason = ''
 
         # TF buffer for camera -> robot frame transform
         self.tf_buffer   = tf2_ros.Buffer()
@@ -69,6 +73,9 @@ class ArmControllerNode(Node):
         self.pp_status_pub = self.create_publisher(String, '/pick_place_status', 10)
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
         self.create_subscription(String, '/scene_snapshot', self._scene_callback, 10)
+        from moveit_msgs.srv import ApplyPlanningScene, GetPositionFK
+        self._apply_scene_client = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
+        self._fk_client = self.create_client(GetPositionFK, '/compute_fk')
 
         if not self.dry_run:
             self.create_timer(2.0, self._delayed_moveit_init)
@@ -94,7 +101,21 @@ class ArmControllerNode(Node):
             self.moveit2.max_acceleration = self.speed
             self.moveit2.planner_id       = "PTP"
             self.get_logger().info('MoveIt2 initialised successfully — LIVE mode active')
-            self._publish_status('READY [LIVE]')
+            geom, err = sg.load_geometry()
+            if geom is None:
+                self.get_logger().error(
+                    f'NO TABLE GEOMETRY ({err}) — live motion is BLOCKED until the '
+                    f'table is recorded in the dashboard.')
+                self._publish_status('READY [LIVE — BLOCKED: no table geometry]')
+            else:
+                try:
+                    self._ensure_safety_scene(geom)
+                except Exception as e:
+                    self.get_logger().error(f'Could not apply table/wall to the scene yet: {e}')
+                self.get_logger().info(
+                    f'Table geometry loaded: top z={geom["table_top_z"]:.3f}, '
+                    f'flange floor z={sg.flange_floor_z(geom):.3f}')
+                self._publish_status('READY [LIVE]')
         except Exception as e:
             self.get_logger().error(f'MoveIt2 init failed: {e}')
             self.dry_run = True
@@ -136,9 +157,11 @@ class ArmControllerNode(Node):
 
                 success = self._dispatch(step)
                 if not success:
-                    self.get_logger().error(f'Step {i+1} FAILED')
-                    self._publish_status(f'FAILED at step {i+1}')
-                    self._safe_home()
+                    self.get_logger().error(
+                        f'Step {i+1} FAILED — stopping; the arm is NOT moved '
+                        f'automatically after a failure (use go_home when it is clear)')
+                    why = f': {self._block_reason}' if self._blocked else ''
+                    self._publish_status(f'FAILED at step {i+1}{why}'[:100])
                     return
                 time.sleep(0.3)
 
@@ -205,15 +228,16 @@ class ArmControllerNode(Node):
         except ValueError as e:
             self.get_logger().error(f'move_to rejected: {e}')
             return False
-        # Safety clamp to workspace. x upper bound widened 0.55->0.60 on
-        # 2026-09-30 after the actual calibrated cup position (x=0.558)
-        # came in 7mm over the old limit -- a reach-extent adjustment, not
-        # a collision-safety one. z floor (table-collision protection,
-        # TESTING.md RULE 1) deliberately left alone; grasp_z_offset is the
-        # right lever for a detected-surface-vs-grasp-height gap, not this.
+        # Workspace clamp. x upper bound was widened 0.55->0.60 on 2026-09-30
+        # (calibrated cup at x=0.558 came in 7mm over the old limit).
+        # z is the FLANGE (end_effector_link) height, and the finger pads
+        # hang ~0.21 m below it when the gripper points down, so the floor
+        # is derived from the recorded table height, NOT a fixed 0.08 (which
+        # put the fingertips into the table: flange z=0.12 -> tips at ~-0.09).
+        geom, _ = sg.load_geometry()
         rx = max(0.10, min(0.60, rx))
         ry = max(-0.35, min(0.35, ry))
-        rz = max(0.08, min(0.50, rz))
+        rz = max(sg.flange_floor_z(geom), min(0.50, rz))
 
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(
@@ -221,20 +245,133 @@ class ArmControllerNode(Node):
                 f'{" cartesian" if cartesian else ""}')
             time.sleep(0.5)
             return True
+        return self._guarded_move(
+            geom, f'move_to ({rx:.3f},{ry:.3f},{rz:.3f})',
+            position=[rx, ry, rz], quat_xyzw=GRASP_QUAT_XYZW, cartesian=cartesian)
+
+    # ── SAFETY: planning scene + trajectory check ────────────────────
+    def _move_group_count(self):
+        return sum(1 for name, _ns in self.get_node_names_and_namespaces() if name == 'move_group')
+
+    def _ensure_safety_scene(self, geom):
+        """(Re-)apply the table slab and rear wall to MoveIt's planning scene
+        through the synchronous /apply_planning_scene service (it reports
+        success, unlike publishing to a topic). Done before every plan
+        because move_group forgets them when robot_bringup restarts. Raises
+        if it cannot be confirmed, so callers fail closed."""
+        from geometry_msgs.msg import Pose
+        from moveit_msgs.msg import CollisionObject, PlanningScene
+        from moveit_msgs.srv import ApplyPlanningScene
+        from shape_msgs.msg import SolidPrimitive
+
+        n = self._move_group_count()
+        if n != 1:
+            raise RuntimeError(
+                f'{n} move_group nodes are running (need exactly 1) — a scene update '
+                f'would only reach one of them; restart robot_bringup cleanly')
+        objs = []
+        for oid, size, pos in sg.collision_boxes(geom):
+            prim = SolidPrimitive()
+            prim.type = SolidPrimitive.BOX
+            prim.dimensions = [float(v) for v in size]
+            pose = Pose()
+            pose.position.x, pose.position.y, pose.position.z = (float(v) for v in pos)
+            pose.orientation.w = 1.0
+            co = CollisionObject()
+            co.id = oid
+            co.header.frame_id = BASE_LINK
+            co.operation = CollisionObject.ADD
+            co.primitives = [prim]
+            co.primitive_poses = [pose]
+            objs.append(co)
+        scene = PlanningScene()
+        scene.is_diff = True
+        scene.world.collision_objects = objs
+        if not self._apply_scene_client.wait_for_service(timeout_sec=3.0):
+            raise RuntimeError('/apply_planning_scene is not available')
+        fut = self._apply_scene_client.call_async(ApplyPlanningScene.Request(scene=scene))
+        t0 = time.time()
+        while not fut.done() and time.time() - t0 < 5.0:
+            time.sleep(0.05)
+        if not fut.done() or not fut.result().success:
+            raise RuntimeError('move_group did not accept the table/wall collision objects')
+
+    def _refuse(self, reason):
+        self._blocked = True
+        self._block_reason = reason
+        self.get_logger().error(f'MOTION REFUSED: {reason}')
+        self._publish_status(f'BLOCKED: {reason}'[:90])
+        return False
+
+    def _fk_link_positions(self, joint_names, joint_positions):
+        """base_link xyz of every guarded link for a joint configuration,
+        via MoveIt's /compute_fk. Polls the future instead of spinning: the
+        node already has an executor, and pymoveit2's own spin_once calls
+        from a worker thread collide with it."""
+        from moveit_msgs.srv import GetPositionFK
+        req = GetPositionFK.Request()
+        req.header.frame_id = BASE_LINK
+        req.fk_link_names = list(sg.GUARDED_LINKS)
+        req.robot_state.joint_state.name = list(joint_names)
+        req.robot_state.joint_state.position = [float(v) for v in joint_positions]
+        if not self._fk_client.wait_for_service(timeout_sec=3.0):
+            raise RuntimeError('/compute_fk is not available')
+        fut = self._fk_client.call_async(req)
+        t0 = time.time()
+        while not fut.done() and time.time() - t0 < 5.0:
+            time.sleep(0.01)
+        res = fut.result() if fut.done() else None
+        if res is None or res.error_code.val != 1 or len(res.pose_stamped) != len(sg.GUARDED_LINKS):
+            raise RuntimeError('forward kinematics failed')
+        out = {}
+        for link, ps in zip(sg.GUARDED_LINKS, res.pose_stamped):
+            if ps.header.frame_id not in (BASE_LINK, 'world', ''):
+                raise RuntimeError(f'FK returned frame {ps.header.frame_id!r}, expected {BASE_LINK}')
+            out[link] = (ps.pose.position.x, ps.pose.position.y, ps.pose.position.z)
+        return out
+
+    def _check_trajectory(self, traj, geom):
+        """FK every (sampled) waypoint and make sure the gripper/wrist links
+        stay above the table and in front of the rear limit."""
+        pts = traj.points
+        if not pts:
+            return False, 'planner returned an empty trajectory'
+        for i in sg.sample_indices(len(pts)):
+            try:
+                positions = self._fk_link_positions(traj.joint_names, pts[i].positions)
+            except Exception as e:
+                return False, f'cannot verify the path ({e})'
+            ok, why = sg.check_link_positions(positions, geom)
+            if not ok:
+                return False, f'{why} (waypoint {i + 1}/{len(pts)})'
+        return True, 'ok'
+
+    def _guarded_move(self, geom, label, **plan_kwargs):
+        """Plan -> verify the whole path -> only then execute. Fails closed:
+        no recorded table, planner failure, FK failure or any waypoint
+        outside the limits means the arm does not move."""
+        self._blocked = False
+        if geom is None:
+            return self._refuse('no table geometry recorded — record the table first')
         try:
-            self.moveit2.move_to_pose(
-                position=[rx, ry, rz],
-                quat_xyzw=GRASP_QUAT_XYZW,
-                cartesian=cartesian
-            )
-            # pymoveit2 returns False when planning/execution failed
+            self._ensure_safety_scene(geom)
+        except Exception as e:
+            return self._refuse(f'planning scene not ready: {e}')
+        try:
+            traj = self.moveit2.plan(**plan_kwargs)
+            if traj is None:
+                self.get_logger().error(f'{label}: planning failed')
+                return False
+            ok, why = self._check_trajectory(traj, geom)
+            if not ok:
+                return self._refuse(f'{label} unsafe: {why}')
+            self.moveit2.execute(traj)
             if self.moveit2.wait_until_executed() is False:
-                self.get_logger().error(
-                    f'move_to ({rx:.3f},{ry:.3f},{rz:.3f}) not executed')
+                self.get_logger().error(f'{label} not executed')
                 return False
             return True
         except Exception as e:
-            self.get_logger().error(f'move_to failed: {e}')
+            self.get_logger().error(f'{label} failed: {e}')
             return False
 
     def _lookup_object(self, object_id):
@@ -291,30 +428,22 @@ class ArmControllerNode(Node):
         except ValueError as e:
             self.get_logger().error(f'place rejected: {e}')
             return False
-        rx = max(0.10, min(0.60, rx))  # see _move_to's clamp for why 0.60
+        geom, _ = sg.load_geometry()
+        rx = max(0.10, min(0.60, rx))  # see _move_to's clamp
         ry = max(-0.35, min(0.35, ry))
-        rz = max(0.08, min(0.50, rz))
+        rz = max(sg.flange_floor_z(geom), min(0.50, rz))
 
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(
                 f'  [DRY RUN] place robot({rx:.3f},{ry:.3f},{rz:.3f})')
             time.sleep(0.5)
             return True
-        try:
-            self.moveit2.move_to_pose(
-                position=[rx, ry, rz],
-                quat_xyzw=GRASP_QUAT_XYZW,
-                cartesian=False
-            )
-            if self.moveit2.wait_until_executed() is False:
-                self.get_logger().error(
-                    f'place ({rx:.3f},{ry:.3f},{rz:.3f}) not executed')
-                return False   # don't release the object somewhere else
-            self._open_gripper()
-            return True
-        except Exception as e:
-            self.get_logger().error(f'place failed: {e}')
-            return False
+        if not self._guarded_move(
+                geom, f'place ({rx:.3f},{ry:.3f},{rz:.3f})',
+                position=[rx, ry, rz], quat_xyzw=GRASP_QUAT_XYZW, cartesian=False):
+            return False   # don't release the object somewhere else
+        self._open_gripper()
+        return True
 
     def _open_gripper(self):
         if self.dry_run or self.moveit2 is None:
@@ -363,11 +492,15 @@ class ArmControllerNode(Node):
             self.get_logger().info('  [DRY RUN] go_home')
             time.sleep(1.0)
             return True
-        # Retry up to 5 times waiting for zero velocity
+        # Retry up to 5 times waiting for zero velocity -- but never retry
+        # a move that was refused on safety grounds.
+        geom, _ = sg.load_geometry()
         for attempt in range(5):
             try:
-                self.moveit2.move_to_configuration(HOME_JOINTS)
-                if self.moveit2.wait_until_executed() is False:
+                if not self._guarded_move(
+                        geom, 'go_home', joint_positions=HOME_JOINTS, joint_names=JOINT_NAMES):
+                    if self._blocked:
+                        return False
                     raise RuntimeError('home trajectory not executed')
                 return True
             except Exception as e:
