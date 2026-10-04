@@ -134,25 +134,44 @@ class ProcessManager:
         )
         return True, f'Started {cfg["label"]} (pid {mp.popen.pid}).'
 
+    @staticmethod
+    def _terminate_tree(pid, timeout=8.0):
+        """SIGTERM the process and every descendant, then SIGKILL whatever is
+        still alive after `timeout`. Signalling only the parent (what this
+        used to do) kills `ros2 launch` but orphans its children -- a stale
+        move_group / robot_state_publisher kept running after every
+        robot_bringup Stop and then competed with the next Start's copy."""
+        try:
+            root = psutil.Process(pid)
+            procs = [root] + root.children(recursive=True)
+        except psutil.NoSuchProcess:
+            return False
+        for p in procs:
+            try:
+                p.send_signal(signal.SIGTERM)
+            except psutil.NoSuchProcess:
+                pass
+        _gone, alive = psutil.wait_procs(procs, timeout=timeout)
+        for p in alive:
+            try:
+                p.kill()
+            except psutil.NoSuchProcess:
+                pass
+        return True
+
     def stop(self, proc_id):
         cfg = config.PROCESSES[proc_id]
         mp = self._procs[proc_id]
         stopped_any = False
 
         if mp.popen is not None and mp.popen.poll() is None:
-            try:
-                os.killpg(os.getpgid(mp.popen.pid), signal.SIGTERM)
+            if self._terminate_tree(mp.popen.pid):
                 stopped_any = True
-            except ProcessLookupError:
-                pass
             mp.popen = None
 
         for pid in self._matching_pids(cfg['signature'], self._snapshot_cmdlines()):
-            try:
-                os.kill(pid, signal.SIGTERM)
+            if self._terminate_tree(pid):
                 stopped_any = True
-            except ProcessLookupError:
-                pass
 
         if not stopped_any:
             return False, f'{cfg["label"]} was not running.'
