@@ -1,112 +1,123 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../lib/api'
+import type { StatusEvent } from '../lib/pipeline'
 import type { RosStatus } from '../lib/types'
+import { useAudio } from '../lib/useAudio'
 import { CommandPipeline } from './CommandPipeline'
-
-function StatusLine({ label, value }: { label: string; value: string | null }) {
-  const lower = (value ?? '').toLowerCase()
-  const color = lower.includes('reject') || lower.includes('error') || lower.includes('failed')
-    ? 'text-(--color-red)'
-    : lower.includes('executing') || lower.includes('planning')
-      ? 'text-(--color-amber)'
-      : lower.includes('complete') || lower.includes('ready')
-        ? 'text-(--color-green)'
-        : 'text-(--color-text-dim)'
-  return (
-    <div className="flex gap-2 text-xs font-mono">
-      <span className="text-(--color-text-faint) w-24 shrink-0">{label}</span>
-      <span className={color}>{value ?? '—'}</span>
-    </div>
-  )
-}
+import { MicButton } from './MicButton'
 
 const BUILT_IN_SUGGESTIONS = ['go home', 'go left', 'go right']
+const AUTO_KEY = 'kinova.voice.autosend'
 
-export function CommandConsole({ ros, scene }: { ros: RosStatus | null; scene: RosStatus['scene_snapshot'] }) {
+function readAuto(): boolean {
+  try { return localStorage.getItem(AUTO_KEY) === '1' } catch { return false }
+}
+
+export function CommandConsole({ events, scene }: { events: StatusEvent[]; scene: RosStatus['scene_snapshot'] }) {
+  const audio = useAudio()
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [history, setHistory] = useState<string[]>([])
+  const [autoSend, setAutoSend] = useState(readAuto)
+  const [heard, setHeard] = useState('')            // transcript waiting for confirmation (editable)
+  const seenTs = useRef<number | null>(null)
 
-  // Dynamic suggestions from whatever's actually visible right now, not a
-  // hardcoded object list -- if the detector can't see something (it has
-  // no "pen" class, for instance -- COCO-80 doesn't have one), it simply
-  // won't appear here rather than offering a command that would fail.
+  // Objects the detector can actually see right now, not a fixed list.
   const objectSuggestions = useMemo(() => {
     if (!scene) return []
     const labels = new Set<string>()
-    for (const obj of Object.values(scene)) {
-      if (obj.reachable && !obj.stale) labels.add(obj.label)
-    }
+    for (const obj of Object.values(scene)) if (obj.reachable && !obj.stale) labels.add(obj.label)
     return [...labels].slice(0, 6).map((l) => `pick up the ${l}`)
   }, [scene])
 
   async function sendText(t: string) {
-    if (!t.trim()) return
+    const cmd = t.trim()
+    if (!cmd) return
     setSending(true)
     try {
-      await api.sendCommand(t)
-      setHistory((h) => [t, ...h].slice(0, 10))
+      await api.sendCommand(cmd)
+      setHistory((h) => [cmd, ...h].slice(0, 8))
     } finally {
       setSending(false)
     }
   }
 
+  // A new transcript either waits for the operator's OK (default) or, with
+  // auto-send on, goes straight to the planner. A transcript that was already
+  // there when the page loaded is never replayed.
+  useEffect(() => {
+    const t = audio.transcript
+    if (!t) return
+    if (seenTs.current === null) { seenTs.current = t.ts; return }
+    if (t.ts <= seenTs.current) return
+    seenTs.current = t.ts
+    if (autoSend) { sendText(t.text); setHeard('') } else setHeard(t.text)
+  }, [audio.transcript]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function toggleAuto(v: boolean) {
+    setAutoSend(v)
+    try { localStorage.setItem(AUTO_KEY, v ? '1' : '0') } catch { /* private mode */ }
+  }
+
   return (
     <div className="panel">
       <div className="panel-header">
-        <h2 className="font-semibold text-sm tracking-tight">Command Console</h2>
+        <h2>Command console</h2>
+        <label className="flex items-center gap-1.5 text-[11px] text-(--color-text-dim) cursor-pointer select-none">
+          <input type="checkbox" className="accent-(--color-amber)" checked={autoSend} onChange={(e) => toggleAuto(e.target.checked)} />
+          send voice commands without confirming
+        </label>
       </div>
-      <div className="p-5 space-y-4">
+      <div className="p-4 space-y-4">
+        <MicButton audio={audio} />
+
+        {heard && (
+          <div className="border border-(--color-amber) bg-(--color-amber)/[0.06] p-3 space-y-2">
+            <div className="label !text-(--color-amber)">Heard — confirm before the arm moves</div>
+            <input className="input font-mono" value={heard} onChange={(e) => setHeard(e.target.value)} />
+            <div className="flex gap-2">
+              <button className="btn btn-primary" disabled={sending || !heard.trim()} onClick={() => { sendText(heard); setHeard('') }}>
+                Send to planner
+              </button>
+              <button className="btn" onClick={() => setHeard('')}>Discard</button>
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-2">
           <input
-            className="flex-1 bg-black/30 border border-(--color-border-bright) rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-(--color-brand) transition-colors"
+            className="input font-mono"
             value={text}
             onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && sendText(text)}
-            placeholder="Type a command, or tap a suggestion below…"
+            onKeyDown={(e) => { if (e.key === 'Enter') { sendText(text); setText('') } }}
+            placeholder="or type a command…"
+            maxLength={300}
           />
-          <button className="btn btn-primary" disabled={sending} onClick={() => sendText(text)}>
-            {sending ? 'Sending…' : 'Send'}
+          <button className="btn btn-primary shrink-0" disabled={sending || !text.trim()} onClick={() => { sendText(text); setText('') }}>
+            {sending ? 'Sending' : 'Send'}
           </button>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-1.5">
           {BUILT_IN_SUGGESTIONS.map((s) => (
-            <button key={s} className="suggestion-chip" onClick={() => sendText(s)}>
-              {s}
-            </button>
+            <button key={s} className="suggestion-chip" onClick={() => sendText(s)}>{s}</button>
           ))}
           {objectSuggestions.map((s) => (
-            <button key={s} className="suggestion-chip" onClick={() => sendText(s)}>
-              ✦ {s}
-            </button>
+            <button key={s} className="suggestion-chip" onClick={() => sendText(s)}>{s}</button>
           ))}
           {objectSuggestions.length === 0 && (
-            <span className="text-xs text-(--color-text-faint) py-1.5">
-              no reachable objects detected yet
-            </span>
+            <span className="text-xs text-(--color-text-faint) py-1">no reachable objects detected yet</span>
           )}
         </div>
 
-        <CommandPipeline ros={ros} />
-
-        <details className="text-xs">
-          <summary className="text-(--color-text-faint) cursor-pointer select-none">Raw status (debug)</summary>
-          <div className="space-y-1.5 rounded-xl bg-black/20 p-3.5 mt-2">
-            <StatusLine label="planner" value={ros?.planner_status ?? null} />
-            <StatusLine label="pick/place" value={ros?.pick_place_status ?? null} />
-            <StatusLine label="arm" value={ros?.arm_status ?? null} />
-          </div>
-        </details>
+        <CommandPipeline events={events} />
 
         {history.length > 0 && (
           <div>
-            <div className="text-xs text-(--color-text-dim) mb-1.5">Recent commands</div>
-            <div className="space-y-1">
-              {history.map((h, i) => (
-                <div key={i} className="text-xs font-mono text-(--color-text-dim)">› {h}</div>
-              ))}
-            </div>
+            <div className="label mb-1">Recent</div>
+            {history.map((h, i) => (
+              <div key={i} className="text-xs font-mono text-(--color-text-dim)">› {h}</div>
+            ))}
           </div>
         )}
       </div>

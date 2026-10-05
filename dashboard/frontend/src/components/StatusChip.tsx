@@ -1,24 +1,16 @@
 type Tone = 'ok' | 'warn' | 'bad' | 'neutral'
 
-const TONE_STYLES: Record<Tone, string> = {
-  ok: 'text-(--color-green) border-(--color-green)/35 bg-(--color-green)/10',
-  warn: 'text-(--color-amber) border-(--color-amber)/35 bg-(--color-amber)/10',
-  bad: 'text-(--color-red) border-(--color-red)/35 bg-(--color-red)/10',
-  neutral: 'text-(--color-text-dim) border-(--color-border-bright) bg-white/[0.02]',
+const TONE_COLOR: Record<Tone, string> = {
+  ok: 'text-(--color-green)',
+  warn: 'text-(--color-amber)',
+  bad: 'text-(--color-red)',
+  neutral: 'text-(--color-text-dim)',
 }
 
-export function StatusChip({
-  label,
-  tone,
-  pulse = false,
-}: {
-  label: string
-  tone: Tone
-  pulse?: boolean
-}) {
+export function StatusChip({ label, tone, pulse = false }: { label: string; tone: Tone; pulse?: boolean }) {
   return (
-    <span className={`status-chip ${TONE_STYLES[tone]}`}>
-      {pulse && <span className="live-dot" style={{ background: 'currentColor' }} />}
+    <span className={`status-chip ${TONE_COLOR[tone]}`}>
+      <span className={`led ${pulse ? 'led-blink' : ''}`} />
       {label}
     </span>
   )
@@ -32,6 +24,8 @@ export function toneForProcessStatus(status: string): Tone {
 
 export function toneForCalibration(status: string | undefined): Tone {
   if (status === 'ok') return 'ok'
-  if (status === 'needs_recalibration') return 'bad'
+  if (status === 'needs_recalibration' || status === 'no_signal') return 'bad'
   return 'neutral'
 }
+
+export type { Tone }

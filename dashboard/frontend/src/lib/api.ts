@@ -71,6 +71,9 @@ export const api = {
   tableReset: () => request<{ ok: boolean }>('/table_geometry/reset', { method: 'POST' }),
   tableSave: () => request<{ ok: boolean; message: string }>('/table_geometry/save', { method: 'POST' }),
 
+  audioControl: (action: 'start' | 'stop' | 'cancel' | 'arm' | 'disarm') =>
+    request<{ ok: boolean }>('/audio/control', { method: 'POST', body: JSON.stringify({ action }) }),
+
   sendCommand: (text: string) =>
     request<ActionResult>('/command', { method: 'POST', body: JSON.stringify({ text }) }),
 }

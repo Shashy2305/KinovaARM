@@ -29,11 +29,17 @@ STALE_SEC = 6.0
 CHECK_PERIOD_SEC = 0.5
 FLAG_DIR = os.path.expanduser('~/.ros')
 
-CAMERAS = {
+# Only the independently mounted cameras can be bumped out of calibration.
+RECAL_CAMERAS = {
     'oakd': '/global_camera/color/image_raw',
     'realsense': '/global_camera/global_camera/color/image_raw',
     'realsense2': '/global_camera_2/global_camera_2/color/image_raw',
 }
+# The wrist camera never needs recalibration (its pose comes from the arm's
+# kinematics) but must still be watched for LIVENESS: this node used to
+# hard-code wrist: 'ok', so the dashboard said "4/4 ok" while the wrist
+# stream was black.
+CAMERAS = dict(RECAL_CAMERAS, wrist='/camera/color/image_raw')
 
 
 class CameraWatchdog(Node):
@@ -77,22 +83,29 @@ class CameraWatchdog(Node):
 
     def _tick(self):
         now = time.monotonic()
+        stale_now = {}
         for name in CAMERAS:
             last = self._last_msg_time[name]
             stale = last is None or (now - last) > STALE_SEC
+            stale_now[name] = stale
             if not stale:
-                if self._was_stale[name] and self._ever_fresh[name]:
+                if name in RECAL_CAMERAS and self._was_stale[name] and self._ever_fresh[name]:
                     # Was connected before, went stale, and just came back:
                     # a real reconnect, not the first-ever connection.
                     self._flag_for_recalibration(name)
                 self._ever_fresh[name] = True
             self._was_stale[name] = stale
 
-        status = {
-            name: ('needs_recalibration' if self._needs_recalibration(name) else 'ok')
-            for name in CAMERAS
-        }
-        status['wrist'] = 'ok'
+        # needs_recalibration > no_signal > ok. Detection nodes treat anything
+        # but 'ok' as "do not publish", which is right for a camera with no frames.
+        status = {}
+        for name in CAMERAS:
+            if name in RECAL_CAMERAS and self._needs_recalibration(name):
+                status[name] = 'needs_recalibration'
+            elif stale_now[name]:
+                status[name] = 'no_signal'
+            else:
+                status[name] = 'ok'
         self.status_pub.publish(String(data=json.dumps(status)))
 
 

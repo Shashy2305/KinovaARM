@@ -8,10 +8,11 @@ const CATEGORY_LABELS: Record<string, string> = {
   cameras: 'Cameras',
   perception: 'Perception',
   planning: 'Planning',
+  audio: 'Voice',
   control: 'Control',
 }
 
-const CATEGORY_ORDER = ['robot', 'cameras', 'perception', 'planning', 'control']
+const CATEGORY_ORDER = ['robot', 'cameras', 'perception', 'planning', 'audio', 'control']
 
 export function NodeControlGrid({
   processes,
@@ -183,7 +184,7 @@ export function NodeControlGrid({
       )}
 
       {confirmLive && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
           <div className="panel max-w-md w-full p-5 border-(--color-red)/50">
             <h3 className="text-(--color-red) font-semibold mb-2">⚠ Confirm LIVE arm control</h3>
             <p className="text-sm text-(--color-text-dim) mb-4">

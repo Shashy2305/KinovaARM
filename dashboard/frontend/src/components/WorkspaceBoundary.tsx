@@ -93,10 +93,10 @@ export function WorkspaceBoundary() {
             <button
               key={c.id}
               onClick={() => switchCamera(c.id)}
-              className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-all ${
+              className={`px-3 py-1 text-[0.78rem] font-medium border transition-colors ${
                 camera === c.id
-                  ? 'bg-gradient-to-r from-(--color-brand-from) to-(--color-brand-to) text-white'
-                  : 'bg-white/[0.04] text-(--color-text-dim) hover:text-(--color-text)'
+                  ? 'border-(--color-amber) text-(--color-amber)'
+                  : 'border-(--color-border-bright) text-(--color-text-dim) hover:text-(--color-text)'
               }`}
             >
               {c.label}
@@ -105,7 +105,7 @@ export function WorkspaceBoundary() {
         </div>
         <p className="text-xs text-(--color-text-dim) mb-4">{activeCam.note}</p>
 
-        <div className="relative rounded-xl overflow-hidden border border-(--color-border) cursor-crosshair select-none">
+        <div className="relative rounded overflow-hidden border border-(--color-border) cursor-crosshair select-none">
           <img
             ref={imgRef}
             src={cameraStreamUrl(camera)}

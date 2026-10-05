@@ -53,6 +53,18 @@ FALLBACK_FLANGE_Z_MIN = 0.30
 DEFAULT_FOOTPRINT_X = (-0.15, 0.75)
 DEFAULT_FOOTPRINT_Y = (-0.80, 0.85)
 
+# Targets the planner will accept and arm_controller will not clamp. One
+# definition, used by llm_planner (validation + prompt), arm_controller
+# (clamp) and scene_graph_node (what counts as "reachable"), so the scene
+# never offers the LLM an object the planner would then reject.
+PLAN_X_RANGE = (0.10, 0.60)
+PLAN_Y_RANGE = (-0.35, 0.35)
+# Conservative horizontal reach limit for the 'reachable' flag (true max ~0.9 m).
+MAX_REACH_XY_M = 0.85
+# An object whose height is more than this far below the recorded table
+# surface is a phantom (calibration error, reflection), not something on it.
+BELOW_TABLE_TOL_M = 0.04
+
 GUARDED_LINKS = [
     'end_effector_link', 'bracelet_link', 'robotiq_140_base_link',
     'left_inner_finger_pad', 'right_inner_finger_pad',
@@ -160,3 +172,22 @@ def sample_indices(n, max_samples=40):
     step = (n - 1) / float(max_samples - 1)
     idx = sorted({int(round(i * step)) for i in range(max_samples)} | {0, n - 1})
     return idx
+
+
+def is_reachable(x, y, z, workspace, table_top_z=None):
+    """True if an object at base_link (x, y, z) is something the arm may be
+    sent to: inside the workspace box, inside the planner's x/y limits, inside
+    the horizontal reach circle, and not below the recorded table surface."""
+    if z is None:
+        return False                      # height unknown -- cannot claim it is graspable
+    if not (workspace['x'][0] <= x <= workspace['x'][1]
+            and workspace['y'][0] <= y <= workspace['y'][1]
+            and workspace['z'][0] <= z <= workspace['z'][1]):
+        return False
+    if not (PLAN_X_RANGE[0] <= x <= PLAN_X_RANGE[1] and PLAN_Y_RANGE[0] <= y <= PLAN_Y_RANGE[1]):
+        return False
+    if (x * x + y * y) ** 0.5 > MAX_REACH_XY_M:
+        return False
+    if table_top_z is not None and z < table_top_z - BELOW_TABLE_TOL_M:
+        return False
+    return True

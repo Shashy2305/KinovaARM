@@ -16,7 +16,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import ros_bridge
-from .routers import calibration, camera, command, fusion, nodes, status, table_geometry
+from .routers import audio, calibration, camera, command, fusion, nodes, status, table_geometry
 
 app = FastAPI(title='KinovaARM Dashboard API')
 
@@ -34,6 +34,7 @@ app.include_router(calibration.router, prefix='/api')
 app.include_router(command.router, prefix='/api')
 app.include_router(fusion.router, prefix='/api')
 app.include_router(table_geometry.router, prefix='/api')
+app.include_router(audio.router, prefix='/api')
 
 
 @app.on_event('startup')

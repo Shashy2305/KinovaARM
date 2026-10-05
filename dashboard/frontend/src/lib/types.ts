@@ -1,4 +1,4 @@
-export type CalibrationStatus = 'ok' | 'needs_recalibration'
+export type CalibrationStatus = 'ok' | 'needs_recalibration' | 'no_signal'
 
 export interface SceneObject {
   label: string
@@ -17,13 +17,29 @@ export interface RosStatus {
   planner_status: string | null
   pick_place_status: string | null
   arm_status: string | null
+  audio_status: string | null
+  voice_transcript: Transcript | null
+}
+
+export interface Transcript {
+  text: string
+  ts: number
+  audio_s: number
+  latency_s: number
+}
+
+export interface AudioState {
+  status: string | null
+  level: number
+  mic_alive: boolean
+  transcript: Transcript | null
 }
 
 export type ProcessStatus = 'stopped' | 'running' | 'running_external' | 'conflict'
 
 export interface ProcessInfo {
   label: string
-  category: 'robot' | 'cameras' | 'perception' | 'planning' | 'control'
+  category: 'robot' | 'cameras' | 'perception' | 'planning' | 'audio' | 'control'
   hardware_affecting: boolean
   signature: string
   conflict_signatures?: string[]
@@ -33,6 +49,7 @@ export interface ProcessInfo {
 export interface StatusPayload {
   ros: RosStatus
   processes: Record<string, ProcessInfo>
+  events?: import('./pipeline').StatusEvent[]
 }
 
 export interface ActionResult {

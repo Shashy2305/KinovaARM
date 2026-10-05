@@ -214,6 +214,7 @@ class RealSense2Detection(Node):
                 'cy_3d':      round(cy3, 4),
                 'cz_3d':      round(cz3, 4),
                 'frame_id':   msg.header.frame_id,
+                'stamp':   msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
                 'source':     'realsense2',
             })
 

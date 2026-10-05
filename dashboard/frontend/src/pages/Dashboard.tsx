@@ -15,14 +15,14 @@ const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'fusion', label: '3D Fusion' },
   { id: 'calibration', label: 'Calibration' },
-  { id: 'boundary', label: 'Workspace Boundary' },
-  { id: 'table', label: 'Table Safety' },
+  { id: 'boundary', label: 'Workspace boundary' },
+  { id: 'table', label: 'Table safety' },
 ] as const
 
 type TabId = (typeof TABS)[number]['id']
 
 export function Dashboard() {
-  const { status, connected } = useStatus()
+  const { status, connected, events } = useStatus()
   const [tab, setTab] = useState<TabId>('overview')
 
   const processes = status?.processes ?? {}
@@ -32,50 +32,57 @@ export function Dashboard() {
   const noopRefresh = () => {}
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <TopStatusBar status={status} connected={connected} />
+    <div className="min-h-screen flex">
+      <aside className="w-52 shrink-0 border-r border-(--color-border) bg-(--color-panel) flex flex-col sticky top-0 h-screen">
+        <div className="px-4 pt-5 pb-4 border-b border-(--color-border)">
+          <div className="font-mono text-[0.95rem] font-semibold tracking-tight">KinovaARM</div>
+          <div className="text-[11px] text-(--color-text-dim) mt-1 leading-snug">
+            Gen3 7-DOF · Robotiq 2F-140<br />pick &amp; place by voice
+          </div>
+        </div>
+        <nav className="flex-1 py-2">
+          {TABS.map((t, i) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`w-full text-left flex items-baseline gap-2.5 px-4 py-2 text-[0.82rem] border-l-2 transition-colors ${
+                tab === t.id
+                  ? 'border-(--color-amber) text-(--color-text) bg-white/[0.03]'
+                  : 'border-transparent text-(--color-text-dim) hover:text-(--color-text) hover:bg-white/[0.02]'
+              }`}
+            >
+              <span className="font-mono text-[10px] text-(--color-text-faint)">{String(i + 1).padStart(2, '0')}</span>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        <div className="px-4 py-3 border-t border-(--color-border) text-[10.5px] leading-snug text-(--color-text-faint)">
+          <span className="text-(--color-amber)">No login.</span> Anyone on the lab network can reach this page and command the arm.
+        </div>
+      </aside>
 
-      <nav className="flex gap-1.5 px-8 pt-5">
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-4 py-2 rounded-full text-sm font-medium transition-all ${
-              tab === t.id
-                ? 'bg-gradient-to-r from-(--color-brand-from) to-(--color-brand-to) text-white shadow-[0_4px_16px_-4px_rgba(139,92,246,0.6)]'
-                : 'text-(--color-text-dim) hover:text-(--color-text) hover:bg-white/[0.04]'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
+      <div className="flex-1 min-w-0 flex flex-col">
+        <TopStatusBar status={status} connected={connected} />
 
-      <main className="flex-1 p-8 pt-5 space-y-5">
-        {tab === 'overview' && (
-          <>
-            <MultiCameraView />
-            <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-              <SceneView scene={status?.ros.scene_snapshot ?? null} />
-              <CommandConsole ros={status?.ros ?? null} scene={status?.ros.scene_snapshot ?? null} />
-            </div>
-            <NodeControlGrid processes={processes} onRefresh={noopRefresh} />
-            <SystemLog processes={processes} />
-          </>
-        )}
+        <main className="flex-1 p-5 space-y-4">
+          {tab === 'overview' && (
+            <>
+              <MultiCameraView />
+              <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                <CommandConsole events={events} scene={status?.ros.scene_snapshot ?? null} />
+                <SceneView scene={status?.ros.scene_snapshot ?? null} />
+              </div>
+              <NodeControlGrid processes={processes} onRefresh={noopRefresh} />
+              <SystemLog processes={processes} />
+            </>
+          )}
 
-        {tab === 'fusion' && <FusionView />}
-
-        {tab === 'calibration' && <CalibrationWizard />}
-
-        {tab === 'boundary' && <WorkspaceBoundary />}
-
-        {tab === 'table' && <TableRecorder />}
-      </main>
-
-      <footer className="px-8 py-4 text-[11px] text-(--color-text-faint) border-t border-(--color-border)">
-        KinovaARM Dashboard · network-accessible, no auth — lab network only
-      </footer>
+          {tab === 'fusion' && <FusionView />}
+          {tab === 'calibration' && <CalibrationWizard />}
+          {tab === 'boundary' && <WorkspaceBoundary />}
+          {tab === 'table' && <TableRecorder />}
+        </main>
+      </div>
     </div>
   )
 }

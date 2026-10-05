@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import type { StatusPayload } from './types'
+import type { StatusEvent } from './pipeline'
 
 /** Live status over the backend's WS, with silent auto-reconnect -- a demo
  * shouldn't die because a WebSocket blipped once. */
 export function useStatus() {
   const [status, setStatus] = useState<StatusPayload | null>(null)
   const [connected, setConnected] = useState(false)
+  // every status message in order (see backend ros_bridge._events); a plain
+  // 2 Hz snapshot would miss states that last milliseconds
+  const [events, setEvents] = useState<StatusEvent[]>([])
   const retryRef = useRef(0)
+  const cseq = useRef(0)
 
   useEffect(() => {
     let ws: WebSocket
@@ -23,7 +28,12 @@ export function useStatus() {
       }
       ws.onmessage = (ev) => {
         try {
-          setStatus(JSON.parse(ev.data))
+          const msg: StatusPayload = JSON.parse(ev.data)
+          setStatus(msg)
+          if (msg.events && msg.events.length) {
+            const fresh = msg.events.map((e) => ({ ...e, cseq: ++cseq.current }))
+            setEvents((prev) => [...prev, ...fresh].slice(-300))
+          }
         } catch {
           // ignore malformed frame
         }
@@ -46,5 +56,5 @@ export function useStatus() {
     }
   }, [])
 
-  return { status, connected }
+  return { status, connected, events }
 }

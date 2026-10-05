@@ -20,6 +20,7 @@ def get_status():
 async def ws_status(websocket: WebSocket):
     await websocket.accept()
     bridge = ros_bridge.get_bridge()
+    cursor = bridge.current_event_seq()      # never replay events from before this connection
     try:
         while True:
             # all_status() walks every process on the machine (~600 here) --
@@ -30,9 +31,13 @@ async def ws_status(websocket: WebSocket):
             # the backend going fully unresponsive after sitting idle
             # overnight. to_thread moves it off the event loop thread.
             processes = await asyncio.to_thread(process_manager.manager.all_status)
+            events = bridge.get_events_since(cursor)
+            if events:
+                cursor = events[-1]['seq']
             await websocket.send_json({
                 'ros': bridge.get_status(),
                 'processes': processes,
+                'events': events,
             })
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:

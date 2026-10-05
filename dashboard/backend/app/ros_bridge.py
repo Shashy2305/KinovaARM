@@ -10,6 +10,7 @@ exactly how those tools already avoid the threading bug hit during
 development (see multi_camera_calibrate.py's own comments): never drive a
 blocking ROS call from a thread nothing is spinning.
 """
+import collections
 import json
 import os
 import sys
@@ -25,7 +26,7 @@ from rclpy.node import Node
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import Image, PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import String
+from std_msgs.msg import Float32, String
 
 from . import config
 
@@ -64,7 +65,16 @@ class RosBridge(Node):
             'planner_status': None,
             'pick_place_status': None,
             'arm_status': None,
+            'audio_status': None,
+            'voice_transcript': None,
         }
+        self._audio_level = (0.0, 0.0)   # (rms, monotonic time received)
+        # Every status message, in order. Status topics flip in milliseconds
+        # (planner: PLANNING -> EXECUTING -> READY) so sampling them at the
+        # UI's 2 Hz misses states; the UI replays this log instead.
+        self._events = collections.deque(maxlen=400)
+        self._event_seq = 0
+        self._last_event_text = {}
         self._jpeg = {name: None for name in config.CAMERA_TOPICS}
         self._frame_ts = {name: 0.0 for name in config.CAMERA_TOPICS}
 
@@ -78,6 +88,12 @@ class RosBridge(Node):
                                   self._mk_status_cb('pick_place_status'), 10)
         self.create_subscription(String, '/arm_status',
                                   self._mk_status_cb('arm_status'), 10)
+        self.create_subscription(String, '/audio_status',
+                                  self._mk_status_cb('audio_status'), 10)
+        self.create_subscription(String, '/voice_transcript',
+                                  self._mk_status_cb('voice_transcript'), 10)
+        self.create_subscription(Float32, '/audio_level', self._on_audio_level, 10)
+        self.audio_control_pub = self.create_publisher(String, '/audio_control', 10)
 
         for name, topics in config.CAMERA_TOPICS.items():
             self.create_subscription(
@@ -103,11 +119,50 @@ class RosBridge(Node):
         with self._pc_lock:
             self._latest_pc[name] = msg
 
+    def _on_audio_level(self, msg):
+        self._audio_level = (float(msg.data), time.monotonic())
+
+    def publish_audio_control(self, action):
+        self.audio_control_pub.publish(String(data=action))
+
+    def get_audio_state(self):
+        """Small, cheap snapshot for the 10 Hz audio WebSocket."""
+        with self._lock:
+            status = self.latest.get('audio_status')
+            raw = self.latest.get('voice_transcript')
+        level, ts = self._audio_level
+        try:
+            transcript = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            transcript = None
+        age = time.monotonic() - ts if ts else None
+        return {
+            'status': status,
+            'level': level if (age is not None and age < 1.0) else 0.0,
+            'mic_alive': age is not None and age < 1.0,
+            'transcript': transcript,
+        }
+
+    _EVENT_KEYS = ('planner_status', 'arm_status', 'pick_place_status', 'audio_status')
+
     def _mk_status_cb(self, key):
         def cb(msg):
             with self._lock:
                 self.latest[key] = msg.data
+                if key in self._EVENT_KEYS and msg.data != self._last_event_text.get(key):
+                    self._last_event_text[key] = msg.data
+                    self._event_seq += 1
+                    self._events.append({'seq': self._event_seq, 'key': key,
+                                         'text': msg.data, 't': time.time()})
         return cb
+
+    def current_event_seq(self):
+        with self._lock:
+            return self._event_seq
+
+    def get_events_since(self, seq):
+        with self._lock:
+            return [e for e in self._events if e['seq'] > seq]
 
     def _on_image(self, name, msg):
         try:

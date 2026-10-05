@@ -170,6 +170,15 @@ PROCESSES = {
         'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot llm_planner_node',
         'signature': 'thesis_robot/lib/thesis_robot/llm_planner_node',
     },
+    'audio_node': {
+        'label': 'Voice input (microphone + Whisper)',
+        'category': 'audio',
+        'hardware_affecting': False,
+        # dashboard mode: idle until the mic button / hands-free toggle is used;
+        # transcripts are shown for confirmation, never auto-sent to the arm.
+        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot audio_node --ros-args -p mode:=dashboard',
+        'signature': 'thesis_robot/lib/thesis_robot/audio_node',
+    },
     'arm_controller': {
         'label': 'Arm controller',
         'category': 'control',
@@ -194,5 +203,6 @@ FULL_BRINGUP_ORDER = [
     ('wrist_detection', 2.0),
     ('scene_graph_node', 1.0),
     ('llm_planner_node', 1.0),
+    ('audio_node', 3.0),
     ('arm_controller', 1.0),
 ]

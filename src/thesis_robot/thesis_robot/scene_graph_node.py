@@ -34,6 +34,8 @@ import numpy as np
 import tf2_ros
 import tf2_geometry_msgs  # noqa: F401 — registers PointStamped with tf2
 
+from thesis_robot import safety_geometry as sg
+
 # Every coordinate stored in the scene (and therefore every coordinate the
 # LLM plans with and arm_controller executes) is in this frame.
 BASE_FRAME = 'base_link'
@@ -88,6 +90,7 @@ class SceneGraphNode(Node):
     def __init__(self):
         super().__init__('scene_graph_node')
         self.workspace = _load_workspace(self.get_logger())
+        self._table_cache = (None, None)
 
         # ── scene storage ────────────────────────────────────────────
         # { object_id: { label, x, y, z, confidence, last_seen, stale } }
@@ -181,13 +184,17 @@ class SceneGraphNode(Node):
 
     # ── SNAPSHOT PUBLISHER ───────────────────────────────────────────
     def publish_snapshot(self):
-        """Publish current scene as clean JSON for LLM consumption."""
-        if not self.scene:
-            return
-
-        # Build snapshot — include spatial predicates
+        """Publish current scene as clean JSON for LLM consumption. An empty
+        scene is published too ({}), so consumers clear their copy instead of
+        planning against the last non-empty snapshot forever."""
+        table_top = self._table_top()
         snapshot = {}
-        ids = list(self.scene.keys())
+        for obj in self.scene.values():
+            obj['reachable'] = self._is_reachable(obj['x'], obj['y'], obj['z'])
+        # relations are only meaningful between objects the planner can act on;
+        # computing them against every ghost made the payload quadratic and
+        # repeated the same "right_of_mouse" dozens of times.
+        live = [oid for oid, o in self.scene.items() if o['reachable'] and not o['stale']]
 
         for obj_id, obj in self.scene.items():
             entry = {
@@ -199,28 +206,28 @@ class SceneGraphNode(Node):
                 'reachable':  obj['reachable'],
                 'stale':      obj['stale'],
             }
+            if table_top is not None and obj['z'] is not None \
+                    and obj['z'] < table_top - sg.BELOW_TABLE_TOL_M:
+                entry['below_table'] = True     # phantom: lower than the table it should be on
 
-            # Add spatial relations to all other objects
-            relations = []
-            for other_id in ids:
-                if other_id == obj_id:
-                    continue
-                other = self.scene[other_id]
-                if self._is_near(obj, other):
-                    relations.append(f"near_{other['label']}")
-                if self._is_left_of(obj, other):
-                    relations.append(f"left_of_{other['label']}")
-                if self._is_right_of(obj, other):
-                    relations.append(f"right_of_{other['label']}")
-
-            if relations:
-                entry['relations'] = relations
+            if obj_id in live:
+                relations = set()
+                for other_id in live:
+                    if other_id == obj_id:
+                        continue
+                    other = self.scene[other_id]
+                    if self._is_near(obj, other):
+                        relations.add(f"near_{other['label']}")
+                    if self._is_left_of(obj, other):
+                        relations.add(f"left_of_{other['label']}")
+                    if self._is_right_of(obj, other):
+                        relations.add(f"right_of_{other['label']}")
+                if relations:
+                    entry['relations'] = sorted(relations)
 
             snapshot[obj_id] = entry
 
-        msg = String()
-        msg.data = json.dumps(snapshot)
-        self.snapshot_pub.publish(msg)
+        self.snapshot_pub.publish(String(data=json.dumps(snapshot)))
 
     # ── STALENESS UPDATE ─────────────────────────────────────────────
     def update_staleness(self):
@@ -249,12 +256,20 @@ class SceneGraphNode(Node):
             del self.scene[obj_id]
 
     # ── SPATIAL PREDICATES ───────────────────────────────────────────
+    def _table_top(self):
+        """Recorded table-top z (base_link), re-read only when the file changes."""
+        try:
+            mtime = os.path.getmtime(sg.TABLE_GEOMETRY_FILE)
+        except OSError:
+            self._table_cache = (None, None)
+            return None
+        if self._table_cache[0] != mtime:
+            geom, _err = sg.load_geometry()
+            self._table_cache = (mtime, geom['table_top_z'] if geom else None)
+        return self._table_cache[1]
+
     def _is_reachable(self, x, y, z):
-        if z is None:
-            return False  # height unknown — cannot claim it is graspable
-        return (self.workspace['x'][0] <= x <= self.workspace['x'][1] and
-                self.workspace['y'][0] <= y <= self.workspace['y'][1] and
-                self.workspace['z'][0] <= z <= self.workspace['z'][1])
+        return sg.is_reachable(x, y, z, self.workspace, self._table_top())
 
     def _is_near(self, a, b):
         dist = ((a['x']-b['x'])**2 + (a['y']-b['y'])**2)**0.5
@@ -328,15 +343,14 @@ class SceneGraphNode(Node):
         if cz <= 0.0:
             return None  # no valid depth at this pixel
 
-        try:
-            tf = self.tf_buffer.lookup_transform(
-                BASE_FRAME, frame_id, rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException) as e:
+        tf = self._lookup_tf(frame_id, num('stamp'))
+        if tf is None:
             self.get_logger().warn(
-                f'Dropping {label}: no TF {frame_id} -> {BASE_FRAME}: {e}',
+                f'Dropping {label}: no TF {frame_id} -> {BASE_FRAME}',
                 throttle_duration_sec=5.0)
             return None
+        if tf is False:
+            return None          # frame too old to trust
 
         pt = PointStamped()
         pt.header.frame_id = frame_id
@@ -344,6 +358,29 @@ class SceneGraphNode(Node):
         p = tf2_geometry_msgs.do_transform_point(pt, tf).point
         # plain floats: tf2 may return numpy scalars, which json can't encode
         return self._check_plausible(label, float(p.x), float(p.y), float(p.z))
+
+    def _lookup_tf(self, frame_id, stamp_s):
+        """base_link <- frame_id at the time the image was TAKEN when that is
+        trustworthy, else the latest transform. Matters for the wrist camera:
+        it moves with the arm, and YOLO + queueing add 0.05-1 s of delay, so
+        projecting with the LATEST arm pose smears an object across the table
+        while the arm is moving. A stamp is only used if it is within 10 s of
+        now (the OAK-D driver may stamp with its own clock); a frame older
+        than 1.0 s is rejected (returns False). None = no TF at all."""
+        when = rclpy.time.Time()
+        if stamp_s is not None:
+            age = time.time() - stamp_s
+            if abs(age) < 10.0:
+                if age > 1.0:
+                    return False
+                when = rclpy.time.Time(seconds=int(stamp_s), nanoseconds=int((stamp_s % 1) * 1e9))
+        for t in ([when, rclpy.time.Time()] if when != rclpy.time.Time() else [when]):
+            try:
+                return self.tf_buffer.lookup_transform(BASE_FRAME, frame_id, t)
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                    tf2_ros.ExtrapolationException):
+                continue
+        return None
 
     def _check_plausible(self, label, x, y, z):
         """Reject a resolved position too far from base_link to be a real

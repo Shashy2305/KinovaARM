@@ -10,8 +10,10 @@ import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
+from thesis_robot import motion_utils as mu
 from thesis_robot import safety_geometry as sg
 
 JOINT_NAMES = [
@@ -53,11 +55,17 @@ class ArmControllerNode(Node):
         # pick geometry (metres)
         self.declare_parameter('grasp_z_offset',     0.0)   # added to object z for the grasp height
         self.declare_parameter('pregrasp_clearance', 0.10)  # min height of pre-grasp above grasp
+        # try several tool yaws and keep the IK solution that moves the joints least
+        self.declare_parameter('yaw_flex', True)
 
         self.dry_run   = self.get_parameter('dry_run').value
         self.speed     = self.get_parameter('speed').value
         self.grasp_z_offset     = self.get_parameter('grasp_z_offset').value
         self.pregrasp_clearance = self.get_parameter('pregrasp_clearance').value
+        self.yaw_flex  = self.get_parameter('yaw_flex').value
+        self._tool_quat = list(GRASP_QUAT_XYZW)   # orientation of the last pose move; cartesian moves keep it
+        self._js = None                            # latest /joint_states {name: position}
+        self._js_time = 0.0
         self.executing = False
         self._lock     = threading.Lock()
         self.moveit2   = None
@@ -73,9 +81,11 @@ class ArmControllerNode(Node):
         self.pp_status_pub = self.create_publisher(String, '/pick_place_status', 10)
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
         self.create_subscription(String, '/scene_snapshot', self._scene_callback, 10)
-        from moveit_msgs.srv import ApplyPlanningScene, GetPositionFK
+        self.create_subscription(JointState, '/joint_states', self._on_joint_state, 10)
+        from moveit_msgs.srv import ApplyPlanningScene, GetPositionFK, GetPositionIK
         self._apply_scene_client = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
         self._fk_client = self.create_client(GetPositionFK, '/compute_fk')
+        self._ik_client = self.create_client(GetPositionIK, '/compute_ik')
 
         if not self.dry_run:
             self.create_timer(2.0, self._delayed_moveit_init)
@@ -90,8 +100,15 @@ class ArmControllerNode(Node):
         self.destroy_timer(list(self._timers)[0])
         try:
             from pymoveit2 import MoveIt2
+            # pymoveit2's blocking calls (plan, wait_until_executed, ...) call
+            # rclpy.spin_once() on the node they were given. Doing that on THIS
+            # node while the executor also spins it crashes the executor
+            # ("wait set index ... out of bounds"), after which every service
+            # call that waits on the executor (FK/IK/scene) hangs. A private
+            # helper node that nothing else spins avoids the collision.
+            self._moveit_node = rclpy.create_node('arm_controller_moveit')
             self.moveit2 = MoveIt2(
-                node=self,
+                node=self._moveit_node,
                 joint_names=JOINT_NAMES,
                 base_link_name=BASE_LINK,
                 end_effector_name=EE_LINK,
@@ -99,7 +116,6 @@ class ArmControllerNode(Node):
             )
             self.moveit2.max_velocity     = self.speed
             self.moveit2.max_acceleration = self.speed
-            self.moveit2.planner_id       = "PTP"
             self.get_logger().info('MoveIt2 initialised successfully — LIVE mode active')
             geom, err = sg.load_geometry()
             if geom is None:
@@ -235,8 +251,8 @@ class ArmControllerNode(Node):
         # is derived from the recorded table height, NOT a fixed 0.08 (which
         # put the fingertips into the table: flange z=0.12 -> tips at ~-0.09).
         geom, _ = sg.load_geometry()
-        rx = max(0.10, min(0.60, rx))
-        ry = max(-0.35, min(0.35, ry))
+        rx = max(sg.PLAN_X_RANGE[0], min(sg.PLAN_X_RANGE[1], rx))
+        ry = max(sg.PLAN_Y_RANGE[0], min(sg.PLAN_Y_RANGE[1], ry))
         rz = max(sg.flange_floor_z(geom), min(0.50, rz))
 
         if self.dry_run or self.moveit2 is None:
@@ -247,7 +263,7 @@ class ArmControllerNode(Node):
             return True
         return self._guarded_move(
             geom, f'move_to ({rx:.3f},{ry:.3f},{rz:.3f})',
-            position=[rx, ry, rz], quat_xyzw=GRASP_QUAT_XYZW, cartesian=cartesian)
+            position=[rx, ry, rz], cartesian=cartesian)
 
     # ── SAFETY: planning scene + trajectory check ────────────────────
     def _move_group_count(self):
@@ -346,9 +362,113 @@ class ArmControllerNode(Node):
                 return False, f'{why} (waypoint {i + 1}/{len(pts)})'
         return True, 'ok'
 
-    def _guarded_move(self, geom, label, **plan_kwargs):
+    # ── IK / planning ────────────────────────────────────────────────
+    def _on_joint_state(self, msg):
+        self._js = dict(zip(msg.name, msg.position))
+        self._js_time = time.time()
+
+    def _current_joint_vector(self):
+        """Arm joint angles from OUR OWN /joint_states subscription (the
+        executor keeps it fresh). pymoveit2's cached copy only updates while
+        one of its blocking calls is spinning, so it can be arbitrarily old.
+        Refuses stale data -- also catches a dead arm connection."""
+        if self._js is None or time.time() - self._js_time > 1.0:
+            raise RuntimeError('joint states are missing or stale — is the arm connected?')
+        try:
+            return [self._js[j] for j in JOINT_NAMES]
+        except KeyError as e:
+            raise RuntimeError(f'joint state is missing {e}')
+
+    def _ik(self, seed, position, quat, timeout_s=0.15):
+        """One IK solve (collision-aware, seeded from `seed`) via /compute_ik;
+        polls the future for the same reason as _fk_link_positions."""
+        from moveit_msgs.srv import GetPositionIK
+        req = GetPositionIK.Request()
+        r = req.ik_request
+        r.group_name = GROUP_NAME
+        r.ik_link_name = EE_LINK
+        r.avoid_collisions = True
+        r.robot_state.joint_state.name = list(JOINT_NAMES)
+        r.robot_state.joint_state.position = [float(v) for v in seed]
+        r.pose_stamped.header.frame_id = BASE_LINK
+        p = r.pose_stamped.pose
+        p.position.x, p.position.y, p.position.z = (float(v) for v in position)
+        p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w = (float(v) for v in quat)
+        r.timeout.sec = 0
+        r.timeout.nanosec = int(timeout_s * 1e9)
+        if not self._ik_client.wait_for_service(timeout_sec=3.0):
+            raise RuntimeError('/compute_ik is not available')
+        fut = self._ik_client.call_async(req)
+        t0 = time.time()
+        while not fut.done() and time.time() - t0 < timeout_s + 3.0:
+            time.sleep(0.01)
+        res = fut.result() if fut.done() else None
+        if res is None or res.error_code.val != 1:
+            return None
+        sol = dict(zip(res.solution.joint_state.name, res.solution.joint_state.position))
+        return [sol[j] for j in JOINT_NAMES]
+
+    def _solve_goal_joints(self, position, quat, allow_yaw):
+        """The IK solution (and tool orientation) that moves the joints the
+        least from where the arm is now -- see motion_utils. The IK solver
+        restarts randomly, so a single sweep occasionally misses the good
+        solution; if the best one found is still too big, sweep again with a
+        longer per-solve timeout before refusing."""
+        seed = self._current_joint_vector()
+        best = None
+        for timeout_s in (0.15, 0.4):
+            for yaw in (mu.yaw_candidates_deg() if allow_yaw else [0]):
+                q = mu.rotate_about_tool_z(quat, yaw)
+                for _ in range(2):
+                    sol = self._ik(seed, position, q, timeout_s)
+                    if sol is None:
+                        continue
+                    sol = mu.unwrap_to_seed(sol, seed)
+                    if sol is None:
+                        continue
+                    d = mu.joint_deltas(sol, seed)
+                    cand = (max(d), sum(d), sol, q)
+                    if mu.better(cand, best):
+                        best = cand
+                if best is not None and best[0] <= mu.GOOD_ENOUGH_DELTA_RAD:
+                    break
+            if best is not None and best[0] <= mu.MAX_JOINT_DELTA_RAD:
+                break
+        if best is None:
+            raise RuntimeError('no collision-free IK solution for that pose')
+        if best[0] > mu.MAX_JOINT_DELTA_RAD:
+            raise RuntimeError(
+                f'that pose needs a {best[0]:.1f} rad single-joint reconfiguration '
+                f'(limit {mu.MAX_JOINT_DELTA_RAD}) — go home first or pick a closer target')
+        self.get_logger().info(
+            f'IK: max joint change {best[0]:.2f} rad, total {best[1]:.2f} rad')
+        return best[2], best[3]
+
+    def _plan_joint_goal(self, goal, geom):
+        """Pilz PTP first (joint-space, repeatable); the collision-aware OMPL
+        planner only as a fallback. Every candidate path must pass the FK
+        check before it is allowed to execute. Returns (trajectory, reason)."""
+        attempts = [('pilz_industrial_motion_planner', 'PTP')] + [('', '')] * 3
+        reason = 'planning failed'
+        for pipeline, planner in attempts:
+            self.moveit2.pipeline_id = pipeline
+            self.moveit2.planner_id = planner
+            traj = self.moveit2.plan(
+                joint_positions=goal, joint_names=JOINT_NAMES,
+                start_joint_state=self._current_joint_vector())
+            if traj is None:
+                continue
+            ok, why = self._check_trajectory(traj, geom)
+            if ok:
+                return traj, 'ok'
+            reason = why
+            self.get_logger().warn(
+                f'{pipeline or "OMPL"} path rejected by the safety check: {why}')
+        return None, reason
+
+    def _guarded_move(self, geom, label, position=None, joint_positions=None, cartesian=False):
         """Plan -> verify the whole path -> only then execute. Fails closed:
-        no recorded table, planner failure, FK failure or any waypoint
+        no recorded table, planner/IK failure, FK failure or any waypoint
         outside the limits means the arm does not move."""
         self._blocked = False
         if geom is None:
@@ -358,17 +478,36 @@ class ArmControllerNode(Node):
         except Exception as e:
             return self._refuse(f'planning scene not ready: {e}')
         try:
-            traj = self.moveit2.plan(**plan_kwargs)
+            quat_used = None
+            if joint_positions is not None:
+                traj, why = self._plan_joint_goal(list(joint_positions), geom)
+                quat_used = list(GRASP_QUAT_XYZW)
+            elif cartesian:
+                traj = self.moveit2.plan(
+                    position=position, quat_xyzw=self._tool_quat, cartesian=True,
+                    start_joint_state=self._current_joint_vector())
+                why = 'cartesian planning failed'
+                if traj is not None:
+                    ok, why = self._check_trajectory(traj, geom)
+                    if not ok:
+                        traj = None
+                        return self._refuse(f'{label} unsafe: {why}')
+            else:
+                goal, quat_used = self._solve_goal_joints(
+                    position, GRASP_QUAT_XYZW, self.yaw_flex)
+                traj, why = self._plan_joint_goal(goal, geom)
             if traj is None:
-                self.get_logger().error(f'{label}: planning failed')
+                if 'safety' in why or 'below the table' in why or 'behind' in why \
+                        or 'cannot verify' in why:
+                    return self._refuse(f'{label} unsafe: {why}')
+                self.get_logger().error(f'{label}: {why}')
                 return False
-            ok, why = self._check_trajectory(traj, geom)
-            if not ok:
-                return self._refuse(f'{label} unsafe: {why}')
             self.moveit2.execute(traj)
             if self.moveit2.wait_until_executed() is False:
                 self.get_logger().error(f'{label} not executed')
                 return False
+            if quat_used is not None:
+                self._tool_quat = list(quat_used)
             return True
         except Exception as e:
             self.get_logger().error(f'{label} failed: {e}')
@@ -429,8 +568,8 @@ class ArmControllerNode(Node):
             self.get_logger().error(f'place rejected: {e}')
             return False
         geom, _ = sg.load_geometry()
-        rx = max(0.10, min(0.60, rx))  # see _move_to's clamp
-        ry = max(-0.35, min(0.35, ry))
+        rx = max(sg.PLAN_X_RANGE[0], min(sg.PLAN_X_RANGE[1], rx))  # see _move_to's clamp
+        ry = max(sg.PLAN_Y_RANGE[0], min(sg.PLAN_Y_RANGE[1], ry))
         rz = max(sg.flange_floor_z(geom), min(0.50, rz))
 
         if self.dry_run or self.moveit2 is None:
@@ -439,15 +578,18 @@ class ArmControllerNode(Node):
             time.sleep(0.5)
             return True
         if not self._guarded_move(
-                geom, f'place ({rx:.3f},{ry:.3f},{rz:.3f})',
-                position=[rx, ry, rz], quat_xyzw=GRASP_QUAT_XYZW, cartesian=False):
+                geom, f'place ({rx:.3f},{ry:.3f},{rz:.3f})', position=[rx, ry, rz]):
             return False   # don't release the object somewhere else
         self._open_gripper()
         return True
 
-    def _open_gripper(self):
+    def _gripper(self, position, label):
+        """Command the gripper and CHECK the outcome. The old code swallowed
+        every error and returned True, so a pick with a dead/absent gripper
+        controller carried on "grasping" thin air. Closing on an object is
+        reported as 'stalled' by the controller and counts as success."""
         if self.dry_run or self.moveit2 is None:
-            self.get_logger().info('  [DRY RUN] open_gripper')
+            self.get_logger().info(f'  [DRY RUN] {label}')
             time.sleep(0.3)
             return True
         try:
@@ -456,36 +598,41 @@ class ArmControllerNode(Node):
             if not hasattr(self, '_gripper_client'):
                 self._gripper_client = ActionClient(
                     self, GC, '/robotiq_gripper_controller/gripper_cmd')
+            if not self._gripper_client.wait_for_server(timeout_sec=3.0):
+                self.get_logger().error(f'{label}: gripper action server not available')
+                return False
             goal = GC.Goal()
-            goal.command.position   = GRIPPER_OPEN
+            goal.command.position = float(position)
             goal.command.max_effort = 50.0
-            self._gripper_client.send_goal_async(goal)
-            time.sleep(1.0)
-            return True
+            fut = self._gripper_client.send_goal_async(goal)
+            t0 = time.time()
+            while not fut.done() and time.time() - t0 < 3.0:
+                time.sleep(0.02)
+            handle = fut.result() if fut.done() else None
+            if handle is None or not handle.accepted:
+                self.get_logger().error(f'{label}: gripper goal was not accepted')
+                return False
+            rfut = handle.get_result_async()
+            t0 = time.time()
+            while not rfut.done() and time.time() - t0 < 6.0:
+                time.sleep(0.02)
+            if not rfut.done():
+                self.get_logger().error(f'{label}: gripper did not finish within 6 s')
+                return False
+            res = rfut.result().result
+            if res.reached_goal or res.stalled:
+                return True
+            self.get_logger().error(f'{label}: gripper stopped short (position {res.position:.3f})')
+            return False
         except Exception as e:
-            self.get_logger().warn(f'open_gripper skipped: {e}')
-            return True
+            self.get_logger().error(f'{label} failed: {e}')
+            return False
+
+    def _open_gripper(self):
+        return self._gripper(GRIPPER_OPEN, 'open_gripper')
 
     def _close_gripper(self):
-        if self.dry_run or self.moveit2 is None:
-            self.get_logger().info('  [DRY RUN] close_gripper')
-            time.sleep(0.3)
-            return True
-        try:
-            from control_msgs.action import GripperCommand as GC
-            from rclpy.action import ActionClient
-            if not hasattr(self, '_gripper_client'):
-                self._gripper_client = ActionClient(
-                    self, GC, '/robotiq_gripper_controller/gripper_cmd')
-            goal = GC.Goal()
-            goal.command.position   = GRIPPER_CLOSED
-            goal.command.max_effort = 50.0
-            self._gripper_client.send_goal_async(goal)
-            time.sleep(1.0)
-            return True
-        except Exception as e:
-            self.get_logger().warn(f'close_gripper skipped: {e}')
-            return True
+        return self._gripper(GRIPPER_CLOSED, 'close_gripper')
 
     def _safe_home(self):
         if self.dry_run or self.moveit2 is None:
@@ -497,8 +644,7 @@ class ArmControllerNode(Node):
         geom, _ = sg.load_geometry()
         for attempt in range(5):
             try:
-                if not self._guarded_move(
-                        geom, 'go_home', joint_positions=HOME_JOINTS, joint_names=JOINT_NAMES):
+                if not self._guarded_move(geom, 'go_home', joint_positions=HOME_JOINTS):
                     if self._blocked:
                         return False
                     raise RuntimeError('home trajectory not executed')

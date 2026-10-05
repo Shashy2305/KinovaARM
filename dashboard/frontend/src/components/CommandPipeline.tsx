@@ -1,129 +1,101 @@
 import { useEffect, useRef, useState } from 'react'
-import type { RosStatus } from '../lib/types'
+import {
+  applyEvent, stageSeconds, STAGE_ORDER,
+  type Run, type StageId, type StatusEvent,
+} from '../lib/pipeline'
 
-type Stage = 'idle' | 'planning' | 'executing' | 'done' | 'failed'
-
-interface StepState {
-  index: number
-  total: number
-  action: string
-  done: boolean
+const LABEL: Record<StageId, string> = {
+  listen: 'Listen', transcribe: 'Transcribe', plan: 'Plan', execute: 'Verify + Move',
 }
 
-function parseStep(text: string): { index: number; total: number; action: string } | null {
-  // arm_controller_node.py logs "Step i/N: action" to /pick_place_status
-  const m = text.match(/Step (\d+)\/(\d+):\s*(.+)/)
-  if (!m) return null
-  return { index: Number(m[1]), total: Number(m[2]), action: m[3] }
-}
-
-/** Visualizes the real pipeline a command goes through, driven entirely by
- * /planner_status and /pick_place_status text -- no separate "plan" topic
- * exists today, so step-by-step state is reconstructed by watching how
- * those two status strings change over time, not read from one snapshot. */
-export function CommandPipeline({ ros }: { ros: RosStatus | null }) {
-  const [stage, setStage] = useState<Stage>('idle')
-  const [steps, setSteps] = useState<StepState[]>([])
-  const lastPlanner = useRef<string | null>(null)
-  const lastPickPlace = useRef<string | null>(null)
+/** The pipeline a command really goes through, rebuilt from the ordered
+ * status messages the nodes publish (see lib/pipeline.ts). Timers show real
+ * wall-clock time, so "Plan 12.4 s" is the actual LLM latency. */
+export function CommandPipeline({ events }: { events: StatusEvent[] }) {
+  const [run, setRun] = useState<Run | null>(null)
+  const [now, setNow] = useState(() => performance.now())
+  const lastC = useRef(0)
 
   useEffect(() => {
-    const planner = ros?.planner_status ?? null
-    if (planner && planner !== lastPlanner.current) {
-      lastPlanner.current = planner
-      const lower = planner.toLowerCase()
-      if (lower.startsWith('planning')) {
-        setStage('planning')
-        setSteps([])
-      } else if (lower.startsWith('rejected') || lower.includes('error')) {
-        setStage('failed')
-      } else if (lower.startsWith('executing')) {
-        setStage('executing')
-      } else if (lower.includes('complete')) {
-        setStage('done')
-      } else if (lower.startsWith('ready') && stage === 'executing') {
-        // arm_controller republishes READY after finishing a plan either way
-        setStage((s) => (s === 'executing' ? 'done' : s))
-      }
-    }
-  }, [ros?.planner_status, stage])
+    const fresh = events.filter((e) => (e.cseq ?? 0) > lastC.current)
+    if (!fresh.length) return
+    lastC.current = fresh[fresh.length - 1].cseq ?? lastC.current
+    const rt = performance.now()
+    setRun((prev) => fresh.reduce<Run | null>((r, e) => applyEvent(r, e, rt), prev))
+  }, [events])
 
+  const active = !!run && STAGE_ORDER.some((s) => run.stages[s].state === 'active')
   useEffect(() => {
-    const pp = ros?.pick_place_status ?? null
-    if (pp && pp !== lastPickPlace.current) {
-      lastPickPlace.current = pp
-      const parsed = parseStep(pp)
-      if (parsed) {
-        setSteps((prev) => {
-          const next: StepState[] = []
-          for (let i = 1; i <= parsed.total; i++) {
-            const existing = prev.find((s) => s.index === i)
-            next.push({
-              index: i,
-              total: parsed.total,
-              action: i === parsed.index ? parsed.action : existing?.action ?? '…',
-              done: i < parsed.index || existing?.done || false,
-            })
-          }
-          return next
-        })
-      }
-      if (pp.toUpperCase().includes('FAILED')) setStage('failed')
-    }
-  }, [ros?.pick_place_status])
+    if (!active) return
+    const id = setInterval(() => setNow(performance.now()), 100)
+    return () => clearInterval(id)
+  }, [active])
 
-  if (stage === 'idle') return null
-
-  const STAGE_META: Record<Stage, { label: string; tone: string }> = {
-    idle: { label: '', tone: '' },
-    planning: { label: 'Thinking…', tone: 'text-(--color-amber)' },
-    executing: { label: 'Executing', tone: 'text-(--color-brand)' },
-    done: { label: 'Complete', tone: 'text-(--color-green)' },
-    failed: { label: 'Failed / Rejected', tone: 'text-(--color-red)' },
+  if (!run) {
+    return (
+      <div className="border border-dashed border-(--color-border-bright) px-3 py-4 text-center text-xs text-(--color-text-faint) font-mono">
+        PIPELINE IDLE — type or speak a command
+      </div>
+    )
   }
 
+  const failed = STAGE_ORDER.some((s) => run.stages[s].state === 'failed')
+  const finished = run.stages.execute.state === 'done'
+
   return (
-    <div className="rounded-xl bg-black/20 p-4 space-y-3 border border-(--color-border)">
-      <div className="flex items-center gap-2.5">
-        {(stage === 'planning' || stage === 'executing') && (
-          <span className="relative flex h-2.5 w-2.5">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-current opacity-60" />
-            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-current" />
-          </span>
-        )}
-        <span className={`text-sm font-semibold ${STAGE_META[stage].tone}`}>{STAGE_META[stage].label}</span>
+    <div className="border border-(--color-border) bg-(--color-bg)">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-(--color-border)">
+        <span className="font-mono text-xs truncate">
+          <span className="text-(--color-text-faint)">{run.voice ? 'VOICE' : 'TEXT'} › </span>
+          {run.command || '…'}
+        </span>
+        <span className={`label shrink-0 ${failed ? '!text-(--color-red)' : finished ? '!text-(--color-green)' : '!text-(--color-amber)'}`}>
+          {failed ? 'stopped' : finished ? 'complete' : 'working'}
+        </span>
       </div>
 
-      {steps.length > 0 && (
-        <ol className="space-y-1.5">
-          {steps.map((s) => {
-            const isCurrent = !s.done && steps.every((x) => x.index >= s.index || x.done)
-            return (
-              <li key={s.index} className="flex items-center gap-2.5 text-sm">
-                <span
-                  className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 transition-colors ${
-                    s.done
-                      ? 'bg-(--color-green)/20 text-(--color-green)'
-                      : isCurrent
-                        ? 'bg-(--color-brand)/25 text-(--color-brand)'
-                        : 'bg-white/5 text-(--color-text-faint)'
-                  }`}
-                >
-                  {s.done ? '✓' : s.index}
-                </span>
-                <span className={s.done ? 'text-(--color-text-dim) line-through decoration-(--color-text-faint)' : isCurrent ? 'text-(--color-text)' : 'text-(--color-text-faint)'}>
-                  {s.action}
-                </span>
-                {isCurrent && (
-                  <span className="relative flex h-1.5 w-1.5 ml-auto">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-(--color-brand) opacity-75" />
-                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-(--color-brand)" />
-                  </span>
-                )}
-              </li>
-            )
-          })}
-        </ol>
+      <ol className="grid grid-cols-4 gap-px bg-(--color-border)">
+        {STAGE_ORDER.map((id) => {
+          const st = run.stages[id]
+          const tone =
+            st.state === 'failed' ? 'var(--color-red)'
+              : st.state === 'done' ? 'var(--color-green)'
+                : st.state === 'active' ? 'var(--color-amber)' : 'var(--color-text-faint)'
+          const secs = stageSeconds(st, now).toFixed(1)
+          return (
+            <li key={id} className="bg-(--color-bg) px-3 pt-2.5 pb-3">
+              <div className="label" style={{ color: st.state === 'skip' ? undefined : tone }}>{LABEL[id]}</div>
+              <div className="font-mono text-sm mt-1 h-5" style={{ color: tone }}>
+                {st.state === 'skip' && <span className="text-(--color-text-faint)">—</span>}
+                {st.state === 'pending' && <span className="text-(--color-text-faint)">waiting</span>}
+                {st.state === 'active' && `${secs} s`}
+                {st.state === 'done' && `${secs} s ✓`}
+                {st.state === 'failed' && 'failed'}
+              </div>
+              <div className="mt-2 h-[3px]">
+                {st.state === 'active' ? <div className="sweep h-full" />
+                  : <div className="h-full" style={{
+                    background: st.state === 'done' ? 'var(--color-green)' : st.state === 'failed' ? 'var(--color-red)' : '#262b30',
+                    opacity: st.state === 'skip' ? 0.4 : 1 }} />}
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+
+      {run.steps.length > 0 && (
+        <div className="px-3 py-2 border-t border-(--color-border) font-mono text-xs space-y-0.5">
+          {run.steps.map((s) => (
+            <div key={s.index} className="text-(--color-text-dim)">
+              <span className="text-(--color-text-faint)">{s.index}/{s.total}</span> {s.action}
+            </div>
+          ))}
+        </div>
+      )}
+      {run.failure && (
+        <div className="px-3 py-2 border-t border-(--color-red)/50 bg-(--color-red)/10 text-xs font-mono text-(--color-red) break-words">
+          {run.failure}
+        </div>
       )}
     </div>
   )

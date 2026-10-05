@@ -153,9 +153,9 @@ def validate_plan(plan, scene, z_floor=0.08):
 
         # Workspace bounds — x upper bound matches arm_controller_node.py's
         # clamp (0.60, widened 2026-09-30; see its comment for why)
-        if 'x' in step and not (0.10 <= step['x'] <= 0.60):
+        if 'x' in step and not (sg.PLAN_X_RANGE[0] <= step['x'] <= sg.PLAN_X_RANGE[1]):
             return False, f"Step {i}: x={step['x']:.3f} outside workspace", warnings
-        if 'y' in step and not (-0.35 <= step['y'] <= 0.35):
+        if 'y' in step and not (sg.PLAN_Y_RANGE[0] <= step['y'] <= sg.PLAN_Y_RANGE[1]):
             return False, f"Step {i}: y={step['y']:.3f} outside workspace", warnings
 
     return True, f"Plan approved — {len(plan)} steps", warnings
@@ -173,7 +173,14 @@ class LLMPlannerNode(Node):
 
         # Declare model as a ROS2 parameter — change without recompiling
         self.declare_parameter('model', 'qwen2.5:7b')
+        # A hung Ollama must not leave is_planning stuck True (every later
+        # command would be ignored as "already planning").
+        self.declare_parameter('llm_timeout_s', 60.0)
+        self.declare_parameter('max_scene_age_s', 3.0)
         self.model = self.get_parameter('model').value
+        self.max_scene_age = float(self.get_parameter('max_scene_age_s').value)
+        self.llm = ollama.Client(timeout=float(self.get_parameter('llm_timeout_s').value))
+        self._scene_time = 0.0
 
         # ── state ────────────────────────────────────────────────────
         self.latest_scene    = {}
@@ -204,6 +211,7 @@ class LLMPlannerNode(Node):
         try:
             self.latest_scene     = json.loads(msg.data)
             self.latest_scene_raw = msg.data
+            self._scene_time      = time.time()
         except json.JSONDecodeError:
             pass
 
@@ -245,6 +253,13 @@ class LLMPlannerNode(Node):
                     f'z={z_floor:.2f}. Record the table in the dashboard.')
             system_prompt = SYSTEM_PROMPT.replace('{Z_FLOOR}', f'{z_floor:.2f}')
 
+            scene_age = time.time() - self._scene_time
+            if self._scene_time and scene_age > self.max_scene_age:
+                self._publish_status(f'ERROR: scene data is {scene_age:.0f}s old — is scene_graph_node running?')
+                self.get_logger().warn(
+                    f'Refusing to plan on a {scene_age:.1f}s-old scene snapshot '
+                    f'(limit {self.max_scene_age:.0f}s).')
+                return
             if not self.latest_scene:
                 self._publish_status('ERROR: no scene data yet')
                 self.get_logger().warn('No scene data — publish to /scene_snapshot first')
@@ -277,7 +292,7 @@ class LLMPlannerNode(Node):
 
             # Call LLM
             t0 = time.time()
-            response = ollama.chat(
+            response = self.llm.chat(
                 model=self.model,
                 messages=[
                     {'role': 'system', 'content': system_prompt},

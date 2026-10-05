@@ -134,6 +134,21 @@ class ProcessManager:
         )
         return True, f'Started {cfg["label"]} (pid {mp.popen.pid}).'
 
+    _SHELLS = {'bash', 'sh', 'dash', 'zsh', 'fish'}
+
+    @classmethod
+    def _is_shell(cls, cmdline):
+        first = cmdline.split(None, 1)[0] if cmdline else ''
+        return os.path.basename(first) in cls._SHELLS
+
+    @staticmethod
+    def _protected_pids():
+        try:
+            me = psutil.Process()
+            return {me.pid} | {p.pid for p in me.parents()}
+        except psutil.Error:
+            return {os.getpid()}
+
     @staticmethod
     def _terminate_tree(pid, timeout=8.0):
         """SIGTERM the process and every descendant, then SIGKILL whatever is
@@ -169,9 +184,16 @@ class ProcessManager:
                 stopped_any = True
             mp.popen = None
 
-        for pid in self._matching_pids(cfg['signature'], self._snapshot_cmdlines()):
-            if self._terminate_tree(pid):
-                stopped_any = True
+        protected = self._protected_pids()
+        for pid, cmdline in self._snapshot_cmdlines().items():
+            if cfg['signature'] and cfg['signature'] in cmdline:
+                # Never stop a shell (an operator's `bash -c "... grep <name> ..."`
+                # contains the signature as plain text) or this backend or
+                # anything that launched it. The real process still matches.
+                if pid in protected or self._is_shell(cmdline):
+                    continue
+                if self._terminate_tree(pid):
+                    stopped_any = True
 
         if not stopped_any:
             return False, f'{cfg["label"]} was not running.'

@@ -252,6 +252,7 @@ class ObjectDetectionNode(Node):
                         'cy_3d':      round(by3d, 4),
                         'cz_3d':      round(bz3d, 4),
                         'frame_id':   msg.header.frame_id,
+                        'stamp':   msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9,
                     })
             if all_detections:
                 self.detections_pub.publish(String(data=json.dumps(all_detections)))

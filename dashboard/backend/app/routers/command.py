@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import ros_bridge
 
@@ -7,7 +7,7 @@ router = APIRouter()
 
 
 class CommandRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=300)
 
 
 @router.post('/command')

@@ -76,3 +76,19 @@ def test_sample_indices_include_endpoints():
     idx = sg.sample_indices(1000, max_samples=40)
     assert idx[0] == 0 and idx[-1] == 999 and len(idx) <= 41
     assert idx == sorted(idx)
+
+
+WS = {'x': (0.05, 0.60), 'y': (-0.55, 0.55), 'z': (-0.40, 2.0)}
+
+
+def test_reachable_matches_planner_limits_not_just_the_workspace_box():
+    assert sg.is_reachable(0.30, 0.10, -0.03, WS, -0.06)
+    assert not sg.is_reachable(0.23, 0.43, -0.03, WS, -0.06)     # inside the box, outside the planner's |y|<=0.35
+    assert not sg.is_reachable(0.05, 0.0, -0.03, WS, -0.06)      # x below the planner minimum
+    assert not sg.is_reachable(0.30, 0.10, None, WS, -0.06)
+
+
+def test_objects_below_the_table_are_not_reachable():
+    # the live scene had cups at z=-0.28 with the table top at about -0.06
+    assert not sg.is_reachable(0.34, 0.20, -0.28, WS, -0.06)
+    assert sg.is_reachable(0.34, 0.20, -0.28, WS, None)           # no recorded table: cannot tell

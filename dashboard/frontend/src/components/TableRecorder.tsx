@@ -49,13 +49,13 @@ export function TableRecorder() {
       </div>
       <div className="p-5 space-y-4 text-sm">
         <ol className="list-decimal pl-5 text-xs text-(--color-text-dim) space-y-1">
-          <li>Stop <b>robot_bringup</b>'s motion control as before so the arm can be moved by hand, and keep the gripper <b>open</b>.</li>
+          <li>Keep the gripper <b>open</b> and free the arm for hand-guiding (see RUNBOOK section 5). The live pose below must keep updating while you move it. Do not force an arm that is holding position.</li>
           <li>Hand-guide the arm so the very <b>tips of the open fingers touch the table surface</b>.</li>
           <li>Press <b>Record point</b>. Do this at 4 corners of the usable area plus the middle (at least 3).</li>
           <li>Press <b>Save</b>. The arm controller blocks all live motion until this is saved.</li>
         </ol>
 
-        <div className="rounded-xl border border-(--color-border) p-3 font-mono text-xs">
+        <div className="rounded border border-(--color-border) p-3 font-mono text-xs">
           {st?.pose
             ? `Live fingertip pose: x=${fmt(st.pose.x)}  y=${fmt(st.pose.y)}  pad z=${fmt(st.pose.z)}`
             : <span className="text-(--color-red)">{st?.pose_message ?? 'connecting…'}</span>}
@@ -71,7 +71,7 @@ export function TableRecorder() {
 
         {msg && <div className="text-xs font-mono text-(--color-text-dim)">{msg}</div>}
 
-        <div className="rounded-xl border border-(--color-border) p-3 text-xs">
+        <div className="rounded border border-(--color-border) p-3 text-xs">
           <div className="font-semibold mb-1">Saved table geometry</div>
           {st?.saved ? (
             <div className="font-mono text-(--color-text-dim)">

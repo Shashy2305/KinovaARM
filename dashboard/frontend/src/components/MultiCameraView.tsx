@@ -31,7 +31,7 @@ export function MultiCameraView() {
                 ;(e.target as HTMLImageElement).style.opacity = '0.15'
               }}
             />
-            <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-2 py-1 bg-gradient-to-b from-black/70 to-transparent">
+            <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-2 py-1 bg-black/60">
               <span className="text-xs font-mono font-semibold">{cam.label}</span>
               <span className="live-dot text-(--color-red)" style={{ background: 'currentColor' }} />
             </div>
