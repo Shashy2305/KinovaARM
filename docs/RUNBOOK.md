@@ -25,6 +25,7 @@ Claude**. Commands are meant to be copied as-is. Every procedure ends with a
 12. [What each safety guard does](#12-what-each-safety-guard-does)
 13. [Useful probes](#13-useful-probes)
 14. [Known gaps (not verified on hardware)](#14-known-gaps-not-verified-on-hardware)
+15. [Camera extrinsics: check and fix](#15-camera-extrinsics-check-and-fix)
 
 ---
 
@@ -342,7 +343,7 @@ EOF
 | `No joint states` / `Could not find a connection between base_link and end_effector_link` | `ros2_control_node` is dead or the arm is not connected | `check_system.sh` sections 4-5 | section 7 |
 | Planning `Start state appears to be in collision` | wrong SRDF (gripper collision matrix missing) | `grep -c finger .../config/gen3.srdf` should be about 69 | restore `gen3.srdf` from `gen3.srdf.backup2`, restart `robot_bringup` |
 | `controller_manager` hangs / services time out | mixed DDS vendors | `echo $RMW_IMPLEMENTATION` in each node's env | never set `RMW_IMPLEMENTATION` per node |
-| Wrist tile black, top strip `no signal: wrist` | kinova_vision driver not publishing | `ros2 topic hz /camera/color/image_raw` (or the Python probe) | restart `cameras_bringup` |
+| Wrist tile black, top strip `no signal: wrist` | kinova_vision driver not publishing. It retries forever if the arm's RTSP stream was not up at launch and then crashes (`ParameterAlreadyDeclaredException`, seen in `~/.ros/dashboard_logs/cameras_bringup.log`), and nothing restarts it | `ros2 topic info /camera/color/image_raw` shows `Publisher count: 0`; `gst-launch-1.0 -q rtspsrc location=rtsp://192.168.1.10/color latency=100 ! rtph264depay ! avdec_h264 ! videoconvert ! fakesink num-buffers=20` must exit 0 | start only the wrist driver, section 15.3 (do not restart the whole camera bringup) |
 | A camera shows `needs recalibration` | it dropped and reconnected (bumped) | `ls ~/.ros/*_needs_recalibration.flag` | Calibration tab, recalibrate that camera |
 | Detector node dies on start (Qt xcb error) | tried to open a preview window headless | log `~/.ros/dashboard_logs/` | already guarded by `DISPLAY` check; make sure you run the current code |
 | Scene shows objects below the table (z about -0.28) or phantom `mouse` objects | camera extrinsics off, or false YOLO detections | dashboard scene view, `below_table` flag in `/scene_snapshot` | recalibrate; record the table so `below_table` appears and they stop counting as reachable |
@@ -490,3 +491,67 @@ Be honest about these before a demo:
   (about 0.75 m forward, +-0.8 m sideways) but the arm's reach is the real limit.
 - **Camera TF for the wrist** uses the image capture time; with the wrist driver offline this path is untested live.
 - **Dashboard has no authentication** (section 1, rule 6).
+
+## 15. Camera extrinsics: check and fix
+
+Symptom: one physical object shows up as two or three objects (one per camera), 20-30 cm
+apart, or the 3D view shows the table tilted. Detection is fine; the static cameras'
+`~/.ros/*_calibration.yaml` poses are wrong. The pick will go to a wrong place, so fix this
+before trusting any detected position.
+
+### 15.1 Measure it (read-only, nothing moves)
+
+Needs the camera drivers running and an object (a cup works) on the table in view of two cameras.
+
+```bash
+source /mnt/ros_workspace/Shashproject/scripts/ros_env.sh
+python3 /mnt/ros_workspace/Shashproject/calibration/check_extrinsics.py --label cup
+```
+
+It prints, per camera, the tilt and height of the table plane (should be ~0 deg and the same
+height everywhere) and how far apart the cameras place the same object (should be < 5 cm).
+It ends with `OK` or a list of `PROBLEM` lines. Last measured on REAL-1: object spread 30 cm,
+one camera's table tilted 46 deg.
+
+### 15.2 Fix the static cameras from the arm itself (dashboard, no board needed)
+
+Dashboard > **Calibrate from arm** tab. The arm is the calibration target: its joint positions are
+known exactly, so you only tell the tool where known parts of the arm appear in a still image.
+
+1. Pick the camera. Move the arm (by hand or any safe jog) to a pose that is spread out and clearly
+   visible in that camera, e.g. extended over the table. The arm must stay still for the whole session.
+2. The red circles show where the CURRENT (wrong) calibration thinks each landmark is. Ignore them.
+3. Click, in the image, at least 5 of: base centre, shoulder hub, elbow hub, wrist hub, wrist flange,
+   the two fingertips. Skip anything hidden. The two fingertips are interchangeable.
+4. **Solve.** Check the RMS (under about 6 px is good). If it names a suspect landmark, re-click
+   that one. Cyan circles show the solved projection; they should land on the real arm parts.
+5. **Save candidate** writes `~/.ros/calibration_candidates/<camera>_calibration.candidate.yaml`.
+   It does NOT change the live calibration. After comparing, install it yourself:
+
+```bash
+cp ~/.ros/calibration_candidates/realsense_calibration.candidate.yaml ~/.ros/realsense_calibration.yaml
+```
+then restart the TF broadcaster (Full bring-up restart or Stop/Start `static_tf_broadcaster`) and
+rerun 15.1. Repeat per camera, with a different arm pose for a second view if the RMS is high.
+
+### 15.3 Wrist camera
+
+The wrist camera is the kinova_vision driver, started as part of `cameras_bringup`. If the arm's
+camera stream is not up when that launch starts, the driver retries forever and finally crashes, and
+nothing restarts it (found 2026-10-05: `Publisher count: 0` on `/camera/color/image_raw`). Start just
+the wrist driver, detached so it survives this shell:
+
+```bash
+source /mnt/ros_workspace/Shashproject/scripts/ros_env.sh
+setsid nohup ros2 launch kinova_vision kinova_vision.launch.py device:=192.168.1.10 camera:=camera \
+  launch_color:=true launch_depth:=true depth_registration:=false \
+  max_color_pub_rate:=15.0 max_depth_pub_rate:=10.0 \
+  "depth_rtsp_element_config:=depth latency=100 timeout=10000000" \
+  "color_rtsp_element_config:=color latency=100" \
+  > ~/.ros/dashboard_logs/wrist_camera.log 2>&1 < /dev/null &
+```
+The top strip should go back to `cameras ok` within a few seconds (about 14 frames/s on the colour topic).
+
+Its hand-eye transform (the `camera_module` joint in the URDF) looks wrong: projecting the
+gripper pads into the image fits the nominal mount but not the calibrated one. Check it with the
+finger-pad overlay before trusting wrist-based detections.

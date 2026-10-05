@@ -43,7 +43,7 @@ def test_uses_the_pose_at_capture_time_not_the_latest(moving_camera):
     assert latest.transform.translation.x == pytest.approx(0.6, abs=0.01)
 
 
-def test_frames_older_than_a_second_are_rejected(moving_camera):
+def test_frames_older_than_1_5_seconds_are_rejected(moving_camera):
     buf, _ = moving_camera
     assert lookup(buf, 'wrist_cam', time.time() - 3.0) is False
 

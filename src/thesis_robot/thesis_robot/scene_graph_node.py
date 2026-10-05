@@ -366,12 +366,12 @@ class SceneGraphNode(Node):
         projecting with the LATEST arm pose smears an object across the table
         while the arm is moving. A stamp is only used if it is within 10 s of
         now (the OAK-D driver may stamp with its own clock); a frame older
-        than 1.0 s is rejected (returns False). None = no TF at all."""
+        than 1.5 s is rejected (returns False). None = no TF at all."""
         when = rclpy.time.Time()
         if stamp_s is not None:
             age = time.time() - stamp_s
             if abs(age) < 10.0:
-                if age > 1.0:
+                if age > 1.5:
                     return False
                 when = rclpy.time.Time(seconds=int(stamp_s), nanoseconds=int((stamp_s % 1) * 1e9))
         for t in ([when, rclpy.time.Time()] if when != rclpy.time.Time() else [when]):

@@ -8,6 +8,25 @@ import type {
   ActionResult, CaptureResult, ProcessInfo, StatusPayload,
 } from './types'
 
+export interface ArmLandmark {
+  id: string; label: string; hint: string
+  xyz: number[] | null
+  clicked: [number, number] | null
+  projected_now: [number, number] | null
+}
+export interface ArmCalibState {
+  camera: string; frame_id: string; image: [number, number]
+  arm_ok: boolean; k_ok: boolean; current_extrinsic_ok: boolean
+  landmarks: ArmLandmark[]
+}
+export interface ArmCalibResult {
+  ok?: boolean; error?: string
+  rms_px?: number; warnings?: string[]
+  landmarks_used?: string[]; reproj_px?: Record<string, number>; suspect?: string | null
+  solved_projection?: Record<string, [number, number]>
+  vs_current?: { rotation_deg: number; translation_m: number } | null
+}
+
 export interface TableStatus {
   pose: { x: number; y: number; z: number } | null
   pose_message: string
@@ -66,6 +85,13 @@ export const api = {
     request<{ ok: boolean; status: string }>(`/workspace_boundary/save?camera=${camera}`, { method: 'POST' }),
   boundaryCurrent: () => request<Record<string, unknown>>('/workspace_boundary/current'),
 
+  armCalibState: (camera: string) => request<ArmCalibState>(`/arm_calib/state?camera=${camera}`),
+  armCalibClick: (camera: string, landmark: string, u: number, v: number) =>
+    request<{ ok: boolean }>('/arm_calib/click', { method: 'POST', body: JSON.stringify({ camera, landmark, u, v }) }),
+  armCalibReset: (camera: string) => request<{ ok: boolean }>(`/arm_calib/reset?camera=${camera}`, { method: 'POST' }),
+  armCalibSolve: (camera: string) => request<ArmCalibResult>(`/arm_calib/solve?camera=${camera}`, { method: 'POST' }),
+  armCalibSave: (camera: string) =>
+    request<{ ok: boolean; message: string; path: string | null }>(`/arm_calib/save_candidate?camera=${camera}`, { method: 'POST' }),
   tableStatus: () => request<TableStatus>('/table_geometry/status'),
   tableRecord: () => request<{ ok: boolean; message: string }>('/table_geometry/record', { method: 'POST' }),
   tableReset: () => request<{ ok: boolean }>('/table_geometry/reset', { method: 'POST' }),

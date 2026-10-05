@@ -77,6 +77,8 @@ class RosBridge(Node):
         self._last_event_text = {}
         self._jpeg = {name: None for name in config.CAMERA_TOPICS}
         self._frame_ts = {name: 0.0 for name in config.CAMERA_TOPICS}
+        self._frame_ids = {}      # camera -> frame_id of its latest image (the optical frame the pipeline projects with)
+        self._image_size = {}
 
         self.create_subscription(String, '/camera_calibration_status',
                                   self._mk_status_cb('camera_calibration_status'), 10)
@@ -175,6 +177,8 @@ class RosBridge(Node):
         with self._lock:
             self._jpeg[name] = buf.tobytes()
             self._frame_ts[name] = time.monotonic()
+            self._frame_ids[name] = msg.header.frame_id
+            self._image_size[name] = (msg.width, msg.height)
 
     # ── read side (called from FastAPI request handlers / other threads) ──
     def get_status(self):
@@ -189,6 +193,10 @@ class RosBridge(Node):
                 except json.JSONDecodeError:
                     out[key] = raw
             return out
+
+    def get_image_meta(self, camera_name):
+        with self._lock:
+            return self._frame_ids.get(camera_name), self._image_size.get(camera_name)
 
     def get_jpeg(self, camera_name):
         with self._lock:
@@ -346,3 +354,16 @@ def get_or_create_table_recorder():
         _table_recorder = TableRecorder()
         executor.add_node(_table_recorder)
     return _table_recorder
+
+
+_arm_calib = None
+
+
+def get_or_create_arm_calib():
+    global _arm_calib
+    executor = _ensure_executor()
+    if _arm_calib is None:
+        from .arm_calib import ArmCalib
+        _arm_calib = ArmCalib()
+        executor.add_node(_arm_calib)
+    return _arm_calib

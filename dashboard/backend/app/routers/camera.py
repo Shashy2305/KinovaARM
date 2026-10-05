@@ -1,7 +1,7 @@
 import asyncio
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from .. import config, ros_bridge
 
@@ -41,3 +41,14 @@ def camera_status(camera_name: str):
     bridge = ros_bridge.get_bridge()
     jpeg, stale = bridge.get_jpeg(camera_name)
     return {'has_frame': jpeg is not None, 'stale': stale}
+
+
+@router.get('/camera/{camera_name}/snapshot.jpg')
+def camera_snapshot(camera_name: str):
+    """One still frame (for precise clicking, unlike the moving MJPEG stream)."""
+    if camera_name not in config.CAMERA_TOPICS:
+        raise HTTPException(404, f'Unknown camera {camera_name!r}')
+    jpeg, stale = ros_bridge.get_bridge().get_jpeg(camera_name)
+    if jpeg is None or stale:
+        raise HTTPException(503, f'No fresh frame from {camera_name}')
+    return Response(content=jpeg, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
