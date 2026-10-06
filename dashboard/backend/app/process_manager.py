@@ -53,7 +53,8 @@ class ProcessManager:
         line contains `signature`."""
         if not signature:
             return []
-        return [pid for pid, cmdline in cmdlines.items() if signature in cmdline]
+        return [pid for pid, cmdline in cmdlines.items()
+                if signature in cmdline and not self._is_api_client(cmdline)]
 
     def status(self, proc_id, cmdlines=None):
         """Returns one of: 'stopped', 'starting', 'running', 'running_external',
@@ -135,6 +136,15 @@ class ProcessManager:
         return True, f'Started {cfg["label"]} (pid {mp.popen.pid}).'
 
     _SHELLS = {'bash', 'sh', 'dash', 'zsh', 'fish'}
+    _API_CLIENTS = {'curl', 'wget', 'http', 'httpie'}
+
+    @classmethod
+    def _is_api_client(cls, cmdline):
+        """`curl .../api/nodes/<id>/stop` contains the node's signature as plain
+        text; it is a request to this backend, not the node, and must never match
+        (it made Start report 'already running' and let Stop kill its own caller)."""
+        first = cmdline.split(None, 1)[0] if cmdline else ''
+        return os.path.basename(first) in cls._API_CLIENTS or '/api/nodes/' in cmdline
 
     @classmethod
     def _is_shell(cls, cmdline):
@@ -186,7 +196,7 @@ class ProcessManager:
 
         protected = self._protected_pids()
         for pid, cmdline in self._snapshot_cmdlines().items():
-            if cfg['signature'] and cfg['signature'] in cmdline:
+            if cfg['signature'] and cfg['signature'] in cmdline and not self._is_api_client(cmdline):
                 # Never stop a shell (an operator's `bash -c "... grep <name> ..."`
                 # contains the signature as plain text) or this backend or
                 # anything that launched it. The real process still matches.

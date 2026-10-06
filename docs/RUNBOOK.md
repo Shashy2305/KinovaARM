@@ -534,6 +534,16 @@ cp ~/.ros/calibration_candidates/realsense_calibration.candidate.yaml ~/.ros/rea
 then restart the TF broadcaster (Full bring-up restart or Stop/Start `static_tf_broadcaster`) and
 rerun 15.1. Repeat per camera, with a different arm pose for a second view if the RMS is high.
 
+### 15.2b Status on 2026-10-05
+
+The three static calibrations were replaced using 15.2 (RealSense 1: 10 px RMS, RealSense 2: 8 px, OAK-D: 9 px).
+The old files are in `~/.ros/calibration_backup_20261005`. They were wrong because they had been anchored through the
+wrist camera's incorrect hand-eye transform (fixed in `gen3_macro.xacro`, section 15.3). After the swap the table
+tilt went from 46 deg to 1.9 deg and the cameras agree on the cup within 5 cm. The OAK-D's depth is still poor at this
+range (cup about 7 cm too high), and its `camera_info` distortion values are not usable. To install a new calibration
+restart that camera's TF broadcaster from the dashboard. Switch the arm back to Dry Run with
+`curl -s -X POST localhost:8000/api/arm_controller/go_dry_run`.
+
 ### 15.3 Wrist camera
 
 The wrist camera is the kinova_vision driver, started as part of `cameras_bringup`. If the arm's

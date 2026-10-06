@@ -481,8 +481,13 @@
         <!-- and avoid a TF-tree loop.                                          -->
         <link name="${prefix}camera_link" />
         <joint name="${prefix}camera_module" type="fixed">
-          <origin xyz="-0.04943050 0.04958700 0.00395126"
-                  rpy="0.66454839 0.30604363 1.09121110" />
+          <!-- 2026-10-05: the easy_handeye2 result (xyz -0.0494 0.0496 0.0040,
+               rpy 0.6645 0.3061 1.0912) projected the gripper pads far outside the
+               wrist image (real fingers sit in the bottom corners). Replaced by the
+               standard Kinova vision-module mount: 56 mm off the tool axis, optical
+               frame looking along the tool axis (end_effector_link rotated 180 deg about z).
+               That projects the pads to the bottom corners, as in the live image. -->
+          <origin xyz="0 0.05639 0.01305" rpy="0 0 3.14159265358979" />
           <parent link="${prefix}end_effector_link" />
           <child  link="${prefix}camera_link" />
         </joint>
