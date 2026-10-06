@@ -27,6 +27,8 @@ from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
+
+from thesis_robot import wrist_servo as ws
 from cv_bridge import CvBridge
 import cv2, numpy as np
 
@@ -53,7 +55,13 @@ class WristDetection(Node):
             default_model_path = os.path.join(
                 get_package_share_directory('thesis_robot'), 'models', 'yolov8m.pt')
             self.declare_parameter('model_path', default_model_path)
+            # The segmentation model gives the same boxes AND a mask per object, from which the orientation
+            # is computed (a mouse at 45 deg has a square box; the arm could not tell which way to turn the wrist).
+            self.declare_parameter('seg_model_path', '/mnt/ros_workspace/models/yolov8m-seg.pt')
             model_path = self.get_parameter('model_path').value
+            seg_path = self.get_parameter('seg_model_path').value
+            if seg_path and os.path.exists(seg_path):
+                model_path = seg_path
             try:
                 self.model = YOLO(model_path)
                 self.get_logger().info('YOLOv8m loaded')
@@ -171,7 +179,7 @@ class WristDetection(Node):
             try:
                 results = self.model(bgr, verbose=False, conf=PIXEL_CONF_FLOOR)
                 for r in results:
-                    for box in r.boxes:
+                    for bi, box in enumerate(r.boxes):
                         cls_name = self.model.names[int(box.cls)]
                         if cls_name not in self.target_classes:
                             continue
@@ -179,9 +187,17 @@ class WristDetection(Node):
                         x1,y1,x2,y2 = map(int, box.xyxy[0])
                         u = (x1+x2)//2
                         v = (y1+y2)//2
-                        pixel_dets.append({
+                        det = {
                             'label': cls_name, 'confidence': round(conf, 3),
-                            'u': u, 'v': v, 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2})
+                            'u': u, 'v': v, 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
+                        try:
+                            if r.masks is not None:
+                                ang, elong = ws.polygon_orientation(r.masks.xy[bi])
+                                det['orient_deg'] = round(ang, 1)
+                                det['elong'] = round(elong, 2)
+                        except Exception:
+                            pass
+                        pixel_dets.append(det)
                         if conf < 0.30:
                             continue
                         raw_detections.append((cls_name, conf, u, v))

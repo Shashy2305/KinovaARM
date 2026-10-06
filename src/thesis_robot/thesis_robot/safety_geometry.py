@@ -14,6 +14,7 @@ the fingertips at about -0.09 -- the table surface. The old
 table in its planning scene, so nothing stopped a planned path from
 passing through it either.
 """
+import math
 import os
 
 import yaml
@@ -201,3 +202,35 @@ def is_reachable(x, y, z, workspace, table_top_z=None):
     if table_top_z is not None and z < table_top_z - BELOW_TABLE_TOL_M:
         return False
     return True
+
+
+# ── the robot's own body, for rejecting detections of the robot itself ──
+# Arm links (frame origins, base to flange) and the two fingers (flange -> pad frame, 17.7 cm long).
+ARM_CHAIN_FRAMES = ['shoulder_link', 'half_arm_1_link', 'half_arm_2_link', 'forearm_link',
+                    'spherical_wrist_1_link', 'spherical_wrist_2_link', 'bracelet_link', 'end_effector_link']
+FINGER_PAD_FRAMES = ['left_inner_finger_pad', 'right_inner_finger_pad']
+ARM_BODY_RADIUS_M = 0.10        # a detection this close to the arm's links is the arm, not an object
+FINGER_BODY_RADIUS_M = 0.045    # ... and this close to a finger. Smaller: an object held or grasped sits
+                                # ~6 cm from each pad and must stay visible.
+
+
+def _dist_point_segment3(p, a, b):
+    ab = [b[i] - a[i] for i in range(3)]
+    ap = [p[i] - a[i] for i in range(3)]
+    L2 = sum(v * v for v in ab)
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, sum(ap[i] * ab[i] for i in range(3)) / L2))
+    return math.sqrt(sum((p[i] - (a[i] + t * ab[i])) ** 2 for i in range(3)))
+
+
+def point_on_robot(point, chain, fingers):
+    """True if `point` (x, y, z in base_link) lies on the robot: within ARM_BODY_RADIUS_M of the arm chain
+    (a list of 3D points from the base to the flange) or FINGER_BODY_RADIUS_M of a finger segment
+    (fingers: list of (flange_xyz, pad_xyz)). The cameras label the dark gripper "bottle"/"cup"/"remote";
+    such a phantom beside the real target made the neighbour check refuse a mouse pick."""
+    for a, b in zip(chain, chain[1:]):
+        if _dist_point_segment3(point, a, b) < ARM_BODY_RADIUS_M:
+            return True
+    for a, b in fingers:
+        if _dist_point_segment3(point, a, b) < FINGER_BODY_RADIUS_M:
+            return True
+    return False

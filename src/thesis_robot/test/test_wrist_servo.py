@@ -159,3 +159,51 @@ def test_a_wildly_wrong_scene_height_is_not_trusted():
 def test_a_plausible_scene_height_is_still_used():
     g, *_ = _heights('cup', 0.07)
     assert abs(g - (0.07 + REACH)) < 1e-9
+
+
+def test_open_fingers_sweeping_a_neighbour_are_detected():
+    centre = (0.51, 0.15)                                  # the mug
+    bottle = ('bottle', 0.45, 0.24)                         # ~11 cm away, up and to the left
+    along_y = ws.finger_sweep_blocker(centre, (0.0, 1.0), [bottle])    # closing axis along +y points at it
+    along_x = ws.finger_sweep_blocker(centre, (1.0, 0.0), [bottle])
+    assert along_y == 'bottle' and along_x is None
+    assert ws.finger_sweep_blocker(centre, (0.0, 1.0), [('cup', 0.51, 0.15)]) is None      # the target itself
+    assert ws.finger_sweep_blocker(centre, (0.0, 1.0), [('mouse', 0.30, 0.15)]) is None    # far away
+
+
+def test_a_path_that_only_moves_away_from_a_neighbour_is_allowed():
+    bottle = [('bottle', 0.45, 0.38)]
+    start, end = (0.43, 0.28), (0.526, 0.227)              # the 2026-10-05 refusal: mug 10 cm from the bottle, moving away
+    assert ws.carry_path_blocker(start, end, bottle) is None
+    assert ws.carry_path_blocker(start, (0.45, 0.33), bottle) == 'bottle'   # heading at it is still refused
+    assert ws.carry_path_blocker((0.43, 0.30), (0.43, 0.30), [('cup', 0.43, 0.30)]) is None   # the carried object
+
+
+def _rect(cx, cy, w, h, angle_deg):
+    a = np.radians(angle_deg)
+    R_ = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+    return [tuple(np.array([cx, cy]) + R_ @ np.array(p)) for p in ((-w / 2, -h / 2), (w / 2, -h / 2), (w / 2, h / 2), (-w / 2, h / 2))]
+
+
+def test_polygon_orientation_recovers_angle_and_elongation():
+    for ang in (0, 30, 45, 75, -30, -60):
+        a, e = ws.polygon_orientation(_rect(600, 400, 200, 100, ang))      # long side along `ang`
+        assert abs(((a - ang + 90) % 180) - 90) < 1.0, (ang, a)
+        assert abs(e - 2.0) < 0.05
+    a, e = ws.polygon_orientation(_rect(600, 400, 150, 150, 20))            # square: no preferred axis
+    assert e < 1.05
+    a, e = ws.polygon_orientation(_rect(600, 400, 100, 200, 0))             # long side along image y
+    assert abs(abs(a) - 90) < 1.0
+
+
+def test_rotation_to_align_puts_the_long_side_vertical():
+    assert abs(ws.rotation_to_align(0.0, 2.0)) == 90.0                  # long along x: turn a quarter
+    assert abs(ws.rotation_to_align(45.0, 1.8) - 45.0) < 1e-9          # the 45 degree mouse: its box looked square
+    assert abs(ws.rotation_to_align(-45.0, 1.8) + 45.0) < 1e-9
+    assert ws.rotation_to_align(88.0, 2.0) is None and ws.rotation_to_align(-85.0, 2.0) is None   # already vertical
+    assert ws.rotation_to_align(30.0, 1.1) is None                      # round: nothing to align
+    assert ws.rotation_to_align(None, None) is None
+    for ang in range(-89, 91, 7):                                       # after the turn the long axis is vertical (mod 180)
+        d = ws.rotation_to_align(float(ang), 2.0)
+        if d is not None:
+            assert abs(d) <= 90.0 and abs(((ang + d) % 180) - 90) < 1e-6

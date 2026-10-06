@@ -158,6 +158,8 @@ class SceneGraphNode(Node):
             if pos is None:
                 continue
             x, y, z = pos
+            if z is not None and self._on_robot((x, y, z)):
+                continue                      # a detection of the robot's own arm/gripper, not an object
             resolved.append((label, x, y, z, conf))
 
         if not resolved:
@@ -184,6 +186,33 @@ class SceneGraphNode(Node):
             f'{[v["label"] for v in self.scene.values()]}',
             throttle_duration_sec=10.0,
         )
+
+    # ── ROBOT SELF-DETECTION GUARD ───────────────────────────────────
+    def _arm_body(self):
+        """(chain, fingers): the arm's link origins and finger segments in base_link, from TF; cached for
+        0.15 s (this runs for every detection). (None, None) if TF is not available."""
+        now = time.monotonic()
+        cached = getattr(self, '_arm_body_cache', None)
+        if cached and now - cached[0] < 0.15:
+            return cached[1], cached[2]
+        try:
+            def pos(frame):
+                t = self.tf_buffer.lookup_transform(BASE_FRAME, frame, rclpy.time.Time()).transform.translation
+                return (t.x, t.y, t.z)
+            chain = [(0.0, 0.0, 0.0)] + [pos(f) for f in sg.ARM_CHAIN_FRAMES]
+            flange = chain[-1]
+            fingers = [(flange, pos(f)) for f in sg.FINGER_PAD_FRAMES]
+        except Exception:
+            self._arm_body_cache = (now, None, None)
+            return None, None
+        self._arm_body_cache = (now, chain, fingers)
+        return chain, fingers
+
+    def _on_robot(self, point):
+        chain, fingers = self._arm_body()
+        if chain is None:
+            return False                      # no TF for the arm: cannot tell, keep the detection
+        return sg.point_on_robot(point, chain, fingers)
 
     # ── SNAPSHOT PUBLISHER ───────────────────────────────────────────
     def publish_snapshot(self):

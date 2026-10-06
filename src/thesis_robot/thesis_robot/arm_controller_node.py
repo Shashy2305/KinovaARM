@@ -587,17 +587,31 @@ class ArmControllerNode(Node):
         return obj.get('x'), obj.get('y'), obj.get('z')
 
     def _pick(self, object_id, approach_z=0.15):
-        """Open, hover above the object, centre the gripper over it using the
-        wrist camera, descend straight down, close, lift. Any failed step fails
-        the pick; if the wrist cannot see the object the arm does NOT descend."""
-        pos = self._lookup_object(object_id)
-        if pos is None:
+        """Open, hover above the object, centre the gripper over it using the wrist camera, check the open
+        fingers will not hit a neighbour, descend straight down, close, lift a little and check, lift. Any
+        failed step fails the pick; if the wrist cannot see the object the arm does NOT descend. A grip that
+        closes on air or loses the object on the lift is retried once (the object is looked up again)."""
+        for attempt in (1, 2):
+            pos = self._lookup_object(object_id)
+            if pos is None:
+                return False
+            ok, failed = self._pick_once(object_id, pos, approach_z)
+            if ok:
+                return True
+            if failed in ('check the grip', 'check it is still held', 'check the grip (3 cm up)') and attempt == 1:
+                self.get_logger().warn(f'pick {object_id}: the grip failed ({failed}) — trying once more')
+                self._publish_pp_status(f'pick {object_id}: retrying')
+                time.sleep(1.0)
+                continue
             return False
+        return False
+
+    def _pick_once(self, object_id, pos, approach_z):
         try:
             ox, oy, oz = (float(v) for v in pos)
         except (TypeError, ValueError) as e:
             self.get_logger().error(f'pick: bad position for {object_id}: {e}')
-            return False
+            return False, 'position'
         geom, _ = sg.load_geometry()
         label = (self.latest_scene.get(object_id) or {}).get('label', 'object')
         # z is the FLANGE height: the fingertips hang TCP_REACH_M below it. Grasp with the
@@ -612,6 +626,7 @@ class ArmControllerNode(Node):
             f'hover z={hover_z:.3f}, grasp z={grasp_z:.3f}, lift z={lift_z:.3f}')
 
         centred = {'xy': (ox, oy)}
+        tip_over_table = grasp_z - sg.TCP_REACH_M - geom['table_top_z']
 
         def center():
             ok, xy = self._center_over(label, (ox, oy))
@@ -623,16 +638,45 @@ class ArmControllerNode(Node):
                 return True
             return False
 
+        def fingers_clear():
+            """The open fingers span ~19 cm along the closing axis. If a neighbour is in that sweep, turn the
+            wrist 90 degrees (and centre again); if it still is, do not descend."""
+            if self.dry_run or self.moveit2 is None:
+                return True
+            obstacles = self._scene_obstacles(exclude_id=object_id, min_height=max(0.0, tip_over_table))
+            for turned in (False, True):
+                axis = self._closing_axis_xy()
+                mid = self._pad_midpoint_xy(default=centred['xy'])
+                blocker = ws.finger_sweep_blocker(mid, axis, obstacles) if axis else None
+                if blocker is None:
+                    return True
+                if turned:
+                    return self._refuse(f'pick: the open fingers would hit the {blocker} next to the {label}')
+                self.get_logger().info(f'pick: the open fingers would sweep the {blocker} — turning the wrist 90 degrees')
+                try:
+                    q7 = self._current_joint_vector()[6]
+                except RuntimeError as e:
+                    return self._refuse(str(e))
+                target = ws.quarter_turn_target(q7, mu.PLANNER_JOINT_LIMIT - 0.1)
+                if target is None or not self._rotate_wrist(target - q7) or not center():
+                    return False
+            return False
+
+        def descend():
+            return self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True, min_flange_z=low_floor)
+
         steps = [
             ('open gripper', lambda: self._open_gripper()),
             ('raise',        lambda: self._raise_to(hover_z)),
             ('hover',        lambda: self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z)),
             ('turn the fingers away from any handle', lambda: self._align_for_handle(label, (ox, oy))),
             ('centre on the object (wrist camera)', center),
-            ('descend',      lambda: self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True,
-                                                    min_flange_z=low_floor)),
+            ('check the open fingers are clear of its neighbours', fingers_clear),
+            ('descend',      descend),
             ('close gripper', lambda: self._close_gripper()),
             ('check the grip', lambda: self._check_grip(object_id)),
+            ('lift 3 cm',    lambda: self._move_to(centred['xy'][0], centred['xy'][1], grasp_z + 0.03, cartesian=True)),
+            ('check the grip (3 cm up)', lambda: self._check_grip(object_id)),
             ('lift',         lambda: self._move_to(centred['xy'][0], centred['xy'][1], lift_z, cartesian=True,
                                                     max_flange_z=ws.HOVER_MAX_Z)),
             ('check it is still held', lambda: self._check_grip(object_id)),
@@ -641,9 +685,20 @@ class ArmControllerNode(Node):
             self._publish_pp_status(f'pick {object_id}: {name}')
             if not action():
                 self.get_logger().error(f'pick {object_id} failed at: {name}')
-                return False
+                return False, name
         self._held = {'label': label, 'object_id': object_id, 'grasp_z': grasp_z}
-        return True
+        return True, None
+
+    def _closing_axis_xy(self):
+        """Unit vector (x, y) along which the fingers close, from the two pad frames, or None."""
+        try:
+            _, a = self._tf_pose(BASE_LINK, 'left_inner_finger_pad')
+            _, b = self._tf_pose(BASE_LINK, 'right_inner_finger_pad')
+        except Exception:
+            return None
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        n = math.hypot(dx, dy)
+        return None if n < 1e-6 else (dx / n, dy / n)
 
     # ── WRIST-CAMERA CENTERING ───────────────────────────────────────
     def _on_wrist_dets(self, msg):
@@ -729,12 +784,14 @@ class ArmControllerNode(Node):
             return self._refuse(f'rotating the wrist by {math.degrees(delta):+.0f} deg would exceed the joint-7 limit')
         return self._guarded_move(geom, f'rotate wrist {math.degrees(delta):+.0f} deg', joint_positions=goal)
 
-    def _wrist_bbox(self, label, expected_xy, timeout=3.0):
-        """Pixel box (x1, y1, x2, y2) of the fresh wrist detection that is the `label` object
-        (same matching as the centring: class or, failing that, position), or None."""
+    def _wrist_match(self, label, expected_xy, timeout=3.0, after=None):
+        """The fresh wrist detection (dict, with its pixel box and, when the detector has a segmentation
+        model, 'orient_deg'/'elong') that is the `label` object: same matching as the centring (class or,
+        failing that, position). Only frames received after `after` (monotonic, default: now) count."""
         geom, _ = sg.load_geometry()
         plane_z = ws.center_plane_height(label, geom['table_top_z']) if geom else None
-        t0, after = time.monotonic(), time.monotonic()
+        t0 = time.monotonic()
+        after = t0 if after is None else after
         while time.monotonic() - t0 < timeout:
             item = self._wrist_dets
             if item and item[0] > after and self._wrist_K is not None and plane_z is not None:
@@ -746,22 +803,69 @@ class ArmControllerNode(Node):
                     continue
                 got = ws.match_detection(self._wrist_xy_candidates(msg, R_bc, t_bc, plane_z), label, expected_xy)
                 if got is not None:
-                    d = got[0]
-                    return (d['x1'], d['y1'], d['x2'], d['y2'])
+                    return got[0]
             time.sleep(0.05)
         return None
 
+    def _wrist_bbox(self, label, expected_xy, timeout=3.0):
+        d = self._wrist_match(label, expected_xy, timeout)
+        return None if d is None else (d['x1'], d['y1'], d['x2'], d['y2'])
+
     def _align_for_handle(self, label, expected_xy):
-        """If the object's box in the wrist image is longer along the fingers' closing axis
-        (a mug handle), turn the wrist 90 degrees so the fingers close across the body."""
+        """Turn the wrist so the object's SHORT side lies between the fingers (a mug's handle, a mouse's length,
+        a phone). With the segmentation model the object's orientation is measured, so any angle works (a mouse
+        at 45 deg has a square box); otherwise the old rule is used: a box stretched along the closing axis means
+        turn 90 degrees. The turn is checked by measuring again; if the object got worse, the direction was
+        wrong and it is turned the other way (the direction is remembered)."""
         if self.dry_run or self.moveit2 is None:
-            self.get_logger().info(f'  [DRY RUN] check the {label} for a handle (wrist camera)')
+            self.get_logger().info(f'  [DRY RUN] align the {label} with the fingers (wrist camera)')
             return True
         time.sleep(0.8)
-        box = self._wrist_bbox(label, expected_xy)
-        if box is None:
+        det = self._wrist_match(label, expected_xy)
+        if det is None:
             self.get_logger().error(f'align: the wrist camera cannot see the {label}')
             return False
+        if 'elong' not in det:
+            return self._align_quarter_turn(label, (det['x1'], det['y1'], det['x2'], det['y2']))
+        sign = getattr(self, '_yaw_sign', 1.0)
+        for attempt in range(3):
+            delta = ws.rotation_to_align(det.get('orient_deg'), det.get('elong'))
+            if delta is None:
+                self.get_logger().info(
+                    f'align: {label} axis {det["orient_deg"]:+.0f} deg, elongation {det["elong"]:.2f} — fingers already across its short side')
+                return True
+            try:
+                q7 = self._current_joint_vector()[6]
+            except RuntimeError as e:
+                return self._refuse(str(e))
+            dq = sign * math.radians(delta)
+            lim = mu.PLANNER_JOINT_LIMIT - 0.1
+            if abs(q7 + dq) > lim:                       # a parallel gripper is symmetric: 180 degrees is the same grasp
+                alt = dq - math.copysign(math.pi, dq)
+                if abs(q7 + alt) > lim:
+                    self.get_logger().warn('align: no wrist turn fits inside the joint-7 limit — grasping as is')
+                    return True
+                dq = alt
+            self.get_logger().info(
+                f'align: {label} axis {det["orient_deg"]:+.0f} deg, elongation {det["elong"]:.2f} — '
+                f'turning the wrist {math.degrees(dq):+.0f} deg to put its short side between the fingers')
+            if not self._rotate_wrist(dq):
+                return False
+            time.sleep(0.8)
+            new = self._wrist_match(label, expected_xy)
+            if new is None or 'elong' not in new:
+                return True                              # cannot re-measure; keep what we did
+            after_delta = ws.rotation_to_align(new.get('orient_deg'), new.get('elong'))
+            if after_delta is None or abs(after_delta) < 0.5 * abs(delta):
+                return True
+            self.get_logger().warn(f'align: the turn did not help ({delta:+.0f} -> {after_delta:+.0f} deg) — direction flipped')
+            sign = -sign
+            self._yaw_sign = sign
+            det = new
+        return True
+
+    def _align_quarter_turn(self, label, box):
+        """Fallback without orientation data: a box stretched along the fingers' closing axis -> turn 90 deg."""
         if not ws.needs_quarter_turn(box):
             self.get_logger().info(f'align: {label} box {box[2]-box[0]}x{box[3]-box[1]} px — fingers already clear of any handle')
             return True
@@ -888,25 +992,29 @@ class ArmControllerNode(Node):
             return False
         return 0.08 < f < 0.65
 
-    def _carry_path_blocked(self, start_xy, end_xy):
-        """Label of a tall scene object within CARRY_AVOID_M of the straight carry path, or None.
-        The object being carried is ignored (it is at the start of the path)."""
-        ax, ay = start_xy
-        bx, by = end_xy
-        seg = (bx - ax, by - ay)
-        seg2 = seg[0] ** 2 + seg[1] ** 2
+    def _scene_obstacles(self, exclude_id=None, min_height=0.0):
+        """[(label, x, y)] of every real, non-stale object on the table whose top is above min_height
+        (metres over the table), whether or not the arm could pick it."""
+        out = []
         for oid, o in self.latest_scene.items():
-            if not isinstance(o, dict) or o.get('stale') or not o.get('reachable'):
+            if oid == exclude_id or not isinstance(o, dict) or o.get('stale'):
                 continue
-            if ws.OBJECT_HEIGHT_M.get(o.get('label'), ws.DEFAULT_HEIGHT_M) < self.TALL_OBJECT_M:
+            try:
+                x, y, z = float(o['x']), float(o['y']), float(o['z'])
+            except (KeyError, TypeError, ValueError):
                 continue
-            ox, oy = o.get('x'), o.get('y')
-            if ox is None or oy is None or math.hypot(ox - ax, oy - ay) < 0.08:
-                continue                                  # the carried object itself
-            t = 0.0 if seg2 < 1e-9 else max(0.0, min(1.0, ((ox - ax) * seg[0] + (oy - ay) * seg[1]) / seg2))
-            if math.hypot(ox - (ax + t * seg[0]), oy - (ay + t * seg[1])) < self.CARRY_AVOID_M:
-                return o.get('label', oid)
-        return None
+            if not (-0.05 <= x <= 0.85 and -0.95 <= y <= 0.95 and -0.03 <= z <= 0.32):
+                continue
+            if ws.OBJECT_HEIGHT_M.get(o.get('label'), ws.DEFAULT_HEIGHT_M) < min_height:
+                continue
+            out.append((o.get('label', oid), x, y))
+        return out
+
+    def _carry_path_blocked(self, start_xy, end_xy):
+        """Label of a tall scene object the carry path comes within CARRY_AVOID_M of (moving closer than it
+        started), or None. See ws.carry_path_blocker."""
+        return ws.carry_path_blocker(start_xy, end_xy, self._scene_obstacles(min_height=self.TALL_OBJECT_M),
+                                     avoid=self.CARRY_AVOID_M)
 
     def _move_verified(self, x, y, z, label, xy_tol=0.015, z_tol=0.01, min_flange_z=None):
         """Straight-line move that must END where asked: a cartesian path that stops short would

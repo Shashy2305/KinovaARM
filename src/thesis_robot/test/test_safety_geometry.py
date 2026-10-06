@@ -110,3 +110,13 @@ def test_a_path_may_start_below_the_margin_but_not_go_lower():
     assert ok is True
     ok, why = sg.check_link_positions({'end_effector_link': (0.26, -0.24, 0.03)}, geom, floors)
     assert not ok
+
+
+def test_detections_on_the_robot_are_recognised_and_real_objects_are_not():
+    chain = [(0, 0, 0), (0, 0, 0.16), (0.0, -0.1, 0.4), (0.3, -0.1, 0.5), (0.3, -0.1, 0.33)]     # base ... flange hovering at z 0.33
+    fingers = [((0.3, -0.1, 0.33), (0.231, -0.115, 0.153)), ((0.3, -0.1, 0.33), (0.369, -0.085, 0.153))]
+    assert sg.point_on_robot((0.231, -0.115, 0.129), chain, fingers)          # "bottle_04": the left finger (2026-10-05)
+    assert sg.point_on_robot((0.3, -0.1, 0.40), chain, fingers)               # the wrist
+    assert not sg.point_on_robot((0.304, -0.12, 0.01), chain, fingers)        # the mouse on the table under the gripper
+    assert not sg.point_on_robot((0.54, -0.01, 0.045), chain, fingers)        # the mug on the other side
+    assert not sg.point_on_robot((0.30, -0.10, 0.05), chain, fingers)         # an object grasped between the pads (6 cm from each)

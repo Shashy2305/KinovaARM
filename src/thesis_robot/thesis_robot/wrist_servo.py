@@ -168,3 +168,97 @@ def match_detection(cands, label, expected_xy):
             return best
     best = min(cands, key=dist)
     return best if dist(best) <= OTHER_LABEL_TOL_M else None
+
+
+OBJECT_RADIUS_M = {'cup': 0.045, 'mug': 0.045, 'bowl': 0.07, 'bottle': 0.035, 'mouse': 0.035, 'cell phone': 0.04,
+                   'remote': 0.03, 'book': 0.10, 'scissors': 0.05, 'vase': 0.05}
+DEFAULT_RADIUS_M = 0.04
+FINGER_HALF_SPAN_M = 0.095     # open fingers reach this far (outer edge) either side of the grasp centre
+FINGER_HALF_WIDTH_M = 0.02     # finger/pad half width along the other horizontal axis
+SWEEP_MARGIN_M = 0.015
+
+
+def _dist_to_segment(p, a, b):
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 < 1e-12 else max(0.0, min(1.0, ((p[0] - ax) * dx + (p[1] - ay) * dy) / L2))
+    return math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy))
+
+
+def finger_sweep_blocker(center_xy, axis_u, obstacles):
+    """Label of a neighbouring object the OPEN fingers would hit when they come down around center_xy, or None.
+    axis_u: unit vector (x, y) of the closing axis. obstacles: [(label, x, y)] (the target itself excluded).
+    The fingers occupy the segment center +- FINGER_HALF_SPAN along the closing axis, about 4 cm wide."""
+    a = (center_xy[0] - FINGER_HALF_SPAN_M * axis_u[0], center_xy[1] - FINGER_HALF_SPAN_M * axis_u[1])
+    b = (center_xy[0] + FINGER_HALF_SPAN_M * axis_u[0], center_xy[1] + FINGER_HALF_SPAN_M * axis_u[1])
+    for label, x, y in obstacles:
+        if math.hypot(x - center_xy[0], y - center_xy[1]) < 0.02:
+            continue                                   # the target itself
+        r = OBJECT_RADIUS_M.get(label, DEFAULT_RADIUS_M)
+        if _dist_to_segment((x, y), a, b) < r + FINGER_HALF_WIDTH_M + SWEEP_MARGIN_M:
+            return label
+    return None
+
+
+def carry_path_blocker(start_xy, end_xy, obstacles, avoid=0.12, own_radius=0.08):
+    """Label of an obstacle the carried object's path comes within `avoid` of, or None.
+    obstacles: [(label, x, y)]. The carried object itself (within own_radius of the start) is ignored, and so is
+    an obstacle the path only moves AWAY from: the object was already that close when it was picked up, and
+    refusing every carry that starts near a neighbour would make the neighbour a permanent veto."""
+    ax, ay = start_xy
+    for label, ox, oy in obstacles:
+        d_start = math.hypot(ox - ax, oy - ay)
+        if d_start < own_radius:
+            continue
+        d_min = _dist_to_segment((ox, oy), start_xy, end_xy)
+        if d_min < avoid and d_min < d_start - 0.01:
+            return label
+    return None
+
+
+MIN_ELONGATION = 1.2           # axis ratio above which an object has a "long side" worth aligning
+MIN_TURN_DEG = 12.0            # smaller corrections are not worth a (slow) wrist turn
+
+
+def polygon_orientation(poly):
+    """(angle_deg, elongation) of a filled polygon [(x, y), ...] in image coordinates (y down): the direction
+    of its major axis in (-90, 90] degrees from image x, and sqrt(lambda_major / lambda_minor) of its area
+    distribution (1.0 = round; a 2:1 rectangle gives 2.0). Area moments by Green's theorem, so no mask raster."""
+    pts = np.asarray(poly, float)
+    if len(pts) < 3:
+        return 0.0, 1.0
+    x, y = pts[:, 0], pts[:, 1]
+    x1, y1 = np.roll(x, -1), np.roll(y, -1)
+    c = x * y1 - x1 * y
+    A = 0.5 * c.sum()
+    if abs(A) < 1e-9:
+        return 0.0, 1.0
+    cx = ((x + x1) * c).sum() / (6 * A)
+    cy = ((y + y1) * c).sum() / (6 * A)
+    Ix = ((y * y + y * y1 + y1 * y1) * c).sum() / 12.0
+    Iy = ((x * x + x * x1 + x1 * x1) * c).sum() / 12.0
+    Ixy = ((x * y1 + 2 * x * y + 2 * x1 * y1 + x1 * y) * c).sum() / 24.0
+    if A < 0:
+        A, Ix, Iy, Ixy = -A, -Ix, -Iy, -Ixy
+    vxx = Iy / A - cx * cx
+    vyy = Ix / A - cy * cy
+    vxy = Ixy / A - cx * cy
+    tr, det = vxx + vyy, vxx * vyy - vxy * vxy
+    disc = max(0.0, tr * tr / 4 - det)
+    l1, l2 = tr / 2 + math.sqrt(disc), max(tr / 2 - math.sqrt(disc), 1e-12)
+    ang = 0.5 * math.degrees(math.atan2(2 * vxy, vxx - vyy))        # (-90, 90]
+    if ang <= -90:
+        ang += 180
+    return ang, math.sqrt(l1 / l2)
+
+
+def rotation_to_align(orient_deg, elong):
+    """Image-plane rotation (degrees, magnitude <= 90) that turns the object's major axis to image-vertical,
+    i.e. puts its SHORT side between the fingers (they sit left and right in the wrist image). None if the
+    object is round enough or nearly aligned already."""
+    if elong is None or orient_deg is None or elong < MIN_ELONGATION:
+        return None
+    delta = 90.0 - orient_deg if orient_deg > 0 else -90.0 - orient_deg
+    return None if abs(delta) < MIN_TURN_DEG else delta
