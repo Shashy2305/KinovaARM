@@ -731,7 +731,7 @@ class ArmControllerNode(Node):
         """Pixel box (x1, y1, x2, y2) of the fresh wrist detection that is the `label` object
         (same matching as the centring: class or, failing that, position), or None."""
         geom, _ = sg.load_geometry()
-        plane_z = ws.plane_height(label, geom['table_top_z']) if geom else None
+        plane_z = ws.center_plane_height(label, geom['table_top_z']) if geom else None
         t0, after = time.monotonic(), time.monotonic()
         while time.monotonic() - t0 < timeout:
             item = self._wrist_dets
@@ -810,7 +810,7 @@ class ArmControllerNode(Node):
         if geom is None:
             self.get_logger().error('center_over: no table geometry recorded')
             return False, None
-        plane_z = ws.plane_height(label, geom['table_top_z'])
+        plane_z = ws.center_plane_height(label, geom['table_top_z'])
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(f'  [DRY RUN] centre over {label} (wrist camera, plane z={plane_z:.3f})')
             time.sleep(0.3)

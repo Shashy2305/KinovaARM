@@ -6,10 +6,10 @@ from thesis_robot import wrist_servo as ws
 K = np.array([[1297.7, 0, 620.9], [0, 1298.6, 238.3], [0, 0, 1]])
 
 
-def camera_over(flange_xy, flange_z):
+def camera_over(flange_xy, flange_z, yaw_deg=0.0):
     """Wrist camera pose for a flange pointing straight down at (x, y, z): the
     optical axis is the tool axis (down), mounted 56 mm off-axis (URDF camera_module)."""
-    R_ee = R.from_euler('x', 180, degrees=True)                 # tool z points down
+    R_ee = R.from_euler('x', 180, degrees=True) * R.from_euler('z', yaw_deg, degrees=True)   # tool z points down
     R_cam = R_ee * R.from_euler('z', 180, degrees=True)         # camera_module rpy 0 0 pi
     t = np.array([flange_xy[0], flange_xy[1], flange_z]) + R_ee.apply([0, 0.05639, 0.01305])
     return R_cam.as_matrix(), t
@@ -126,3 +126,22 @@ def test_the_expected_class_wins_when_it_is_near_enough():
     cands = [({'label': 'bottle', 'confidence': 0.4}, (0.50, 0.19)),          # 7 cm off: too far for "any class" but the right class
              ({'label': 'cup', 'confidence': 0.9}, (0.452, 0.141))]
     assert ws.match_detection(cands, 'bottle', (0.452, 0.140))[0]['label'] == 'bottle'
+
+
+def test_tall_bottle_real_measurement_needs_the_mid_height_plane():
+    """Regression from the real arm (2026-10-05, plastic water bottle). Flange (0.414, 0.188, 0.492); the wrist
+    camera sits 5.6 cm from the tool axis along base +x. YOLO's box centre was pixel (600, 540). The bottle's
+    real axis, from its cap pixel (595, 610) on the cap plane, was (0.387, 0.178). Centring with the TOP plane
+    left the fingers about 2 cm off sideways (2.7 cm measured with the finger pads); the mid-height plane is within 1 cm."""
+    Rm = R.from_quat([0.7298, -0.68323, 0.0164, 0.01793]).as_matrix()
+    t = np.array([0.414 + 0.0563, 0.188 + 0.0031, 0.492 - 0.0132])
+    axis = np.array([0.387, 0.178])
+    top = np.array(ws.pixel_to_plane_xy(600, 540, K, Rm, t, ws.plane_height('bottle', -0.0125)))
+    mid = np.array(ws.pixel_to_plane_xy(600, 540, K, Rm, t, ws.center_plane_height('bottle', -0.0125)))
+    assert np.linalg.norm(top - axis) > 0.018
+    assert np.linalg.norm(mid - axis) < 0.012
+
+
+def test_short_objects_keep_the_top_plane():
+    assert ws.center_plane_height('cup', -0.0125) == ws.plane_height('cup', -0.0125)
+    assert ws.center_plane_height('mouse', -0.0125) == ws.plane_height('mouse', -0.0125)

@@ -26,6 +26,15 @@ def plane_height(label, table_top_z):
     return table_top_z + OBJECT_HEIGHT_M.get(label, DEFAULT_HEIGHT_M)
 
 
+def center_plane_height(label, table_top_z):
+    """Plane height for turning the centre of the object's BOX into a table position.
+    The box centre of a tall object seen from above (off-axis camera) is about its mid-height, not its
+    top: using the top plane put the fingers 2.5-3 cm off a 20 cm bottle, sideways to the closing
+    direction. Short objects (a mug, a mouse) keep the top plane, as verified on the arm."""
+    height = OBJECT_HEIGHT_M.get(label, DEFAULT_HEIGHT_M)
+    return table_top_z + (0.5 * height if height >= TALL_OBJECT_M else height)
+
+
 def pixel_to_plane_xy(u, v, K, R_bc, t_bc, plane_z):
     """base_link (x, y) where the camera ray through pixel (u, v) meets the
     horizontal plane z = plane_z. K: 3x3 intrinsics. (R_bc, t_bc): camera pose in
