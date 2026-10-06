@@ -272,7 +272,7 @@ class ArmControllerNode(Node):
         return tuple(vals)
 
     # ── PRIMITIVES ───────────────────────────────────────────────────
-    def _move_to(self, x, y, z, speed=None, cartesian=False, min_flange_z=None):
+    def _move_to(self, x, y, z, speed=None, cartesian=False, min_flange_z=None, max_flange_z=None):
         try:
             rx, ry, rz = self._transform_to_robot_frame(x, y, z)
         except ValueError as e:
@@ -290,7 +290,8 @@ class ArmControllerNode(Node):
         floor_z = sg.flange_floor_z(geom)
         if min_flange_z is not None:
             floor_z = min(floor_z, min_flange_z)       # only ever LOWERS the floor, for a pick's straight descent
-        rz = max(floor_z, min(0.50, rz))
+        ceiling = 0.50 if max_flange_z is None else max(0.50, max_flange_z)   # only a pick's hover over a tall object goes higher
+        rz = max(floor_z, min(ceiling, rz))
 
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(
@@ -599,20 +600,14 @@ class ArmControllerNode(Node):
         label = (self.latest_scene.get(object_id) or {}).get('label', 'object')
         # z is the FLANGE height: the fingertips hang TCP_REACH_M below it. Grasp with the
         # fingertips at the object's centre height, but never below the table floor.
-        grasp_z = max(oz + sg.TCP_REACH_M + self.grasp_z_offset, sg.flange_floor_z(geom))
         tip_clear = float(self.get_parameter('low_pick_tip_clearance_m').value)
-        low_floor = geom['table_top_z'] + sg.TCP_REACH_M + tip_clear if geom else grasp_z
-        height = ws.OBJECT_HEIGHT_M.get(label, ws.DEFAULT_HEIGHT_M)
-        if height <= 0.06 and tip_clear < sg.TCP_CLEARANCE_M and geom:
-            # a low object (mouse, bowl): the pads reach 7 cm UP from the tips, so put the tips near the
-            # table, just inside the object's top, not at its centre
-            top = geom['table_top_z'] + height
-            grasp_z = max(low_floor, min(oz, top - 0.025) + sg.TCP_REACH_M)
-        hover_z = min(0.50, max(float(approach_z), oz + sg.TCP_REACH_M + self.hover_above_m,
-                                grasp_z + self.pregrasp_clearance))
+        grasp_z, hover_z, lift_z, low_floor = ws.pick_heights(
+            oz, label, geom['table_top_z'], sg.TCP_REACH_M, sg.flange_floor_z(geom), tip_clear,
+            sg.TCP_CLEARANCE_M, approach_z=float(approach_z), grasp_offset=self.grasp_z_offset,
+            hover_above=self.hover_above_m, pregrasp_clearance=self.pregrasp_clearance)
         self.get_logger().info(
             f'pick {object_id} ({label}) at ({ox:.3f},{oy:.3f},{oz:.3f}) — '
-            f'hover z={hover_z:.3f}, grasp z={grasp_z:.3f}')
+            f'hover z={hover_z:.3f}, grasp z={grasp_z:.3f}, lift z={lift_z:.3f}')
 
         centred = {'xy': (ox, oy)}
 
@@ -628,14 +623,16 @@ class ArmControllerNode(Node):
 
         steps = [
             ('open gripper', lambda: self._open_gripper()),
-            ('hover',        lambda: self._move_to(ox, oy, hover_z)),
+            ('raise',        lambda: self._raise_to(hover_z)),
+            ('hover',        lambda: self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z)),
             ('turn the fingers away from any handle', lambda: self._align_for_handle(label, (ox, oy))),
             ('centre on the object (wrist camera)', center),
             ('descend',      lambda: self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True,
                                                     min_flange_z=low_floor)),
             ('close gripper', lambda: self._close_gripper()),
             ('check the grip', lambda: self._check_grip(object_id)),
-            ('lift',         lambda: self._move_to(centred['xy'][0], centred['xy'][1], hover_z, cartesian=True)),
+            ('lift',         lambda: self._move_to(centred['xy'][0], centred['xy'][1], lift_z, cartesian=True,
+                                                    max_flange_z=ws.HOVER_MAX_Z)),
             ('check it is still held', lambda: self._check_grip(object_id)),
         ]
         for name, action in steps:
@@ -677,6 +674,14 @@ class ArmControllerNode(Node):
         return (Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix(),
                 [tr.x, tr.y, tr.z])
 
+    def _wrist_xy_candidates(self, msg, R_bc, t_bc, plane_z):
+        out = []
+        for d in msg.get('detections', []):
+            xy = ws.pixel_to_plane_xy(d['u'], d['v'], self._wrist_K, R_bc, t_bc, plane_z)
+            if xy is not None:
+                out.append((d, xy))
+        return out
+
     def _wrist_target_xy(self, label, expected_xy, after, plane_z, timeout=3.0):
         """Where the wrist camera places `label` on the table plane: (x, y) in
         base_link, or None if it is not seen within `timeout`. Only frames received
@@ -692,25 +697,13 @@ class ArmControllerNode(Node):
                     self.get_logger().warn(f'wrist TF not available: {e}')
                     time.sleep(0.1)
                     continue
-                cands = []
-                for d in msg.get('detections', []):
+                got = ws.match_detection(self._wrist_xy_candidates(msg, R_bc, t_bc, plane_z), label, expected_xy)
+                if got is not None:
+                    d, xy = got
                     if d.get('label') != label:
-                        continue
-                    xy = ws.pixel_to_plane_xy(d['u'], d['v'], self._wrist_K, R_bc, t_bc, plane_z)
-                    if xy is not None:
-                        cands.append((d, xy))
-                if cands:
-                    if expected_xy is not None:
-                        d, xy = min(cands, key=lambda c: math.hypot(c[1][0] - expected_xy[0],
-                                                                      c[1][1] - expected_xy[1]))
-                        if math.hypot(xy[0] - expected_xy[0], xy[1] - expected_xy[1]) > 0.15:
-                            self.get_logger().warn(
-                                f'wrist sees a {label} at ({xy[0]:.3f},{xy[1]:.3f}), >15 cm from the '
-                                f'expected ({expected_xy[0]:.3f},{expected_xy[1]:.3f}) — ignoring it')
-                            time.sleep(0.1)
-                            continue
-                    else:
-                        d, xy = max(cands, key=lambda c: c[0]['confidence'])
+                        self.get_logger().info(
+                            f'wrist: the detector calls the {label} a "{d.get("label")}" from above '
+                            f'({d["confidence"]:.0%}); it is at the expected spot, so using it')
                     return xy, d['confidence']
                 after = max(after, item[0])           # nothing usable in this frame; wait for a newer one
             time.sleep(0.05)
@@ -735,14 +728,23 @@ class ArmControllerNode(Node):
         return self._guarded_move(geom, f'rotate wrist {math.degrees(delta):+.0f} deg', joint_positions=goal)
 
     def _wrist_bbox(self, label, expected_xy, timeout=3.0):
-        """Pixel box (x1, y1, x2, y2) of the fresh wrist detection of `label`, or None."""
+        """Pixel box (x1, y1, x2, y2) of the fresh wrist detection that is the `label` object
+        (same matching as the centring: class or, failing that, position), or None."""
+        geom, _ = sg.load_geometry()
+        plane_z = ws.plane_height(label, geom['table_top_z']) if geom else None
         t0, after = time.monotonic(), time.monotonic()
         while time.monotonic() - t0 < timeout:
             item = self._wrist_dets
-            if item and item[0] > after:
-                boxes = [d for d in item[1].get('detections', []) if d.get('label') == label]
-                if boxes:
-                    d = max(boxes, key=lambda b: b['confidence'])
+            if item and item[0] > after and self._wrist_K is not None and plane_z is not None:
+                msg = item[1]
+                try:
+                    R_bc, t_bc = self._tf_pose(BASE_LINK, msg['frame_id'], msg.get('stamp'))
+                except Exception:
+                    time.sleep(0.1)
+                    continue
+                got = ws.match_detection(self._wrist_xy_candidates(msg, R_bc, t_bc, plane_z), label, expected_xy)
+                if got is not None:
+                    d = got[0]
                     return (d['x1'], d['y1'], d['x2'], d['y2'])
             time.sleep(0.05)
         return None
@@ -772,6 +774,21 @@ class ArmControllerNode(Node):
             f'align: {label} box {box[2]-box[0]}x{box[3]-box[1]} px is stretched along the closing axis '
             f'(handle) — turning the wrist {math.degrees(target - q7):+.0f} deg')
         return self._rotate_wrist(target - q7)
+
+    def _raise_to(self, z):
+        """Straight up at the current x/y to flange height z before moving sideways, so the open
+        fingers never sweep through the height of a tall object on the way to the hover point."""
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] raise straight up to z={z:.3f}')
+            time.sleep(0.3)
+            return True
+        try:
+            _, g = self._tf_pose(BASE_LINK, EE_LINK)
+        except Exception as e:
+            return self._refuse(f'cannot read the arm pose ({e})')
+        if g[2] >= z - 0.02:
+            return True
+        return self._move_to(g[0], g[1], z, cartesian=True, max_flange_z=ws.HOVER_MAX_Z)
 
     def _pad_midpoint_xy(self, default):
         """(x, y) midway between the two finger pads in base_link. The tool is a few degrees off

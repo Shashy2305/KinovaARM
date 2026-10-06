@@ -76,3 +76,53 @@ def test_quarter_turn_stays_inside_the_joint_limit():
     assert ws.quarter_turn_target(1.57, 2.7) == 1.57 - 3.141592653589793 / 2     # +90 would hit 3.14
     assert ws.quarter_turn_target(2.6, 2.7) < 2.6
     assert ws.quarter_turn_target(2.0, 0.3) is None
+
+
+REACH, TOP, FLOOR = 0.215, -0.0125, 0.2525
+
+
+def _heights(label, oz, tip_clear=0.05, **kw):
+    return ws.pick_heights(oz, label, TOP, REACH, FLOOR, tip_clear, 0.05, **kw)
+
+
+def test_mug_heights_are_unchanged_from_the_live_tested_values():
+    grasp, hover, lift, _ = _heights('cup', 0.056, approach_z=0.39)
+    assert abs(grasp - 0.271) < 0.002 and abs(hover - 0.391) < 0.002 and abs(lift - 0.391) < 0.002
+
+
+def test_a_tall_bottle_is_hovered_over_with_the_fingertips_clear_of_its_top():
+    grasp, hover, lift, _ = _heights('bottle', 0.129, approach_z=0.46)
+    top = TOP + 0.22
+    assert hover - REACH >= top + 0.07 - 1e-9                      # tips at least 7 cm above the cap
+    assert hover <= ws.HOVER_MAX_Z
+    assert abs((grasp - REACH) - (TOP + 0.3 * 0.22)) < 1e-9         # tips on the straight lower body, not the shoulder
+    assert lift == min(hover, grasp + 0.15) and lift < hover        # carry only a little above the grasp
+
+
+def test_a_mouse_is_grasped_low_only_when_the_clearance_is_lowered():
+    g_default, *_ = _heights('mouse', 0.0)
+    assert g_default == FLOOR                                         # unchanged: tips stay 5 cm up
+    g_low, hover, lift, low_floor = _heights('mouse', 0.0, tip_clear=0.03)
+    assert g_low < FLOOR and g_low >= low_floor - 1e-9
+
+
+def test_a_bottle_the_detector_calls_a_cup_is_still_found_by_its_position():
+    exp = (0.452, 0.140)
+    cands = [({'label': 'cup', 'confidence': 0.60}, (0.455, 0.147)),          # the bottle cap seen from above
+             ({'label': 'mouse', 'confidence': 0.85}, (0.455, -0.02)),        # the real mouse, 16 cm away
+             ({'label': 'cup', 'confidence': 0.82}, (0.57, 0.02))]            # the mug
+    d, xy = ws.match_detection(cands, 'bottle', exp)
+    assert d['confidence'] == 0.60 and xy == (0.455, 0.147)
+
+
+def test_nothing_near_the_expected_spot_is_not_a_match():
+    cands = [({'label': 'cup', 'confidence': 0.9}, (0.57, 0.02)), ({'label': 'mouse', 'confidence': 0.9}, (0.455, -0.02))]
+    assert ws.match_detection(cands, 'bottle', (0.452, 0.140)) is None
+    assert ws.match_detection([], 'bottle', (0.452, 0.140)) is None
+    assert ws.match_detection(cands, 'bottle', None) is None                # no expected spot and wrong class
+
+
+def test_the_expected_class_wins_when_it_is_near_enough():
+    cands = [({'label': 'bottle', 'confidence': 0.4}, (0.50, 0.19)),          # 7 cm off: too far for "any class" but the right class
+             ({'label': 'cup', 'confidence': 0.9}, (0.452, 0.141))]
+    assert ws.match_detection(cands, 'bottle', (0.452, 0.140))[0]['label'] == 'bottle'

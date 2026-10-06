@@ -15,7 +15,7 @@ import numpy as np
 # the middle of the bounding box, which for an object seen from above is its
 # axis at (roughly) the top surface.
 OBJECT_HEIGHT_M = {
-    'cup': 0.09, 'mug': 0.09, 'bowl': 0.06, 'bottle': 0.20, 'mouse': 0.035,
+    'cup': 0.09, 'mug': 0.09, 'bowl': 0.06, 'bottle': 0.22, 'mouse': 0.035,
     'cell phone': 0.01, 'remote': 0.03, 'book': 0.03, 'scissors': 0.02, 'vase': 0.20,
 }
 DEFAULT_HEIGHT_M = 0.06
@@ -93,3 +93,62 @@ def quarter_turn_target(q7, limit=2.7):
     cands = [q7 + sgn * (3.141592653589793 / 2) for sgn in (1, -1)]
     cands = [c for c in cands if abs(c) <= limit]
     return min(cands, key=abs) if cands else None
+
+
+HOVER_MAX_Z = 0.58            # highest flange z a pick may hover at (tall objects)
+TALL_OBJECT_M = 0.15          # objects at least this tall are grasped low on the body
+TALL_GRASP_FRACTION = 0.30    # fingertips at this fraction of the object's height
+
+
+def pick_heights(oz, label, table_top, tcp_reach, floor_z, tip_clear, default_tip_clear, approach_z=0.0,
+                 grasp_offset=0.0, hover_above=0.12, pregrasp_clearance=0.10, top_clearance=0.07):
+    """Flange heights for a pick: (grasp_z, hover_z, lift_z, low_floor).
+
+    grasp: fingertips at the object's centre (flange = centre + reach), never below the floor. A LOW object
+    (<= 6 cm) with a lowered tip clearance is grasped with the tips near the table, just inside its top.
+    hover: the open fingertips must clear the object's TOP by top_clearance (a 26 cm bottle needs the
+    hover well above where a 9 cm mug does), and be at least approach_z.
+    lift: just far enough to carry (never above the hover)."""
+    height = OBJECT_HEIGHT_M.get(label, DEFAULT_HEIGHT_M)
+    top = table_top + height
+    grasp_z = max(oz + tcp_reach + grasp_offset, floor_z)
+    low_floor = table_top + tcp_reach + tip_clear
+    if height >= TALL_OBJECT_M:
+        # the scene's z reads the "centre" of a tall object 3-4 cm too high (a surface point), and the upper
+        # part of a bottle is its tapered shoulder, which squeezes the pads off. Grasp the straight lower body.
+        grasp_z = max(table_top + TALL_GRASP_FRACTION * height + tcp_reach + grasp_offset, floor_z)
+    if height <= 0.06 and tip_clear < default_tip_clear:
+        grasp_z = max(low_floor, min(oz, top - 0.025) + tcp_reach)
+    hover_z = max(float(approach_z), oz + tcp_reach + hover_above, grasp_z + pregrasp_clearance,
+                  top + tcp_reach + top_clearance)
+    hover_z = min(HOVER_MAX_Z, hover_z)
+    lift_z = min(hover_z, grasp_z + 0.15)
+    return grasp_z, hover_z, lift_z, low_floor
+
+
+SAME_LABEL_TOL_M = 0.15       # a detection of the expected class this close (m) to the expected spot is the object
+OTHER_LABEL_TOL_M = 0.06      # a detection of ANY graspable class this close is accepted too
+
+
+def match_detection(cands, label, expected_xy):
+    """Pick the wrist detection that is the target object. cands: [(detection, (x, y) on the table plane)].
+    The detector's class is unreliable from straight above (a bottle seen from above is "cup", a bowl is
+    "mouse"), so besides the expected class we also accept ANY class whose position is within
+    OTHER_LABEL_TOL_M of where the scene says the object is. Nothing else sits that close to the target.
+    Returns (detection, xy) or None."""
+    if not cands:
+        return None
+    if expected_xy is None:
+        same = [c for c in cands if c[0].get('label') == label]
+        return max(same, key=lambda c: c[0]['confidence']) if same else None
+
+    def dist(c):
+        return math.hypot(c[1][0] - expected_xy[0], c[1][1] - expected_xy[1])
+
+    same = [c for c in cands if c[0].get('label') == label]
+    if same:
+        best = min(same, key=dist)
+        if dist(best) <= SAME_LABEL_TOL_M:
+            return best
+    best = min(cands, key=dist)
+    return best if dist(best) <= OTHER_LABEL_TOL_M else None
