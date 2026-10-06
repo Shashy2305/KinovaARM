@@ -575,6 +575,7 @@ Verified on the real arm on 2026-10-05 with a mug (several picks, both place for
 | `pick up the cup` | hover over it, wrist camera centres the fingers on it (turning the wrist 90 deg if a handle would meet a finger), straight descent, close, lift. Refuses to descend if the wrist cannot see the object. |
 | `pick up the cup and put it down` | the same, then set it back where it was picked up (place `here`). |
 | `pick up the cup and put it next to the mouse` | the planner finds a free table spot 13-20 cm from the mouse, at least 11 cm from everything else, then carries (object ~12 cm above the table), lowers, opens, backs straight up. |
+| `pick up the cup and put it aside` | a free spot 15-23 cm from where it stood (the model's own coordinates are overridden). |
 | `pick up the cup and put it down at x 0.3 y 0.1` | explicit spot (moved to the nearest free one if it is taken). |
 
 How it is kept safe:
@@ -587,3 +588,9 @@ How it is kept safe:
 
 Limits: the wrist must see the object (top-down view); only a mug has been tried; `place` assumes the object stays in the
 fingers (no slip detection beyond the finger position); the cup is not in the MoveIt scene while carried.
+
+Verified by voice on 2026-10-05: "pick up the mouse and put it aside" and "pick up the cup and put it aside" (both succeeded after
+fixing four things the first attempt exposed: the low-object clearance reverting to 5 cm after a restart, a scene height of
+0.132 for a cup (0.05 real), the model picking a phantom mouse below the table, and a stray `go_home`). The grip check stopped
+the two misses safely. Free-spot search treats every real object on the table as an obstacle, including ones beyond the
+picking limit (a bottle at the table edge).

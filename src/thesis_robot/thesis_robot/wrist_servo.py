@@ -105,6 +105,7 @@ def quarter_turn_target(q7, limit=2.7):
 
 
 HOVER_MAX_Z = 0.58            # highest flange z a pick may hover at (tall objects)
+Z_TRUST_M = 0.04              # how far a scene z may be from the object's expected centre height before it is ignored
 TALL_OBJECT_M = 0.15          # objects at least this tall are grasped low on the body
 TALL_GRASP_FRACTION = 0.30    # fingertips at this fraction of the object's height
 
@@ -120,6 +121,12 @@ def pick_heights(oz, label, table_top, tcp_reach, floor_z, tip_clear, default_ti
     lift: just far enough to carry (never above the hover)."""
     height = OBJECT_HEIGHT_M.get(label, DEFAULT_HEIGHT_M)
     top = table_top + height
+    # The scene's z is a depth-camera surface point: 2-4 cm high for ordinary objects, and sometimes
+    # wildly wrong (a "cup" at z=0.132 made the arm grasp 8 cm above the real mug and close on air).
+    # Where it disagrees with the object's known size by more than 4 cm, use the size instead.
+    prior_centre = table_top + 0.5 * height
+    if abs(oz - prior_centre) > Z_TRUST_M:
+        oz = prior_centre
     grasp_z = max(oz + tcp_reach + grasp_offset, floor_z)
     low_floor = table_top + tcp_reach + tip_clear
     if height >= TALL_OBJECT_M:

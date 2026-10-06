@@ -61,10 +61,12 @@ class ArmControllerNode(Node):
         self.declare_parameter('center_max_step', 0.06)   # m, largest single correction
         self.declare_parameter('center_max_iter', 5)      # corrections before giving up
         self.declare_parameter('hover_above_m',   0.12)   # fingertips this far above the object centre while centering
-        # How far the FINGERTIPS may come down to the table during a pick's straight descent. Default 5 cm
-        # (the old flange floor). Lower it (e.g. 0.025) only to grasp low objects such as a mouse; the path
-        # check (pad frames >= 5 cm above the table, i.e. tips >= 1.5 cm) still applies.
-        self.declare_parameter('low_pick_tip_clearance_m', sg.TCP_CLEARANCE_M)
+        # How far the FINGERTIPS may come down to the table during a pick's straight descent (and a place
+        # set-down) of a LOW object (<= 6 cm, e.g. a mouse). Default 3 cm: a parameter that defaulted to the old
+        # 5 cm and had to be set after every restart made the mouse pick fail 2026-10-05 (the fingers closed
+        # 1.5 cm above it). Tall objects and normal moves keep the 5 cm floor. The path check (pad frames
+        # >= 5 cm above the table, i.e. tips >= 1.5 cm) applies in every case.
+        self.declare_parameter('low_pick_tip_clearance_m', 0.03)
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)

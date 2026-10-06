@@ -180,12 +180,22 @@ PLACE_EDGE_MARGIN_M = 0.03              # stay this far inside the planner's x/y
 PLACE_MIN_RADIUS_M = 0.25               # keep away from the robot's own base column
 
 
+OBSTACLE_X_RANGE = (-0.05, 0.85)       # where the table is, in base_link: objects here are physically on it
+OBSTACLE_Y_RANGE = (-0.95, 0.95)
+OBSTACLE_Z_RANGE = (-0.03, 0.32)       # centre heights that can belong to an object standing on the table
+
+
 def _scene_points(scene, skip=()):
+    """Positions of everything that is really on the table, for free-spot search. NOT only what the arm can
+    pick: a bottle at the table edge (beyond the planner's y limit) still blocks a place next to it."""
     out = []
     for oid, o in (scene or {}).items():
-        if oid in skip or not isinstance(o, dict) or o.get('stale') or not o.get('reachable'):
+        if oid in skip or not isinstance(o, dict) or o.get('stale'):
             continue
-        if _is_number(o.get('x')) and _is_number(o.get('y')):
+        if not (_is_number(o.get('x')) and _is_number(o.get('y')) and _is_number(o.get('z'))):
+            continue
+        if (OBSTACLE_X_RANGE[0] <= o['x'] <= OBSTACLE_X_RANGE[1] and OBSTACLE_Y_RANGE[0] <= o['y'] <= OBSTACLE_Y_RANGE[1]
+                and OBSTACLE_Z_RANGE[0] <= o['z'] <= OBSTACLE_Z_RANGE[1]):
             out.append((oid, float(o['x']), float(o['y'])))
     return out
 
@@ -292,6 +302,74 @@ def normalize_place_here(plan, command):
                 st.pop(k, None)
             st['here'] = True
     return plan
+
+
+ASIDE_WORDS = ('aside', 'to the side', 'out of the way', 'somewhere else', 'over there', 'move it away',
+               'put it away', 'set it aside', 'off to the side')
+ASIDE_RINGS_M = (0.15, 0.19, 0.23)
+NAMED_DESTINATION_WORDS = ('next to', 'beside', 'near the', 'near it', 'by the', 'on the left', 'on the right',
+                           'in front', 'behind', 'at x', 'x ')
+
+
+def normalize_place_aside(plan, command, scene):
+    """"put it aside" / "out of the way": a free table spot 15-23 cm from where the object was picked up
+    (the model otherwise invents coordinates, sometimes under the robot's base or at the table edge).
+    Not applied when the command names a destination ("next to the mouse", "at x 0.3")."""
+    if not isinstance(plan, list):
+        return plan
+    cmd = f' {(command or "").lower()} '
+    if not any(w in cmd for w in ASIDE_WORDS) or any(w in cmd for w in NAMED_DESTINATION_WORDS):
+        return plan
+    picked = next((st.get('object_id') for st in plan if isinstance(st, dict) and st.get('action') == 'pick'), None)
+    obj = (scene or {}).get(picked) if picked else None
+    if not (isinstance(obj, dict) and _is_number(obj.get('x')) and _is_number(obj.get('y'))):
+        return plan
+    here = (obj['x'], obj['y'])
+    spot = find_free_spot(here, scene, here, skip=(picked,), rings=ASIDE_RINGS_M)
+    for st in plan:
+        if isinstance(st, dict) and st.get('action') == 'place':
+            for k in ('x', 'y', 'z', 'near', 'here', 'unplaceable'):
+                st.pop(k, None)
+            if spot is None:
+                st['unplaceable'] = 'no free spot to the side of the object'
+            else:
+                st['x'], st['y'] = spot
+    return plan
+
+
+def fix_pick_target(plan, scene, table_top):
+    """The model takes the first "mouse"/"cup" in the world state, which is often a phantom (a mouse at
+    z=-0.037, below the table; a cup at the wrong height). If the object it picked is implausible and another
+    reachable, non-stale object of the same label is plausible, pick that one (most confident first)."""
+    if not isinstance(plan, list) or not isinstance(scene, dict) or table_top is None:
+        return plan
+
+    def plausible(o):
+        return (isinstance(o, dict) and o.get('reachable') and not o.get('stale') and _is_number(o.get('z'))
+                and table_top - 0.02 <= o['z'] <= table_top + 0.30)
+
+    for st in plan:
+        if not isinstance(st, dict) or st.get('action') != 'pick':
+            continue
+        chosen = scene.get(st.get('object_id'))
+        if plausible(chosen):
+            continue
+        label = chosen.get('label') if isinstance(chosen, dict) else None
+        cands = [(oid, o) for oid, o in scene.items() if plausible(o) and (label is None or o.get('label') == label)]
+        if cands:
+            best = max(cands, key=lambda c: c[1].get('confidence', 0))
+            st['object_id'] = best[0]
+    return plan
+
+
+def drop_home_around_pick(plan, command):
+    """A pick/place command never needs go_home unless it says so (the model added one before the pick; the
+    arm went home first and the pick then failed)."""
+    if not isinstance(plan, list) or not any(isinstance(s, dict) and s.get('action') == 'pick' for s in plan):
+        return plan
+    if any(w in (command or '').lower() for w in HOME_WORDS):
+        return plan
+    return [s for s in plan if not (isinstance(s, dict) and s.get('action') == 'go_home')]
 
 
 # ── SAFETY VALIDATOR ─────────────────────────────────────────────────
@@ -517,10 +595,13 @@ class LLMPlannerNode(Node):
             # Re-derive move_to heights from the matched scene object rather
             # than trusting the LLM's "z + 0.15" arithmetic (see comment on
             # fix_move_to_heights) — then validate as usual.
+            plan = fix_pick_target(plan, self.latest_scene, geom['table_top_z'] if geom else None)
+            plan = drop_home_around_pick(plan, command)
             plan = fix_move_to_heights(plan, self.latest_scene, z_floor)
             plan = fix_pick_heights(plan, self.latest_scene, z_floor)
             plan = trim_pick_extras(plan, command)
             plan = normalize_place_here(plan, command)
+            plan = normalize_place_aside(plan, command, self.latest_scene)
             plan = fix_place_targets(plan, self.latest_scene)
             ok, reason, warnings = validate_plan(plan, self.latest_scene, z_floor)
             for w in warnings:

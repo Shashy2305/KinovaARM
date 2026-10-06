@@ -145,3 +145,17 @@ def test_tall_bottle_real_measurement_needs_the_mid_height_plane():
 def test_short_objects_keep_the_top_plane():
     assert ws.center_plane_height('cup', -0.0125) == ws.plane_height('cup', -0.0125)
     assert ws.center_plane_height('mouse', -0.0125) == ws.plane_height('mouse', -0.0125)
+
+
+def test_a_wildly_wrong_scene_height_is_not_trusted():
+    """2026-10-05: the scene said a cup was at z=0.132; the real mug centre is ~0.04. The arm grasped 8 cm
+    above the mug and closed on air."""
+    g_bad, *_ = _heights('cup', 0.132, approach_z=0.467)
+    g_ok, *_ = _heights('cup', 0.056, approach_z=0.39)
+    assert abs(g_bad - 0.2525) < 0.02 and abs(g_ok - 0.271) < 0.002       # the bad reading gives the same low grasp, not 0.347
+    assert g_bad < 0.30
+
+
+def test_a_plausible_scene_height_is_still_used():
+    g, *_ = _heights('cup', 0.07)
+    assert abs(g - (0.07 + REACH)) < 1e-9

@@ -4,7 +4,7 @@ pytest.importorskip('rclpy')
 pytest.importorskip('ollama')
 
 from thesis_robot import safety_geometry as sg  # noqa: E402
-from thesis_robot.llm_planner_node import fix_move_to_heights, fix_pick_heights, fix_place_targets, normalize_place_here, find_free_spot, trim_pick_extras, validate_plan  # noqa: E402
+from thesis_robot.llm_planner_node import fix_move_to_heights, fix_pick_heights, fix_place_targets, normalize_place_here, normalize_place_aside, fix_pick_target, drop_home_around_pick, find_free_spot, trim_pick_extras, validate_plan  # noqa: E402
 
 GEOM = {'table_top_z': -0.06, 'x': [-0.15, 0.75], 'y': [-0.80, 0.85], 'rear_wall_x': -0.20}
 SCENE = {'cup_00': {'label': 'cup', 'x': 0.159, 'y': 0.1327, 'z': -0.0897,
@@ -169,3 +169,63 @@ def test_put_it_down_means_here_but_a_destination_is_respected():
     assert 'here' not in normalize_place_here(plan(), 'pick up the cup and put it down next to the mouse')[1]
     assert 'here' not in normalize_place_here(plan(), 'pick up the cup and put it down on the left')[1]
     assert 'here' not in normalize_place_here(plan(), 'pick up the cup and put it down at x 0.3 y 0.1')[1]
+
+
+def test_put_it_aside_gets_a_free_spot_15_to_23_cm_away():
+    scene = _table()
+    for cmd in ('pick up the cup and put it aside', 'pick up the cup and move it out of the way'):
+        plan = [{'action': 'pick', 'object_id': 'cup_00', 'approach_z': 0.4}, {'action': 'place', 'x': 0.05, 'y': 0.0}]   # the LLM's bad guess: under the base
+        out = normalize_place_aside(plan, cmd, scene)
+        spot = (out[1]['x'], out[1]['y'])
+        assert 0.14 <= _dist(spot, (0.385, -0.042)) <= 0.24
+        assert _dist(spot, (0.262, -0.237)) >= 0.11 and _dist(spot, (0.30, 0.20)) >= 0.11
+        assert _dist(spot, (0.0, 0.0)) >= 0.25
+        assert validate_plan(out, scene, 0.2525)[0]
+
+
+def test_aside_is_not_applied_when_a_destination_is_named():
+    plan = [{'action': 'pick', 'object_id': 'cup_00'}, {'action': 'place', 'near': 'mouse_00'}]
+    out = normalize_place_aside([dict(p) for p in plan], 'pick up the cup and put it aside next to the mouse', _table())
+    assert out[1] == {'action': 'place', 'near': 'mouse_00'}
+
+
+def _mice():
+    mk = lambda lbl, x, y, z, c, r=True, st=False: {'label': lbl, 'x': x, 'y': y, 'z': z, 'confidence': c, 'reachable': r, 'stale': st}
+    return {'mouse_00': mk('mouse', 0.308, 0.046, -0.037, 0.9),      # the phantom the model picked: below the table
+            'mouse_06': mk('mouse', 0.405, -0.019, 0.02, 0.95),       # the real one
+            'mouse_07': mk('mouse', 0.1, 0.1, 0.02, 0.99, st=True)}   # stale
+
+
+def test_a_phantom_pick_target_is_replaced_by_the_real_object():
+    plan = fix_pick_target([{'action': 'pick', 'object_id': 'mouse_00', 'approach_z': 0.3}], _mice(), -0.0125)
+    assert plan[0]['object_id'] == 'mouse_06'
+
+
+def test_a_plausible_pick_target_is_left_alone():
+    plan = fix_pick_target([{'action': 'pick', 'object_id': 'mouse_06', 'approach_z': 0.3}], _mice(), -0.0125)
+    assert plan[0]['object_id'] == 'mouse_06'
+
+
+def test_go_home_is_dropped_from_a_pick_unless_asked_for():
+    plan = [{'action': 'go_home'}, {'action': 'pick', 'object_id': 'm', 'approach_z': 0.3}, {'action': 'place', 'here': True}]
+    assert [s['action'] for s in drop_home_around_pick(list(plan), 'pick up the mouse and put it aside')] == ['pick', 'place']
+    assert 'go_home' in [s['action'] for s in drop_home_around_pick(list(plan), 'go home then pick up the mouse')]
+    assert drop_home_around_pick([{'action': 'go_home'}], 'go home') == [{'action': 'go_home'}]
+
+
+def test_an_object_beyond_the_pick_limit_still_blocks_a_place_next_to_it():
+    """The plastic bottle stood at the table edge (y=0.38, beyond the planner's +-0.35 limit, so 'unreachable').
+    The mug was placed 9 cm from it because only reachable objects counted as obstacles."""
+    scene = {'cup_00': {'label': 'cup', 'x': 0.51, 'y': 0.15, 'z': 0.05, 'reachable': True, 'stale': False},
+             'mouse_00': {'label': 'mouse', 'x': 0.42, 'y': -0.02, 'z': 0.02, 'reachable': True, 'stale': False},
+             'bottle_09': {'label': 'bottle', 'x': 0.45, 'y': 0.38, 'z': 0.10, 'reachable': False, 'stale': False}}
+    spot = find_free_spot((0.51, 0.15), scene, (0.51, 0.15), skip=('cup_00',), rings=(0.15, 0.19, 0.23))
+    assert spot is not None and _dist(spot, (0.45, 0.38)) >= 0.11 and _dist(spot, (0.42, -0.02)) >= 0.11
+
+
+def test_ghosts_behind_the_robot_and_stale_objects_are_not_obstacles():
+    scene = {'ghost': {'label': 'cup', 'x': -1.3, 'y': 0.3, 'z': 0.0, 'reachable': False, 'stale': False},
+             'old': {'label': 'cup', 'x': 0.5, 'y': 0.1, 'z': 0.05, 'reachable': True, 'stale': True},
+             'below': {'label': 'cup', 'x': 0.5, 'y': 0.0, 'z': -0.3, 'reachable': False, 'stale': False}}
+    spot = find_free_spot((0.5, 0.0), scene, (0.5, 0.0), rings=(0.13,))
+    assert spot is not None
