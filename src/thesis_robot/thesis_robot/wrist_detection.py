@@ -38,7 +38,7 @@ try:
 except:
     YOLO_AVAILABLE = False
 
-PIXEL_CONF_FLOOR = 0.15   # for /wrist_pixel_detections only; /detections_wrist keeps 0.30
+PIXEL_CONF_FLOOR = 0.10   # for /wrist_pixel_detections only; /detections_wrist keeps 0.30
 
 
 class WristDetection(Node):
@@ -181,9 +181,10 @@ class WristDetection(Node):
                 for r in results:
                     for bi, box in enumerate(r.boxes):
                         cls_name = self.model.names[int(box.cls)]
-                        if cls_name not in self.target_classes:
-                            continue
                         conf = float(box.conf)
+                        # /wrist_pixel_detections carries EVERY class: from straight above the detectors call a
+                        # water bottle a "sports ball" or a "bowl", a mouse a "cup". The arm matches by position.
+                        in_scene_classes = cls_name in self.target_classes
                         x1,y1,x2,y2 = map(int, box.xyxy[0])
                         u = (x1+x2)//2
                         v = (y1+y2)//2
@@ -198,7 +199,7 @@ class WristDetection(Node):
                         except Exception:
                             pass
                         pixel_dets.append(det)
-                        if conf < 0.30:
+                        if conf < 0.30 or not in_scene_classes:
                             continue
                         raw_detections.append((cls_name, conf, u, v))
             except Exception as e:
