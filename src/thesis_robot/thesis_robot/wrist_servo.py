@@ -187,17 +187,20 @@ def _dist_to_segment(p, a, b):
     return math.hypot(p[0] - (ax + t * dx), p[1] - (ay + t * dy))
 
 
-def finger_sweep_blocker(center_xy, axis_u, obstacles):
+def finger_sweep_blocker(center_xy, axis_u, obstacles, same_object_m=0.06, half_span=None, margin=None):
     """Label of a neighbouring object the OPEN fingers would hit when they come down around center_xy, or None.
     axis_u: unit vector (x, y) of the closing axis. obstacles: [(label, x, y)] (the target itself excluded).
     The fingers occupy the segment center +- FINGER_HALF_SPAN along the closing axis, about 4 cm wide."""
-    a = (center_xy[0] - FINGER_HALF_SPAN_M * axis_u[0], center_xy[1] - FINGER_HALF_SPAN_M * axis_u[1])
-    b = (center_xy[0] + FINGER_HALF_SPAN_M * axis_u[0], center_xy[1] + FINGER_HALF_SPAN_M * axis_u[1])
+    span = FINGER_HALF_SPAN_M if half_span is None else half_span
+    marg = SWEEP_MARGIN_M if margin is None else margin
+    a = (center_xy[0] - span * axis_u[0], center_xy[1] - span * axis_u[1])
+    b = (center_xy[0] + span * axis_u[0], center_xy[1] + span * axis_u[1])
     for label, x, y in obstacles:
-        if math.hypot(x - center_xy[0], y - center_xy[1]) < 0.02:
-            continue                                   # the target itself
+        if math.hypot(x - center_xy[0], y - center_xy[1]) < same_object_m:
+            continue        # the target itself, or the same object under another label (a mouse seen from above is
+                            # "cup" to the detectors): two real objects are never centre-to-centre this close
         r = OBJECT_RADIUS_M.get(label, DEFAULT_RADIUS_M)
-        if _dist_to_segment((x, y), a, b) < r + FINGER_HALF_WIDTH_M + SWEEP_MARGIN_M:
+        if _dist_to_segment((x, y), a, b) < r + FINGER_HALF_WIDTH_M + marg:
             return label
     return None
 

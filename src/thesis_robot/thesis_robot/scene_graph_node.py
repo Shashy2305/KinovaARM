@@ -85,6 +85,9 @@ def _load_workspace(logger):
         return DEFAULT_WORKSPACE
 
 
+DUP_RADIUS_M = 0.06          # two detections of different labels this close are one object
+
+
 class SceneGraphNode(Node):
 
     def __init__(self):
@@ -162,6 +165,8 @@ class SceneGraphNode(Node):
                 continue                      # a detection of the robot's own arm/gripper, not an object
             resolved.append((label, x, y, z, conf))
 
+        resolved = self._drop_relabelled_duplicates(resolved)
+
         if not resolved:
             return
 
@@ -186,6 +191,32 @@ class SceneGraphNode(Node):
             f'{[v["label"] for v in self.scene.values()]}',
             throttle_duration_sec=10.0,
         )
+
+    def _drop_relabelled_duplicates(self, resolved):
+        """A mouse seen from above is "cup" to the detectors, a bottle "cup", a bowl "mouse": the same object
+        shows up under two labels a few cm apart. Keep the more confident one. Only within one batch and
+        against fresh objects, and only within DUP_RADIUS_M, which no two real objects can be (centre to centre)."""
+        keep = []
+        now = time.time()
+        for det in resolved:
+            label, x, y, z, conf = det
+            dup = False
+            for other in resolved:
+                if other is det or other[0] == label:
+                    continue
+                if math.hypot(other[1] - x, other[2] - y) < DUP_RADIUS_M and other[4] > conf + 0.05:
+                    dup = True
+                    break
+            if not dup:
+                for o in self.scene.values():
+                    if o['stale'] or now - o['last_seen'] > 2.0 or o['label'] == label:
+                        continue
+                    if math.hypot(o['x'] - x, o['y'] - y) < DUP_RADIUS_M and o['confidence'] > conf + 0.15:
+                        dup = True
+                        break
+            if not dup:
+                keep.append(det)
+        return keep
 
     # ── ROBOT SELF-DETECTION GUARD ───────────────────────────────────
     def _arm_body(self):

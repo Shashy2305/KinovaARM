@@ -67,6 +67,11 @@ class ArmControllerNode(Node):
         # 1.5 cm above it). Tall objects and normal moves keep the 5 cm floor. The path check (pad frames
         # >= 5 cm above the table, i.e. tips >= 1.5 cm) applies in every case.
         self.declare_parameter('low_pick_tip_clearance_m', 0.03)
+        # Neighbour checks (settable at run time with `ros2 param set`, no restart needed)
+        self.declare_parameter('sweep_same_object_m', 0.06)   # a "neighbour" this close to the target is the target itself
+        self.declare_parameter('sweep_half_span_m', ws.FINGER_HALF_SPAN_M)
+        self.declare_parameter('sweep_margin_m', ws.SWEEP_MARGIN_M)
+        self.declare_parameter('carry_avoid_m', 0.12)
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
@@ -647,7 +652,11 @@ class ArmControllerNode(Node):
             for turned in (False, True):
                 axis = self._closing_axis_xy()
                 mid = self._pad_midpoint_xy(default=centred['xy'])
-                blocker = ws.finger_sweep_blocker(mid, axis, obstacles) if axis else None
+                blocker = ws.finger_sweep_blocker(
+                    mid, axis, obstacles,
+                    same_object_m=float(self.get_parameter('sweep_same_object_m').value),
+                    half_span=float(self.get_parameter('sweep_half_span_m').value),
+                    margin=float(self.get_parameter('sweep_margin_m').value)) if axis else None
                 if blocker is None:
                     return True
                 if turned:
@@ -1014,7 +1023,7 @@ class ArmControllerNode(Node):
         """Label of a tall scene object the carry path comes within CARRY_AVOID_M of (moving closer than it
         started), or None. See ws.carry_path_blocker."""
         return ws.carry_path_blocker(start_xy, end_xy, self._scene_obstacles(min_height=self.TALL_OBJECT_M),
-                                     avoid=self.CARRY_AVOID_M)
+                                     avoid=float(self.get_parameter('carry_avoid_m').value))
 
     def _move_verified(self, x, y, z, label, xy_tol=0.015, z_tol=0.01, min_flange_z=None):
         """Straight-line move that must END where asked: a cartesian path that stops short would

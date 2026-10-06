@@ -207,3 +207,9 @@ def test_rotation_to_align_puts_the_long_side_vertical():
         d = ws.rotation_to_align(float(ang), 2.0)
         if d is not None:
             assert abs(d) <= 90.0 and abs(((ang + d) % 180) - 90) < 1e-6
+
+
+def test_a_mislabelled_duplicate_of_the_target_is_not_a_neighbour():
+    """2026-10-05: the mouse was also in the scene as a 'cup' 5 cm away; the neighbour check refused the pick."""
+    assert ws.finger_sweep_blocker((0.303, -0.115), (1.0, 0.0), [('cup', 0.339, -0.079)]) is None
+    assert ws.finger_sweep_blocker((0.303, -0.115), (1.0, 0.0), [('cup', 0.393, -0.115)]) == 'cup'       # a real cup 9 cm away is
