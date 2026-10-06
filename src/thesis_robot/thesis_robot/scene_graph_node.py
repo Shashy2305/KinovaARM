@@ -177,9 +177,12 @@ class SceneGraphNode(Node):
                 'reachable':  self._is_reachable(x, y, z),
             }
 
+        # Once per 10 s, not once per detection message: this line alone wrote ~660,000 lines
+        # (and, over a few days, 7 GB of ROS logs) and filled the disk.
         self.get_logger().info(
             f'Scene: {len(self.scene)} objects — '
-            f'{[v["label"] for v in self.scene.values()]}'
+            f'{[v["label"] for v in self.scene.values()]}',
+            throttle_duration_sec=10.0,
         )
 
     # ── SNAPSHOT PUBLISHER ───────────────────────────────────────────

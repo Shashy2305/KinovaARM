@@ -565,3 +565,25 @@ The top strip should go back to `cameras ok` within a few seconds (about 14 fram
 Its hand-eye transform (the `camera_module` joint in the URDF) looks wrong: projecting the
 gripper pads into the image fits the nominal mount but not the calibrated one. Check it with the
 finger-pad overlay before trusting wrist-based detections.
+
+## 16. Pick and place by command
+
+Verified on the real arm on 2026-10-05 with a mug (several picks, both place forms). Type or say:
+
+| Command | What happens |
+|---|---|
+| `pick up the cup` | hover over it, wrist camera centres the fingers on it (turning the wrist 90 deg if a handle would meet a finger), straight descent, close, lift. Refuses to descend if the wrist cannot see the object. |
+| `pick up the cup and put it down` | the same, then set it back where it was picked up (place `here`). |
+| `pick up the cup and put it next to the mouse` | the planner finds a free table spot 13-20 cm from the mouse, at least 11 cm from everything else, then carries (object ~12 cm above the table), lowers, opens, backs straight up. |
+| `pick up the cup and put it down at x 0.3 y 0.1` | explicit spot (moved to the nearest free one if it is taken). |
+
+How it is kept safe:
+
+- After a pick the planner removes anything the command did not ask for (the 7B model likes to add `go_home`, `open_gripper`,
+  or a `move_to` over another object, any of which would drop or drag the object). A `move_to` before a pick is removed too.
+- `place` needs the fingers partly closed (holding something), checks that every move ends where it should, and stops
+  with the object still held if one does not. It refuses if a tall object (bottle, vase) is within 12 cm of the carry path.
+- The object is carried and set down relative to the height it was grasped at, so it lands on the table, not above it.
+
+Limits: the wrist must see the object (top-down view); only a mug has been tried; `place` assumes the object stays in the
+fingers (no slip detection beyond the finger position); the cup is not in the MoveIt scene while carried.

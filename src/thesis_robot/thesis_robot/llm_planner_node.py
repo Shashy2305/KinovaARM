@@ -34,7 +34,9 @@ SAFETY RULES — every action must obey ALL of these without exception:
 AVAILABLE ACTIONS — use only these, no others:
   {"action":"move_to",      "x":float, "y":float, "z":float, "speed":0.2}
   {"action":"pick",         "object_id":"str", "approach_z":float}
-  {"action":"place",        "x":float, "y":float, "z":float}
+  {"action":"place",        "near":"object_id"}     (put the held object down next to that object)
+  {"action":"place",        "x":float, "y":float}   (put the held object down at that table position)
+  {"action":"place",        "here":true}            (put the held object down where the arm is now)
   {"action":"open_gripper"}
   {"action":"close_gripper"}
   {"action":"go_home"}
@@ -50,6 +52,10 @@ WHICH ACTION FOR WHICH COMMAND:
   - "pick up X", "grab X", "get X" -> a pick step (approach_z>=0.15),
     optionally followed by place/open_gripper if the command also says
     where to put it down.
+  - "put/place it next to X", "pick up A and put it beside B" -> pick A, then
+    {"action":"place","near":"<B's object_id>"}. Do not compute coordinates for a place
+    next to an object, give the object_id. "put it down" -> {"action":"place","here":true}.
+    Never add go_home or open_gripper unless the command asks for it.
   - If the named object isn't in the world state below, or every
     instance of it is stale, say so in "reasoning" and return an empty
     plan rather than guessing a position.
@@ -125,7 +131,7 @@ def fix_pick_heights(plan, scene, z_floor):
 
 
 RELEASE_WORDS = ('place', 'put', 'drop', 'release', 'give', 'hand', 'set ', 'down', 'let go', 'throw',
-                 'bring', 'move it', 'carry', 'deliver', 'pour', 'open')
+                 'bring', 'move it', 'carry', 'deliver', 'pour', 'open', 'next to', 'beside', 'near it', 'move the')
 HOME_WORDS = ('home', 'back', 'return', 'rest')
 
 
@@ -152,10 +158,140 @@ def trim_pick_extras(plan, command):
         act = step.get('action') if isinstance(step, dict) else None
         if picked and not wants_release and not (wants_home and act == 'go_home'):
             continue
+        if act == 'open_gripper' and any(isinstance(o, dict) and o.get('action') == 'place' for o in out):
+            continue                                  # place releases the object itself
+        if act == 'go_home' and picked and not wants_home:
+            continue
         if act == 'pick':
             picked = True
         out.append(step)
+    # A place carries, lowers and releases by itself. A move_to the model put between the pick and
+    # the place (it once hovered the held mug 3 cm above the table, straight over the mouse) or after
+    # the place is a collision risk, never needed.
+    if any(isinstance(o, dict) and o.get('action') == 'place' for o in out):
+        out = [o for o in out if isinstance(o, dict) and o.get('action') in ('pick', 'place', 'go_home')]
     return out
+
+
+# ── PLACE TARGETS ────────────────────────────────────────────────────
+PLACE_RINGS_M = (0.13, 0.16, 0.20)      # distance from the target object's centre to try
+PLACE_MIN_CLEAR_M = 0.11                # centre-to-centre distance to any OTHER object (mug r~0.045 + object r~0.05 + margin)
+PLACE_EDGE_MARGIN_M = 0.03              # stay this far inside the planner's x/y limits
+PLACE_MIN_RADIUS_M = 0.25               # keep away from the robot's own base column
+
+
+def _scene_points(scene, skip=()):
+    out = []
+    for oid, o in (scene or {}).items():
+        if oid in skip or not isinstance(o, dict) or o.get('stale') or not o.get('reachable'):
+            continue
+        if _is_number(o.get('x')) and _is_number(o.get('y')):
+            out.append((oid, float(o['x']), float(o['y'])))
+    return out
+
+
+def find_free_spot(target_xy, scene, prefer_xy, skip=(), rings=PLACE_RINGS_M, min_clear=PLACE_MIN_CLEAR_M):
+    """A table spot a little way from the target object that is inside the workspace, clear of
+    every other known object and not under the robot's base column. Among the candidates the one
+    closest to prefer_xy (where the held object is now) wins, so the carry is short.
+    Returns (x, y) or None."""
+    others = _scene_points(scene, skip)
+    xlo, xhi = sg.PLAN_X_RANGE[0] + PLACE_EDGE_MARGIN_M, sg.PLAN_X_RANGE[1] - PLACE_EDGE_MARGIN_M
+    ylo, yhi = sg.PLAN_Y_RANGE[0] + PLACE_EDGE_MARGIN_M, sg.PLAN_Y_RANGE[1] - PLACE_EDGE_MARGIN_M
+    best = None
+    for r in rings:
+        for k in range(24):
+            a = math.radians(15 * k)
+            x, y = target_xy[0] + r * math.cos(a), target_xy[1] + r * math.sin(a)
+            if not (xlo <= x <= xhi and ylo <= y <= yhi) or math.hypot(x, y) < PLACE_MIN_RADIUS_M:
+                continue
+            if any(math.hypot(x - ox, y - oy) < min_clear for _, ox, oy in others):
+                continue
+            d = math.hypot(x - prefer_xy[0], y - prefer_xy[1])
+            if best is None or d < best[0]:
+                best = (d, x, y)
+        if best is not None:
+            break                                    # the closest ring that has any free spot
+    return None if best is None else (round(best[1], 4), round(best[2], 4))
+
+
+def _resolve_object(name, scene):
+    """Scene id for `name` (an id, or a label such as 'mouse' -> the reachable one)."""
+    if not isinstance(scene, dict) or not name:
+        return None
+    if name in scene:
+        return name
+    cands = [oid for oid, o in scene.items() if isinstance(o, dict) and o.get('label') == name
+             and o.get('reachable') and not o.get('stale')]
+    return cands[0] if cands else None
+
+
+def fix_place_targets(plan, scene, current_xy=None):
+    """Turn {"place", "near": B} into a concrete free (x, y) next to B; a place with x/y is moved to
+    the nearest free spot if it would land on another object; {"here": true} is left for the arm.
+    A place that cannot be satisfied is left with an 'unplaceable' reason, which validate_plan rejects."""
+    if not isinstance(plan, list):
+        return plan
+    picked = None
+    for step in plan:
+        if not isinstance(step, dict):
+            continue
+        if step.get('action') == 'pick':
+            picked = step.get('object_id')
+        if step.get('action') != 'place' or step.get('here'):
+            continue
+        prefer = current_xy
+        pobj = (scene or {}).get(picked) if picked else None
+        if isinstance(pobj, dict) and _is_number(pobj.get('x')):
+            prefer = (pobj['x'], pobj['y'])
+        prefer = prefer or (0.4, 0.0)
+        near = step.pop('near', None)
+        if near:
+            tid = _resolve_object(near, scene)
+            if tid is None:
+                step['unplaceable'] = f"object '{near}' is not in the scene"
+                continue
+            spot = find_free_spot((scene[tid]['x'], scene[tid]['y']), scene, prefer, skip=(picked, tid))
+            if spot is None:
+                step['unplaceable'] = f"no free spot next to '{tid}'"
+                continue
+            step['x'], step['y'] = spot
+        elif _is_number(step.get('x')) and _is_number(step.get('y')):
+            clash = [oid for oid, ox, oy in _scene_points(scene, (picked,))
+                     if math.hypot(step['x'] - ox, step['y'] - oy) < PLACE_MIN_CLEAR_M]
+            if clash:
+                spot = find_free_spot((step['x'], step['y']), scene, prefer, skip=(picked,), rings=(0.0,) + PLACE_RINGS_M)
+                if spot is None:
+                    step['unplaceable'] = f"that spot is taken by {clash[0]} and no free one is nearby"
+                    continue
+                step['x'], step['y'] = spot
+        else:
+            step['unplaceable'] = 'place needs a target (near an object, x/y, or here)'
+        step.pop('z', None)                          # the arm derives the set-down height from how it is holding the object
+    return plan
+
+
+DESTINATION_WORDS = ('next to', 'beside', 'near', 'by the', 'left', 'right', 'front', 'behind', ' on ', ' at ',
+                     'over', 'under', 'between', 'x ', 'y ', ' to the', 'other side', 'away')
+
+
+def normalize_place_here(plan, command):
+    """"put it down" / "set it down" / "put it back" with no destination word means: where it was
+    picked up. The model tends to invent coordinates for it (it once moved the mug 10 cm), so turn
+    such a place into {"place", "here": true}."""
+    if not isinstance(plan, list):
+        return plan
+    cmd = f' {(command or "").lower()} '
+    if not any(w in cmd for w in ('put it down', 'set it down', 'put it back', 'place it down', 'put down', 'set down')):
+        return plan
+    if any(w in cmd for w in DESTINATION_WORDS) or any(ch.isdigit() for ch in cmd):
+        return plan
+    for st in plan:
+        if isinstance(st, dict) and st.get('action') == 'place':
+            for k in ('x', 'y', 'z', 'near', 'unplaceable'):
+                st.pop(k, None)
+            st['here'] = True
+    return plan
 
 
 # ── SAFETY VALIDATOR ─────────────────────────────────────────────────
@@ -202,6 +338,10 @@ def validate_plan(plan, scene, z_floor=0.08):
             if obj.get('stale', False):
                 warnings.append(f"Step {i}: object '{oid}' is stale but proceeding")
 
+        if act == 'place' and step.get('unplaceable'):
+            return False, f"Step {i}: cannot place — {step['unplaceable']}", warnings
+        if act == 'place' and not step.get('here') and not (_is_number(step.get('x')) and _is_number(step.get('y'))):
+            return False, f"Step {i}: place has no target", warnings
         # Place Z check
         if act == 'place' and step.get('z', 1.0) < max(0.10, z_floor):
             return False, f"Step {i}: place z={step.get('z'):.3f} too low", warnings
@@ -380,6 +520,8 @@ class LLMPlannerNode(Node):
             plan = fix_move_to_heights(plan, self.latest_scene, z_floor)
             plan = fix_pick_heights(plan, self.latest_scene, z_floor)
             plan = trim_pick_extras(plan, command)
+            plan = normalize_place_here(plan, command)
+            plan = fix_place_targets(plan, self.latest_scene)
             ok, reason, warnings = validate_plan(plan, self.latest_scene, z_floor)
             for w in warnings:
                 self.get_logger().warn(w)

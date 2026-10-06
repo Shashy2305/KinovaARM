@@ -75,6 +75,7 @@ class ArmControllerNode(Node):
         self.center_max_iter = self.get_parameter('center_max_iter').value
         self.hover_above_m = self.get_parameter('hover_above_m').value
         self.require_wrist_center = self.get_parameter('require_wrist_center').value
+        self._held = None          # {'label', 'object_id', 'grasp_z'} while carrying something
         self._wrist_dets = None    # (monotonic receive time, {frame_id, stamp, detections})
         self._wrist_K = None
         self._tool_quat = list(GRASP_QUAT_XYZW)   # orientation of the last pose move; cartesian moves keep it
@@ -231,7 +232,7 @@ class ArmControllerNode(Node):
             ok, _xy = self._center_over(label, self._expected_xy(step.get('object_id')))
             return ok
         elif act == 'place':
-            return self._place(step['x'], step['y'], step['z'])
+            return self._place(step.get('x'), step.get('y'), step.get('z'), bool(step.get('here')))
         elif act == 'open_gripper':
             return self._open_gripper()
         elif act == 'close_gripper':
@@ -621,6 +622,7 @@ class ArmControllerNode(Node):
             if not action():
                 self.get_logger().error(f'pick {object_id} failed at: {name}')
                 return False
+        self._held = {'label': label, 'object_id': object_id, 'grasp_z': grasp_z}
         return True
 
     # ── WRIST-CAMERA CENTERING ───────────────────────────────────────
@@ -818,27 +820,113 @@ class ArmControllerNode(Node):
             if not self._move_to(gx + dx, gy + dy, gz, cartesian=True):
                 return False, None
 
-    def _place(self, x, y, z):
-        try:
-            rx, ry, rz = self._transform_to_robot_frame(x, y, z)
-        except ValueError as e:
-            self.get_logger().error(f'place rejected: {e}')
-            return False
-        geom, _ = sg.load_geometry()
-        rx = max(sg.PLAN_X_RANGE[0], min(sg.PLAN_X_RANGE[1], rx))  # see _move_to's clamp
-        ry = max(sg.PLAN_Y_RANGE[0], min(sg.PLAN_Y_RANGE[1], ry))
-        rz = max(sg.flange_floor_z(geom), min(0.50, rz))
+    CARRY_CLEARANCE_M = 0.12      # object bottom this far above the table while it is carried
+    SET_DOWN_GAP_M = 0.004        # released this far above where it stood when it was picked
+    TALL_OBJECT_M = 0.09          # objects at least this tall block a carry path (the carried object is ~12 cm up)
+    CARRY_AVOID_M = 0.12          # keep the carry path this far (centre to centre) from tall objects
 
-        if self.dry_run or self.moveit2 is None:
-            self.get_logger().info(
-                f'  [DRY RUN] place robot({rx:.3f},{ry:.3f},{rz:.3f})')
-            time.sleep(0.5)
-            return True
-        if not self._guarded_move(
-                geom, f'place ({rx:.3f},{ry:.3f},{rz:.3f})', position=[rx, ry, rz]):
-            return False   # don't release the object somewhere else
-        self._open_gripper()
+    def _is_holding(self):
+        """True while the fingers are closed on something: partly closed, not fully (missed)."""
+        try:
+            f = self._js['finger_joint']
+        except (TypeError, KeyError):
+            return False
+        return 0.08 < f < 0.65
+
+    def _carry_path_blocked(self, start_xy, end_xy):
+        """Label of a tall scene object within CARRY_AVOID_M of the straight carry path, or None.
+        The object being carried is ignored (it is at the start of the path)."""
+        ax, ay = start_xy
+        bx, by = end_xy
+        seg = (bx - ax, by - ay)
+        seg2 = seg[0] ** 2 + seg[1] ** 2
+        for oid, o in self.latest_scene.items():
+            if not isinstance(o, dict) or o.get('stale') or not o.get('reachable'):
+                continue
+            if ws.OBJECT_HEIGHT_M.get(o.get('label'), ws.DEFAULT_HEIGHT_M) < self.TALL_OBJECT_M:
+                continue
+            ox, oy = o.get('x'), o.get('y')
+            if ox is None or oy is None or math.hypot(ox - ax, oy - ay) < 0.08:
+                continue                                  # the carried object itself
+            t = 0.0 if seg2 < 1e-9 else max(0.0, min(1.0, ((ox - ax) * seg[0] + (oy - ay) * seg[1]) / seg2))
+            if math.hypot(ox - (ax + t * seg[0]), oy - (ay + t * seg[1])) < self.CARRY_AVOID_M:
+                return o.get('label', oid)
+        return None
+
+    def _move_verified(self, x, y, z, label, xy_tol=0.015, z_tol=0.01):
+        """Straight-line move that must END where asked: a cartesian path that stops short would
+        otherwise leave the following steps (descend, release) at the wrong place."""
+        if not self._move_to(x, y, z, cartesian=True):
+            return False
+        time.sleep(0.3)
+        _, pos = self._tf_pose(BASE_LINK, EE_LINK)
+        if math.hypot(pos[0] - x, pos[1] - y) > xy_tol or abs(pos[2] - z) > z_tol:
+            self.get_logger().error(
+                f'place: after "{label}" the flange is at ({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f}), '
+                f'not ({x:.3f},{y:.3f},{z:.3f}) — stopping')
+            return False
         return True
+
+    def _place(self, x=None, y=None, z=None, here=False):
+        """Put the held object down: carry it (object ~12 cm above the table) to the target, lower
+        it to the height it stood at when it was picked, open the gripper, back straight up.
+        Every move is a guarded cartesian move; any failure stops with the object still held."""
+        geom, _ = sg.load_geometry()
+        floor = sg.flange_floor_z(geom)
+        if self.dry_run or self.moveit2 is None:
+            where = 'here' if here or x is None else f'({float(x):.3f},{float(y):.3f})'
+            self.get_logger().info(f'  [DRY RUN] place {where}')
+            time.sleep(0.5)
+            self._held = None
+            return True
+        if not self._is_holding():
+            return self._refuse('place: the gripper is not holding anything')
+        if self._held is None and z is None:
+            return self._refuse('place: do not know how the object is held (no pick in this run) — '
+                                'give a z, or open the gripper by hand')
+        try:
+            _, g = self._tf_pose(BASE_LINK, EE_LINK)
+            pad = self._pad_midpoint_xy(default=(g[0], g[1]))
+        except Exception as e:
+            return self._refuse(f'place: cannot read the arm pose ({e})')
+        off = (g[0] - pad[0], g[1] - pad[1])               # flange minus fingers: the object sits between the pads
+        if here or x is None or y is None:
+            tx, ty = pad
+        else:
+            try:
+                tx, ty, _z = self._transform_to_robot_frame(x, y, 0.0)
+            except ValueError as e:
+                return self._refuse(f'place rejected: {e}')
+        if not (sg.PLAN_X_RANGE[0] <= tx <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= ty <= sg.PLAN_Y_RANGE[1]):
+            return self._refuse(f'place: ({tx:.3f},{ty:.3f}) is outside the workspace')
+        fx, fy = tx + off[0], ty + off[1]                  # flange target that puts the object on (tx, ty)
+        grasp_z = self._held['grasp_z'] if self._held else float(z)
+        set_z = max(floor, grasp_z + self.SET_DOWN_GAP_M)
+        carry_z = min(0.50, max(grasp_z + self.CARRY_CLEARANCE_M, floor + 0.02))
+        far = math.hypot(fx - g[0], fy - g[1]) > 0.02
+        if far:
+            blocked = self._carry_path_blocked((g[0], g[1]), (fx, fy))
+            if blocked:
+                return self._refuse(f'place: the carry path passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
+        self.get_logger().info(
+            f'place: object to ({tx:.3f},{ty:.3f}); flange carry z={carry_z:.3f}, set-down z={set_z:.3f}')
+        steps = []
+        if g[2] < carry_z - 0.005:
+            steps.append(('lift', lambda: self._move_verified(g[0], g[1], carry_z, 'lift')))
+        if far:
+            steps.append(('carry', lambda: self._move_verified(fx, fy, carry_z, 'carry')))
+        steps.append(('lower', lambda: self._move_verified(fx, fy, set_z, 'lower')))
+        for name, action in steps:
+            self._publish_pp_status(f'place: {name}')
+            if not action():
+                self.get_logger().error(f'place failed at: {name} — still holding the object')
+                return False
+        self._publish_pp_status('place: release')
+        if not self._open_gripper():
+            return False
+        self._held = None
+        self._publish_pp_status('place: retreat')
+        return self._move_verified(fx, fy, carry_z, 'retreat')
 
     def _gripper(self, position, label):
         """Command the gripper and CHECK the outcome. The old code swallowed
@@ -886,7 +974,10 @@ class ArmControllerNode(Node):
             return False
 
     def _open_gripper(self):
-        return self._gripper(GRIPPER_OPEN, 'open_gripper')
+        ok = self._gripper(GRIPPER_OPEN, 'open_gripper')
+        if ok:
+            self._held = None                 # whatever it held is released
+        return ok
 
     def _close_gripper(self):
         return self._gripper(GRIPPER_CLOSED, 'close_gripper')
