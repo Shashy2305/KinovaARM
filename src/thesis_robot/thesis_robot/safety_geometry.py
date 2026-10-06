@@ -234,3 +234,12 @@ def point_on_robot(point, chain, fingers):
         if _dist_point_segment3(point, a, b) < FINGER_BODY_RADIUS_M:
             return True
     return False
+
+
+def in_table_region(geom, x, y, z, margin=0.05):
+    """True if (x, y, z) in base_link is above the recorded table footprint (plus margin) and at a height an
+    object standing on it can have. The cameras see the whole lab; detections behind the robot (x < the
+    table's rear edge) or beyond its far edge are other desks, chairs and people, not objects to pick."""
+    if not (geom['x'][0] - margin <= x <= geom['x'][1] + margin and geom['y'][0] - margin <= y <= geom['y'][1] + margin):
+        return False
+    return z is None or geom['table_top_z'] - 0.05 <= z <= geom['table_top_z'] + 0.45

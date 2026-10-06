@@ -120,3 +120,15 @@ def test_detections_on_the_robot_are_recognised_and_real_objects_are_not():
     assert not sg.point_on_robot((0.304, -0.12, 0.01), chain, fingers)        # the mouse on the table under the gripper
     assert not sg.point_on_robot((0.54, -0.01, 0.045), chain, fingers)        # the mug on the other side
     assert not sg.point_on_robot((0.30, -0.10, 0.05), chain, fingers)         # an object grasped between the pads (6 cm from each)
+
+
+def test_objects_behind_the_robot_or_off_the_table_are_not_in_the_table_region():
+    geom = {'table_top_z': -0.0125, 'x': [-0.15, 0.784], 'y': [-0.899, 0.85], 'rear_wall_x': -0.2}
+    assert sg.in_table_region(geom, 0.43, -0.5, 0.06)               # the mug, far left
+    assert sg.in_table_region(geom, 0.32, 0.33, 0.10)               # the bottle
+    assert sg.in_table_region(geom, 0.51, -0.29, 0.0)               # the mouse
+    assert not sg.in_table_region(geom, -0.30, 0.39, -0.03)         # a mouse on the operator's desk behind the robot
+    assert not sg.in_table_region(geom, -1.52, 0.81, -0.04)         # a cup across the room
+    assert not sg.in_table_region(geom, 0.5, 1.2, 0.05)             # beyond the table's side edge
+    assert not sg.in_table_region(geom, 0.4, 0.2, 0.9)              # far above the table (a lamp, a person's head)
+    assert not sg.in_table_region(geom, 0.4, 0.2, -0.5)             # below it

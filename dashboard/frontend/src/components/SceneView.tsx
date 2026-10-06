@@ -25,14 +25,17 @@ export function SceneView({ scene }: { scene: RosStatus['scene_snapshot'] }) {
     }).catch(() => {})
   }, [])
 
-  const objects = scene ? Object.entries(scene) : []
+  // Only objects seen recently: stale entries are ghosts of things that moved or were never there.
+  const all = scene ? Object.entries(scene) : []
+  const objects = all.filter(([, o]) => !o.stale)
+  const staleCount = all.length - objects.length
   const [origin_x, origin_y] = toPx(0, 0)
 
   return (
     <div className="panel">
       <div className="panel-header">
         <h2 className="font-semibold text-sm tracking-tight">Scene (top-down, base_link)</h2>
-        <span className="text-xs font-mono text-(--color-text-dim)">{objects.length} objects</span>
+        <span className="text-xs font-mono text-(--color-text-dim)">{objects.length} on the table{staleCount > 0 ? ` (+${staleCount} expiring)` : ''}</span>
       </div>
       <div className="p-4">
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full rounded-lg bg-black/30 border border-(--color-border)">

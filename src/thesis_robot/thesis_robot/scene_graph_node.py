@@ -47,8 +47,8 @@ BASE_FRAME = 'base_link'
 DEFAULT_WORKSPACE = {'x': (0.08, 0.60), 'y': (-0.40, 0.40), 'z': (-0.50, 2.00)}
 WORKSPACE_BOUNDS_FILE = os.path.expanduser('~/.ros/workspace_bounds.yaml')
 NEAR_THRESHOLD  = 0.12   # metres — objects closer than this are "near"
-STALE_THRESHOLD = 60.0    # seconds — unseen objects get marked stale
-GC_THRESHOLD = 300.0     # seconds — stale objects unseen this long are dropped
+STALE_THRESHOLD = 20.0    # seconds — unseen objects get marked stale (was 60: ghosts of moved objects lingered)
+GC_THRESHOLD = 60.0      # seconds — stale objects unseen this long are dropped (was 300)
                           # entirely, so a ghost track can never sit around
                           # indefinitely as a candidate for anything
 SAME_OBJECT_DIST = 0.15  # metres — detections this close are the same object
@@ -85,6 +85,7 @@ def _load_workspace(logger):
         return DEFAULT_WORKSPACE
 
 
+TABLE_REGION_MARGIN_M = 0.05    # keep detections this far outside the recorded table footprint
 DUP_RADIUS_M = 0.06          # two detections of different labels this close are one object
 
 
@@ -161,6 +162,8 @@ class SceneGraphNode(Node):
             if pos is None:
                 continue
             x, y, z = pos
+            if not self._on_table_region(x, y, z):
+                continue                      # the room: another desk, the people, the floor — not objects on the table
             if z is not None and self._on_robot((x, y, z)):
                 continue                      # a detection of the robot's own arm/gripper, not an object
             resolved.append((label, x, y, z, conf))
@@ -217,6 +220,21 @@ class SceneGraphNode(Node):
             if not dup:
                 keep.append(det)
         return keep
+
+    def _on_table_region(self, x, y, z):
+        """True if (x, y, z) is above the recorded table, within a margin. The cameras see the whole lab: other
+        desks, chairs and people behind the robot (x < 0) and beyond the table's far edge produced 30+ "objects"
+        that were never there. Falls back to the workspace box if no table is recorded."""
+        now = time.monotonic()
+        cached = getattr(self, '_table_region_cache', None)
+        if cached is None or now - cached[0] > 5.0:
+            geom, _ = sg.load_geometry()
+            self._table_region_cache = cached = (now, geom)
+        geom = cached[1]
+        if geom is not None:
+            return sg.in_table_region(geom, x, y, z, TABLE_REGION_MARGIN_M)
+        ws_ = self.workspace
+        return ws_['x'][0] - 0.1 <= x <= ws_['x'][1] + 0.3 and ws_['y'][0] - 0.2 <= y <= ws_['y'][1] + 0.2
 
     # ── ROBOT SELF-DETECTION GUARD ───────────────────────────────────
     def _arm_body(self):
