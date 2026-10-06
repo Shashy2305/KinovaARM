@@ -594,3 +594,13 @@ fixing four things the first attempt exposed: the low-object clearance reverting
 0.132 for a cup (0.05 real), the model picking a phantom mouse below the table, and a stray `go_home`). The grip check stopped
 the two misses safely. Free-spot search treats every real object on the table as an obstacle, including ones beyond the
 picking limit (a bottle at the table edge).
+
+### Trial series, 2026-10-05 (voice commands, mug and mouse, "put it aside")
+
+First series: 0 of 2 completed (the mouse slipped on the lift; then a phantom "bottle" that was the gripper's own finger and a mislabelled
+duplicate of the mouse made the neighbour check refuse). After the fixes: 4 of 4 (mouse, cup, mouse, cup), no retries, no drops.
+What made the difference: the scene graph drops detections on the robot's own body and mislabelled duplicates within 6 cm; the wrist
+detector uses the segmentation model so the object's axis angle is measured and the wrist is turned to put the short side between the
+fingers; the pick lifts 3 cm and checks the grip before the full lift, retries once after a miss, and checks that the open fingers will
+not sweep a neighbour. The place does the same sweep check for the release.
+Tunable at run time (no restart): `ros2 param set /arm_controller sweep_same_object_m|sweep_half_span_m|sweep_margin_m|carry_avoid_m <value>`.

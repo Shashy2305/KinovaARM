@@ -213,3 +213,12 @@ def test_a_mislabelled_duplicate_of_the_target_is_not_a_neighbour():
     """2026-10-05: the mouse was also in the scene as a 'cup' 5 cm away; the neighbour check refused the pick."""
     assert ws.finger_sweep_blocker((0.303, -0.115), (1.0, 0.0), [('cup', 0.339, -0.079)]) is None
     assert ws.finger_sweep_blocker((0.303, -0.115), (1.0, 0.0), [('cup', 0.393, -0.115)]) == 'cup'       # a real cup 9 cm away is
+
+
+def test_place_target_next_to_a_bottle_is_flagged_only_along_the_closing_axis():
+    target = (0.45, 0.30)
+    bottle = [('bottle', 0.40, 0.22)]          # 9.4 cm from the target: the 2026-10-05 trial 4 situation
+    u = np.array([0.40 - 0.45, 0.22 - 0.30])
+    u /= np.linalg.norm(u)
+    assert ws.finger_sweep_blocker(target, tuple(u), bottle) == 'bottle'          # fingers open toward it: blocked
+    assert ws.finger_sweep_blocker(target, (-u[1], u[0]), bottle) is None         # perpendicular: clear

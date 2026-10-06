@@ -1091,6 +1091,36 @@ class ArmControllerNode(Node):
             steps.append(('lift', lambda: self._move_verified(g[0], g[1], carry_z, 'lift')))
         if far:
             steps.append(('carry', lambda: self._move_verified(fx, fy, carry_z, 'carry')))
+        held_xy = pad                                       # where the carried object is now (its stale scene entry is not an obstacle)
+
+        def place_fingers_clear():
+            """When the gripper opens to release, its fingers swing ~9.5 cm to each side of the object. If a
+            neighbour of the target spot is in that sweep, turn the wrist 90 degrees (the object turns with it, in
+            hand) and check again; if it still is, do not lower."""
+            obstacles = [o for o in self._scene_obstacles(min_height=0.0)
+                         if math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) > ws.SAME_OBJECT_M]
+            for turned in (False, True):
+                axis = self._closing_axis_xy()
+                blocker = ws.finger_sweep_blocker(
+                    (tx, ty), axis, obstacles,
+                    same_object_m=float(self.get_parameter('sweep_same_object_m').value),
+                    half_span=float(self.get_parameter('sweep_half_span_m').value),
+                    margin=float(self.get_parameter('sweep_margin_m').value)) if axis else None
+                if blocker is None:
+                    return True
+                if turned:
+                    return self._refuse(f'place: the opening fingers would hit the {blocker} next to the target spot')
+                self.get_logger().info(f'place: the opening fingers would sweep the {blocker} — turning the wrist 90 degrees')
+                try:
+                    q7 = self._current_joint_vector()[6]
+                except RuntimeError as e:
+                    return self._refuse(str(e))
+                target = ws.quarter_turn_target(q7, mu.PLANNER_JOINT_LIMIT - 0.1)
+                if target is None or not self._rotate_wrist(target - q7):
+                    return False
+            return False
+
+        steps.append(('check the opening fingers are clear of the neighbours', place_fingers_clear))
         steps.append(('lower', lambda: self._move_verified(fx, fy, set_z, 'lower', min_flange_z=low_floor)))
         for name, action in steps:
             self._publish_pp_status(f'place: {name}')

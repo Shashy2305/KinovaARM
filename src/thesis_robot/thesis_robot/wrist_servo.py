@@ -221,6 +221,7 @@ def carry_path_blocker(start_xy, end_xy, obstacles, avoid=0.12, own_radius=0.08)
     return None
 
 
+SAME_OBJECT_M = 0.06           # centre-to-centre distance below which two scene entries are one object
 MIN_ELONGATION = 1.2           # axis ratio above which an object has a "long side" worth aligning
 MIN_TURN_DEG = 12.0            # smaller corrections are not worth a (slow) wrist turn
 
