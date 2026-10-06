@@ -61,6 +61,10 @@ class ArmControllerNode(Node):
         self.declare_parameter('center_max_step', 0.06)   # m, largest single correction
         self.declare_parameter('center_max_iter', 5)      # corrections before giving up
         self.declare_parameter('hover_above_m',   0.12)   # fingertips this far above the object centre while centering
+        # How far the FINGERTIPS may come down to the table during a pick's straight descent. Default 5 cm
+        # (the old flange floor). Lower it (e.g. 0.025) only to grasp low objects such as a mouse; the path
+        # check (pad frames >= 5 cm above the table, i.e. tips >= 1.5 cm) still applies.
+        self.declare_parameter('low_pick_tip_clearance_m', sg.TCP_CLEARANCE_M)
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
@@ -268,7 +272,7 @@ class ArmControllerNode(Node):
         return tuple(vals)
 
     # ── PRIMITIVES ───────────────────────────────────────────────────
-    def _move_to(self, x, y, z, speed=None, cartesian=False):
+    def _move_to(self, x, y, z, speed=None, cartesian=False, min_flange_z=None):
         try:
             rx, ry, rz = self._transform_to_robot_frame(x, y, z)
         except ValueError as e:
@@ -283,7 +287,10 @@ class ArmControllerNode(Node):
         geom, _ = sg.load_geometry()
         rx = max(sg.PLAN_X_RANGE[0], min(sg.PLAN_X_RANGE[1], rx))
         ry = max(sg.PLAN_Y_RANGE[0], min(sg.PLAN_Y_RANGE[1], ry))
-        rz = max(sg.flange_floor_z(geom), min(0.50, rz))
+        floor_z = sg.flange_floor_z(geom)
+        if min_flange_z is not None:
+            floor_z = min(floor_z, min_flange_z)       # only ever LOWERS the floor, for a pick's straight descent
+        rz = max(floor_z, min(0.50, rz))
 
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(
@@ -382,12 +389,15 @@ class ArmControllerNode(Node):
         pts = traj.points
         if not pts:
             return False, 'planner returned an empty trajectory'
+        floors = None
         for i in sg.sample_indices(len(pts)):
             try:
                 positions = self._fk_link_positions(traj.joint_names, pts[i].positions)
             except Exception as e:
                 return False, f'cannot verify the path ({e})'
-            ok, why = sg.check_link_positions(positions, geom)
+            if floors is None:
+                floors = sg.start_floors(positions, geom)   # from the first waypoint: may leave a low pose, not go lower
+            ok, why = sg.check_link_positions(positions, geom, floors)
             if not ok:
                 return False, f'{why} (waypoint {i + 1}/{len(pts)})'
         return True, 'ok'
@@ -590,6 +600,14 @@ class ArmControllerNode(Node):
         # z is the FLANGE height: the fingertips hang TCP_REACH_M below it. Grasp with the
         # fingertips at the object's centre height, but never below the table floor.
         grasp_z = max(oz + sg.TCP_REACH_M + self.grasp_z_offset, sg.flange_floor_z(geom))
+        tip_clear = float(self.get_parameter('low_pick_tip_clearance_m').value)
+        low_floor = geom['table_top_z'] + sg.TCP_REACH_M + tip_clear if geom else grasp_z
+        height = ws.OBJECT_HEIGHT_M.get(label, ws.DEFAULT_HEIGHT_M)
+        if height <= 0.06 and tip_clear < sg.TCP_CLEARANCE_M and geom:
+            # a low object (mouse, bowl): the pads reach 7 cm UP from the tips, so put the tips near the
+            # table, just inside the object's top, not at its centre
+            top = geom['table_top_z'] + height
+            grasp_z = max(low_floor, min(oz, top - 0.025) + sg.TCP_REACH_M)
         hover_z = min(0.50, max(float(approach_z), oz + sg.TCP_REACH_M + self.hover_above_m,
                                 grasp_z + self.pregrasp_clearance))
         self.get_logger().info(
@@ -613,9 +631,12 @@ class ArmControllerNode(Node):
             ('hover',        lambda: self._move_to(ox, oy, hover_z)),
             ('turn the fingers away from any handle', lambda: self._align_for_handle(label, (ox, oy))),
             ('centre on the object (wrist camera)', center),
-            ('descend',      lambda: self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True)),
+            ('descend',      lambda: self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True,
+                                                    min_flange_z=low_floor)),
             ('close gripper', lambda: self._close_gripper()),
+            ('check the grip', lambda: self._check_grip(object_id)),
             ('lift',         lambda: self._move_to(centred['xy'][0], centred['xy'][1], hover_z, cartesian=True)),
+            ('check it is still held', lambda: self._check_grip(object_id)),
         ]
         for name, action in steps:
             self._publish_pp_status(f'pick {object_id}: {name}')
@@ -825,6 +846,21 @@ class ArmControllerNode(Node):
     TALL_OBJECT_M = 0.09          # objects at least this tall block a carry path (the carried object is ~12 cm up)
     CARRY_AVOID_M = 0.12          # keep the carry path this far (centre to centre) from tall objects
 
+    def _check_grip(self, what):
+        """After closing (and again after lifting): the fingers must have stopped on something.
+        Fully closed means they closed on air; the gripper is opened again and the pick fails."""
+        if self.dry_run or self.moveit2 is None:
+            return True
+        time.sleep(0.5)
+        if self._is_holding():
+            return True
+        f = (self._js or {}).get('finger_joint')
+        self.get_logger().error(
+            f'pick {what}: nothing in the gripper (finger joint {f}) — opening it again and stopping')
+        self._publish_pp_status(f'pick {what}: nothing in the gripper')
+        self._open_gripper()
+        return False
+
     def _is_holding(self):
         """True while the fingers are closed on something: partly closed, not fully (missed)."""
         try:
@@ -853,10 +889,10 @@ class ArmControllerNode(Node):
                 return o.get('label', oid)
         return None
 
-    def _move_verified(self, x, y, z, label, xy_tol=0.015, z_tol=0.01):
+    def _move_verified(self, x, y, z, label, xy_tol=0.015, z_tol=0.01, min_flange_z=None):
         """Straight-line move that must END where asked: a cartesian path that stops short would
         otherwise leave the following steps (descend, release) at the wrong place."""
-        if not self._move_to(x, y, z, cartesian=True):
+        if not self._move_to(x, y, z, cartesian=True, min_flange_z=min_flange_z):
             return False
         time.sleep(0.3)
         _, pos = self._tf_pose(BASE_LINK, EE_LINK)
@@ -901,7 +937,11 @@ class ArmControllerNode(Node):
             return self._refuse(f'place: ({tx:.3f},{ty:.3f}) is outside the workspace')
         fx, fy = tx + off[0], ty + off[1]                  # flange target that puts the object on (tx, ty)
         grasp_z = self._held['grasp_z'] if self._held else float(z)
-        set_z = max(floor, grasp_z + self.SET_DOWN_GAP_M)
+        # A low object was grasped below the normal fingertip floor (low_pick_tip_clearance_m); put it
+        # down at the same height, not 2-3 cm above the table.
+        tip_clear = float(self.get_parameter('low_pick_tip_clearance_m').value)
+        low_floor = min(floor, geom['table_top_z'] + sg.TCP_REACH_M + tip_clear) if geom else floor
+        set_z = max(low_floor, grasp_z + self.SET_DOWN_GAP_M)
         carry_z = min(0.50, max(grasp_z + self.CARRY_CLEARANCE_M, floor + 0.02))
         far = math.hypot(fx - g[0], fy - g[1]) > 0.02
         if far:
@@ -915,7 +955,7 @@ class ArmControllerNode(Node):
             steps.append(('lift', lambda: self._move_verified(g[0], g[1], carry_z, 'lift')))
         if far:
             steps.append(('carry', lambda: self._move_verified(fx, fy, carry_z, 'carry')))
-        steps.append(('lower', lambda: self._move_verified(fx, fy, set_z, 'lower')))
+        steps.append(('lower', lambda: self._move_verified(fx, fy, set_z, 'lower', min_flange_z=low_floor)))
         for name, action in steps:
             self._publish_pp_status(f'place: {name}')
             if not action():

@@ -150,11 +150,21 @@ def collision_boxes(geom):
     ]
 
 
-def check_link_positions(positions, geom):
-    """positions: {link: (x, y, z)} in base_link. Returns (ok, reason)."""
+def start_floors(first_positions, geom):
+    """Per-link minimum heights for a path that STARTS where first_positions says. A link already
+    below the table margin at the start (the fingers close ~2 cm lower than they open, so a grasp
+    of a low object ends there) may leave it, but never go lower than it began: otherwise every
+    move away from such a pose, including the lift, is refused and the arm is stuck."""
+    margin = geom['table_top_z'] + LINK_TABLE_CLEARANCE_M
+    return {link: min(margin, z - 0.002) for link, (_x, _y, z) in first_positions.items()}
+
+
+def check_link_positions(positions, geom, floors=None):
+    """positions: {link: (x, y, z)} in base_link. Returns (ok, reason).
+    floors: optional per-link minimum z (see start_floors) in place of the table margin."""
     min_z = geom['table_top_z'] + LINK_TABLE_CLEARANCE_M
     for link, (x, y, z) in positions.items():
-        if z < min_z:
+        if z < (floors or {}).get(link, min_z):
             return False, (f'{link} would be at z={z:.3f}, below the table limit '
                            f'{min_z:.3f} (table top {geom["table_top_z"]:.3f})')
         if x < REAR_KEEP_OUT_X:

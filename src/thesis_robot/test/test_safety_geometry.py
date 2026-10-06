@@ -92,3 +92,21 @@ def test_objects_below_the_table_are_not_reachable():
     # the live scene had cups at z=-0.28 with the table top at about -0.06
     assert not sg.is_reachable(0.34, 0.20, -0.28, WS, -0.06)
     assert sg.is_reachable(0.34, 0.20, -0.28, WS, None)           # no recorded table: cannot tell
+
+
+def test_a_path_may_start_below_the_margin_but_not_go_lower():
+    geom = {'table_top_z': -0.0125, 'x': [-0.15, 0.78], 'y': [-0.9, 0.85], 'rear_wall_x': -0.2}
+    start = {'left_inner_finger_pad': (0.26, -0.24, 0.029), 'end_effector_link': (0.26, -0.24, 0.227)}
+    floors = sg.start_floors(start, geom)
+    assert floors['left_inner_finger_pad'] < 0.038 and abs(floors['end_effector_link'] - 0.0375) < 1e-9
+    assert sg.check_link_positions(start, geom)[0] is False                        # the old rule: stuck
+    assert sg.check_link_positions(start, geom, floors)[0]                         # first waypoint accepted
+    lifting = {'left_inner_finger_pad': (0.26, -0.24, 0.10), 'end_effector_link': (0.26, -0.24, 0.30)}
+    assert sg.check_link_positions(lifting, geom, floors)[0]
+    sinking = {'left_inner_finger_pad': (0.26, -0.24, 0.020), 'end_effector_link': (0.26, -0.24, 0.227)}
+    assert not sg.check_link_positions(sinking, geom, floors)[0]                   # lower than it started: refused
+    # a link that began ABOVE the margin still has the full margin
+    ok, _ = sg.check_link_positions({'left_inner_finger_pad': (0.26, -0.24, 0.03), 'end_effector_link': (0.26, -0.24, 0.3)}, geom, floors)
+    assert ok is True
+    ok, why = sg.check_link_positions({'end_effector_link': (0.26, -0.24, 0.03)}, geom, floors)
+    assert not ok
