@@ -5,7 +5,13 @@ Uses YOLOv8m + HSV color fallback, same pattern as realsense_detection.py.
 Publishes to /detections_wrist: camera-frame coords (cx_3d/cy_3d/cz_3d) plus
 the image frame_id. scene_graph_node converts them to base_link through TF
 (base_link -> ... -> wrist frame_id), which comes from the robot's own
-kinematics / kortex_bringup — no hand-eye calibration needed for this camera.
+kinematics plus the camera_module hand-eye joint in the URDF (gen3_macro.xacro;
+fixed on 2026-10-05, the old calibrated value was wrong).
+
+Also publishes /wrist_pixel_detections: pixel-level boxes with a LOW confidence
+floor and NO depth requirement. The arm controller uses these to centre the
+gripper over an object (wrist_servo.py); the depth sensor returns nothing below
+about 0.2-0.3 m, which is where that centering happens.
 
 Unverified on hardware (flag before trusting positions from this node):
   - Topic names below match utils/three_camera_subscriber.py's documented
@@ -29,6 +35,9 @@ try:
     YOLO_AVAILABLE = True
 except:
     YOLO_AVAILABLE = False
+
+PIXEL_CONF_FLOOR = 0.15   # for /wrist_pixel_detections only; /detections_wrist keeps 0.30
+
 
 class WristDetection(Node):
     def __init__(self):
@@ -68,6 +77,7 @@ class WristDetection(Node):
             CameraInfo, self.get_parameter('info_topic').value, self._info_cb, 10)
 
         self.det_pub = self.create_publisher(String, '/detections_wrist', 10)
+        self.pix_pub = self.create_publisher(String, '/wrist_pixel_detections', 10)
         self.get_logger().info('Wrist camera detection node ready')
 
     def _info_cb(self, msg):
@@ -154,24 +164,33 @@ class WristDetection(Node):
             return
 
         raw_detections = []
+        pixel_dets = []
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
         if self.model is not None:
             try:
-                results = self.model(bgr, verbose=False)
+                results = self.model(bgr, verbose=False, conf=PIXEL_CONF_FLOOR)
                 for r in results:
                     for box in r.boxes:
                         cls_name = self.model.names[int(box.cls)]
                         if cls_name not in self.target_classes:
                             continue
                         conf = float(box.conf)
-                        if conf < 0.30:
-                            continue
                         x1,y1,x2,y2 = map(int, box.xyxy[0])
                         u = (x1+x2)//2
                         v = (y1+y2)//2
+                        pixel_dets.append({
+                            'label': cls_name, 'confidence': round(conf, 3),
+                            'u': u, 'v': v, 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2})
+                        if conf < 0.30:
+                            continue
                         raw_detections.append((cls_name, conf, u, v))
             except Exception as e:
                 self.get_logger().warn(f'YOLO error: {e}')
+        # always published (an empty list means "looked, saw nothing")
+        self.pix_pub.publish(String(data=json.dumps({
+            'frame_id': msg.header.frame_id, 'stamp': stamp,
+            'width': bgr.shape[1], 'height': bgr.shape[0], 'detections': pixel_dets})))
 
         if not raw_detections:
             raw_detections = self._color_detect(bgr)

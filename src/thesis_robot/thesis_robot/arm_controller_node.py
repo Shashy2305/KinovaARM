@@ -10,11 +10,12 @@ import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import CameraInfo, JointState
 from std_msgs.msg import String
 
 from thesis_robot import motion_utils as mu
 from thesis_robot import safety_geometry as sg
+from thesis_robot import wrist_servo as ws
 
 JOINT_NAMES = [
     "joint_1", "joint_2", "joint_3", "joint_4",
@@ -55,6 +56,12 @@ class ArmControllerNode(Node):
         # pick geometry (metres)
         self.declare_parameter('grasp_z_offset',     0.0)   # added to object z for the grasp height
         self.declare_parameter('pregrasp_clearance', 0.10)  # min height of pre-grasp above grasp
+        # wrist-camera centering over the target before the descent
+        self.declare_parameter('center_tol',      0.010)  # m, stop correcting inside this
+        self.declare_parameter('center_max_step', 0.06)   # m, largest single correction
+        self.declare_parameter('center_max_iter', 5)      # corrections before giving up
+        self.declare_parameter('hover_above_m',   0.12)   # fingertips this far above the object centre while centering
+        self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
 
@@ -63,6 +70,13 @@ class ArmControllerNode(Node):
         self.grasp_z_offset     = self.get_parameter('grasp_z_offset').value
         self.pregrasp_clearance = self.get_parameter('pregrasp_clearance').value
         self.yaw_flex  = self.get_parameter('yaw_flex').value
+        self.center_tol = self.get_parameter('center_tol').value
+        self.center_max_step = self.get_parameter('center_max_step').value
+        self.center_max_iter = self.get_parameter('center_max_iter').value
+        self.hover_above_m = self.get_parameter('hover_above_m').value
+        self.require_wrist_center = self.get_parameter('require_wrist_center').value
+        self._wrist_dets = None    # (monotonic receive time, {frame_id, stamp, detections})
+        self._wrist_K = None
         self._tool_quat = list(GRASP_QUAT_XYZW)   # orientation of the last pose move; cartesian moves keep it
         self._js = None                            # latest /joint_states {name: position}
         self._js_time = 0.0
@@ -82,22 +96,25 @@ class ArmControllerNode(Node):
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
         self.create_subscription(String, '/scene_snapshot', self._scene_callback, 10)
         self.create_subscription(JointState, '/joint_states', self._on_joint_state, 10)
+        self.create_subscription(String, '/wrist_pixel_detections', self._on_wrist_dets, 5)
+        self.create_subscription(CameraInfo, '/camera/color/camera_info', self._on_wrist_info, 1)
         from moveit_msgs.srv import ApplyPlanningScene, GetPositionFK, GetPositionIK
         self._apply_scene_client = self.create_client(ApplyPlanningScene, '/apply_planning_scene')
         self._fk_client = self.create_client(GetPositionFK, '/compute_fk')
         self._ik_client = self.create_client(GetPositionIK, '/compute_ik')
 
         if not self.dry_run:
-            self.create_timer(2.0, self._delayed_moveit_init)
+            self._init_timer = self.create_timer(2.0, self._delayed_moveit_init)
         else:
             self.get_logger().warn('*** DRY RUN MODE — arm will NOT move ***')
 
         mode = 'DRY RUN' if self.dry_run else 'LIVE (initialising...)'
         self._publish_status(f'READY [{mode}]')
+        self.create_timer(2.0, self._status_heartbeat)
         self.get_logger().info(f'ArmControllerNode ready — mode={mode}')
 
     def _delayed_moveit_init(self):
-        self.destroy_timer(list(self._timers)[0])
+        self.destroy_timer(self._init_timer)      # one-shot (a status heartbeat timer also exists)
         try:
             from pymoveit2 import MoveIt2
             # pymoveit2's blocking calls (plan, wait_until_executed, ...) call
@@ -196,11 +213,23 @@ class ArmControllerNode(Node):
     def _dispatch(self, step):
         act = step.get('action', '')
         if act == 'move_to':
-            return self._move_to(step['x'], step['y'], step['z'])
+            return self._move_to(step['x'], step['y'], step['z'], cartesian=bool(step.get('cartesian', False)))
         elif act == 'pick':
             approach_z = step.get('approach_z')
             return self._pick(step.get('object_id'),
                               0.15 if approach_z is None else approach_z)
+        elif act == 'rotate_wrist':
+            return self._rotate_wrist(float(step.get('radians', math.pi / 2)))
+        elif act == 'align_for_handle':
+            label = step.get('label') or (self.latest_scene.get(step.get('object_id'), {}) or {}).get('label')
+            return self._align_for_handle(label, self._expected_xy(step.get('object_id')))
+        elif act == 'center_over':
+            label = step.get('label') or (self.latest_scene.get(step.get('object_id'), {}) or {}).get('label')
+            if not label:
+                self.get_logger().error('center_over: needs a label or a known object_id')
+                return False
+            ok, _xy = self._center_over(label, self._expected_xy(step.get('object_id')))
+            return ok
         elif act == 'place':
             return self._place(step['x'], step['y'], step['z'])
         elif act == 'open_gripper':
@@ -483,8 +512,10 @@ class ArmControllerNode(Node):
                 traj, why = self._plan_joint_goal(list(joint_positions), geom)
                 quat_used = list(GRASP_QUAT_XYZW)
             elif cartesian:
+                # keep the orientation the tool ACTUALLY has: a remembered one goes stale after a
+                # wrist rotation and the 'straight' move would turn the wrist back (it did: 2026-10-05)
                 traj = self.moveit2.plan(
-                    position=position, quat_xyzw=self._tool_quat, cartesian=True,
+                    position=position, quat_xyzw=self._actual_tool_quat(), cartesian=True,
                     start_joint_state=self._current_joint_vector())
                 why = 'cartesian planning failed'
                 if traj is not None:
@@ -506,12 +537,23 @@ class ArmControllerNode(Node):
             if self.moveit2.wait_until_executed() is False:
                 self.get_logger().error(f'{label} not executed')
                 return False
-            if quat_used is not None:
-                self._tool_quat = list(quat_used)
+            time.sleep(0.3)
+            self._tool_quat = self._actual_tool_quat(default=quat_used)
             return True
         except Exception as e:
             self.get_logger().error(f'{label} failed: {e}')
             return False
+
+    def _actual_tool_quat(self, default=None):
+        """[x, y, z, w] orientation of end_effector_link in base_link right now (TF);
+        falls back to `default`, then to the last remembered orientation."""
+        try:
+            tf = self.tf_buffer.lookup_transform(BASE_LINK, EE_LINK, rclpy.time.Time())
+            q = tf.transform.rotation
+            return [q.x, q.y, q.z, q.w]
+        except Exception as e:
+            self.get_logger().warn(f'could not read the tool orientation from TF ({e})')
+            return list(default) if default is not None else list(self._tool_quat)
 
     def _lookup_object(self, object_id):
         """Latest base_link position of object_id from /scene_snapshot,
@@ -531,28 +573,48 @@ class ArmControllerNode(Node):
         return obj.get('x'), obj.get('y'), obj.get('z')
 
     def _pick(self, object_id, approach_z=0.15):
-        """Open, move above the object, descend straight down, close,
-        lift straight back up. Any failed step fails the pick."""
+        """Open, hover above the object, centre the gripper over it using the
+        wrist camera, descend straight down, close, lift. Any failed step fails
+        the pick; if the wrist cannot see the object the arm does NOT descend."""
         pos = self._lookup_object(object_id)
         if pos is None:
             return False
         try:
             ox, oy, oz = (float(v) for v in pos)
-            grasp_z = oz + self.grasp_z_offset
-            pre_z   = max(float(approach_z), grasp_z + self.pregrasp_clearance)
         except (TypeError, ValueError) as e:
             self.get_logger().error(f'pick: bad position for {object_id}: {e}')
             return False
-
+        geom, _ = sg.load_geometry()
+        label = (self.latest_scene.get(object_id) or {}).get('label', 'object')
+        # z is the FLANGE height: the fingertips hang TCP_REACH_M below it. Grasp with the
+        # fingertips at the object's centre height, but never below the table floor.
+        grasp_z = max(oz + sg.TCP_REACH_M + self.grasp_z_offset, sg.flange_floor_z(geom))
+        hover_z = min(0.50, max(float(approach_z), oz + sg.TCP_REACH_M + self.hover_above_m,
+                                grasp_z + self.pregrasp_clearance))
         self.get_logger().info(
-            f'pick {object_id} at ({ox:.3f},{oy:.3f},{oz:.3f}) — '
-            f'pre-grasp z={pre_z:.3f}, grasp z={grasp_z:.3f}')
+            f'pick {object_id} ({label}) at ({ox:.3f},{oy:.3f},{oz:.3f}) — '
+            f'hover z={hover_z:.3f}, grasp z={grasp_z:.3f}')
+
+        centred = {'xy': (ox, oy)}
+
+        def center():
+            ok, xy = self._center_over(label, (ox, oy))
+            if ok:
+                centred['xy'] = xy
+                return True
+            if not self.require_wrist_center:
+                self.get_logger().warn('pick: wrist centering failed, continuing on the scene position')
+                return True
+            return False
+
         steps = [
             ('open gripper', lambda: self._open_gripper()),
-            ('pre-grasp',    lambda: self._move_to(ox, oy, pre_z)),
-            ('descend',      lambda: self._move_to(ox, oy, grasp_z, cartesian=True)),
+            ('hover',        lambda: self._move_to(ox, oy, hover_z)),
+            ('turn the fingers away from any handle', lambda: self._align_for_handle(label, (ox, oy))),
+            ('centre on the object (wrist camera)', center),
+            ('descend',      lambda: self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True)),
             ('close gripper', lambda: self._close_gripper()),
-            ('lift',         lambda: self._move_to(ox, oy, pre_z, cartesian=True)),
+            ('lift',         lambda: self._move_to(centred['xy'][0], centred['xy'][1], hover_z, cartesian=True)),
         ]
         for name, action in steps:
             self._publish_pp_status(f'pick {object_id}: {name}')
@@ -560,6 +622,201 @@ class ArmControllerNode(Node):
                 self.get_logger().error(f'pick {object_id} failed at: {name}')
                 return False
         return True
+
+    # ── WRIST-CAMERA CENTERING ───────────────────────────────────────
+    def _on_wrist_dets(self, msg):
+        try:
+            self._wrist_dets = (time.monotonic(), json.loads(msg.data))
+        except json.JSONDecodeError:
+            pass
+
+    def _on_wrist_info(self, msg):
+        if self._wrist_K is None:
+            self._wrist_K = [list(msg.k[0:3]), list(msg.k[3:6]), list(msg.k[6:9])]
+
+    def _expected_xy(self, object_id):
+        obj = self.latest_scene.get(object_id) if object_id else None
+        if obj and obj.get('x') is not None:
+            return (float(obj['x']), float(obj['y']))
+        return None
+
+    def _tf_pose(self, target, source, stamp_s=None):
+        """(R, t) of `source` in `target`, at stamp_s if the buffer has it, else the latest."""
+        from scipy.spatial.transform import Rotation
+        when = rclpy.time.Time()
+        if stamp_s:
+            when = rclpy.time.Time(seconds=int(stamp_s), nanoseconds=int((stamp_s % 1) * 1e9))
+        try:
+            tf = self.tf_buffer.lookup_transform(target, source, when)
+        except Exception:
+            tf = self.tf_buffer.lookup_transform(target, source, rclpy.time.Time())
+        q, tr = tf.transform.rotation, tf.transform.translation
+        return (Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix(),
+                [tr.x, tr.y, tr.z])
+
+    def _wrist_target_xy(self, label, expected_xy, after, plane_z, timeout=3.0):
+        """Where the wrist camera places `label` on the table plane: (x, y) in
+        base_link, or None if it is not seen within `timeout`. Only frames received
+        after `after` (monotonic) count, so we never act on a picture taken while moving."""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            item = self._wrist_dets
+            if item and item[0] > after and self._wrist_K is not None:
+                msg = item[1]
+                try:
+                    R_bc, t_bc = self._tf_pose(BASE_LINK, msg['frame_id'], msg.get('stamp'))
+                except Exception as e:
+                    self.get_logger().warn(f'wrist TF not available: {e}')
+                    time.sleep(0.1)
+                    continue
+                cands = []
+                for d in msg.get('detections', []):
+                    if d.get('label') != label:
+                        continue
+                    xy = ws.pixel_to_plane_xy(d['u'], d['v'], self._wrist_K, R_bc, t_bc, plane_z)
+                    if xy is not None:
+                        cands.append((d, xy))
+                if cands:
+                    if expected_xy is not None:
+                        d, xy = min(cands, key=lambda c: math.hypot(c[1][0] - expected_xy[0],
+                                                                      c[1][1] - expected_xy[1]))
+                        if math.hypot(xy[0] - expected_xy[0], xy[1] - expected_xy[1]) > 0.15:
+                            self.get_logger().warn(
+                                f'wrist sees a {label} at ({xy[0]:.3f},{xy[1]:.3f}), >15 cm from the '
+                                f'expected ({expected_xy[0]:.3f},{expected_xy[1]:.3f}) — ignoring it')
+                            time.sleep(0.1)
+                            continue
+                    else:
+                        d, xy = max(cands, key=lambda c: c[0]['confidence'])
+                    return xy, d['confidence']
+                after = max(after, item[0])           # nothing usable in this frame; wait for a newer one
+            time.sleep(0.05)
+        return None
+
+    def _rotate_wrist(self, delta):
+        """Turn joint 7 by `delta` radians (tool axis stays vertical, the fingers and the
+        wrist camera turn together). A joint-space move, so it goes through the same
+        plan -> FK check -> execute path as every other move."""
+        geom, _ = sg.load_geometry()
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] rotate wrist {math.degrees(delta):+.0f} deg')
+            time.sleep(0.3)
+            return True
+        try:
+            goal = list(self._current_joint_vector())
+        except RuntimeError as e:
+            return self._refuse(str(e))
+        goal[6] += delta
+        if abs(goal[6]) > mu.PLANNER_JOINT_LIMIT:
+            return self._refuse(f'rotating the wrist by {math.degrees(delta):+.0f} deg would exceed the joint-7 limit')
+        return self._guarded_move(geom, f'rotate wrist {math.degrees(delta):+.0f} deg', joint_positions=goal)
+
+    def _wrist_bbox(self, label, expected_xy, timeout=3.0):
+        """Pixel box (x1, y1, x2, y2) of the fresh wrist detection of `label`, or None."""
+        t0, after = time.monotonic(), time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            item = self._wrist_dets
+            if item and item[0] > after:
+                boxes = [d for d in item[1].get('detections', []) if d.get('label') == label]
+                if boxes:
+                    d = max(boxes, key=lambda b: b['confidence'])
+                    return (d['x1'], d['y1'], d['x2'], d['y2'])
+            time.sleep(0.05)
+        return None
+
+    def _align_for_handle(self, label, expected_xy):
+        """If the object's box in the wrist image is longer along the fingers' closing axis
+        (a mug handle), turn the wrist 90 degrees so the fingers close across the body."""
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] check the {label} for a handle (wrist camera)')
+            return True
+        time.sleep(0.8)
+        box = self._wrist_bbox(label, expected_xy)
+        if box is None:
+            self.get_logger().error(f'align: the wrist camera cannot see the {label}')
+            return False
+        if not ws.needs_quarter_turn(box):
+            self.get_logger().info(f'align: {label} box {box[2]-box[0]}x{box[3]-box[1]} px — fingers already clear of any handle')
+            return True
+        try:
+            q7 = self._current_joint_vector()[6]
+        except RuntimeError as e:
+            return self._refuse(str(e))
+        target = ws.quarter_turn_target(q7, mu.PLANNER_JOINT_LIMIT - 0.1)
+        if target is None:
+            return self._refuse('cannot turn the wrist 90 degrees inside the joint-7 limit')
+        self.get_logger().info(
+            f'align: {label} box {box[2]-box[0]}x{box[3]-box[1]} px is stretched along the closing axis '
+            f'(handle) — turning the wrist {math.degrees(target - q7):+.0f} deg')
+        return self._rotate_wrist(target - q7)
+
+    def _pad_midpoint_xy(self, default):
+        """(x, y) midway between the two finger pads in base_link. The tool is a few degrees off
+        vertical, so this differs from the flange origin by up to ~1 cm."""
+        try:
+            _, a = self._tf_pose(BASE_LINK, 'left_inner_finger_pad')
+            _, b = self._tf_pose(BASE_LINK, 'right_inner_finger_pad')
+            return ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+        except Exception as e:
+            self.get_logger().warn(f'pad poses not available ({e}) — centring on the flange origin')
+            return default
+
+    def _center_over(self, label, expected_xy):
+        """Move the gripper (keeping its height) until the wrist camera says the
+        `label` object is under the tool axis. Returns (ok, (x, y)). Searches in a
+        small pattern if the object is not visible; gives up after a bounded number
+        of corrections or when the object cannot be found."""
+        geom, _ = sg.load_geometry()
+        if geom is None:
+            self.get_logger().error('center_over: no table geometry recorded')
+            return False, None
+        plane_z = ws.plane_height(label, geom['table_top_z'])
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] centre over {label} (wrist camera, plane z={plane_z:.3f})')
+            time.sleep(0.3)
+            return True, expected_xy
+        if self._wrist_K is None:
+            self.get_logger().error('center_over: no wrist camera_info — is the wrist driver running?')
+            return False, None
+
+        corrections, searches = 0, ws.search_offsets()
+        search_origin = None
+        while True:
+            time.sleep(0.8)                                  # let the arm and the image settle
+            seen = self._wrist_target_xy(label, expected_xy, time.monotonic(), plane_z)
+            try:
+                _, gpos = self._tf_pose(BASE_LINK, EE_LINK)
+            except Exception as e:
+                self.get_logger().error(f'center_over: no end-effector pose: {e}')
+                return False, None
+            gx, gy, gz = gpos                                # flange origin
+            cx_, cy_ = self._pad_midpoint_xy(default=(gx, gy))  # where the fingers actually close
+            if seen is None:
+                if search_origin is None:
+                    search_origin = (gx, gy)
+                if not searches:
+                    self.get_logger().error(f'center_over: the wrist camera cannot find the {label}')
+                    return False, None
+                ox, oy = searches.pop(0)
+                self.get_logger().info(f'center_over: {label} not visible — searching ({ox:+.2f},{oy:+.2f})')
+                self._publish_pp_status(f'searching for the {label}')
+                if not self._move_to(search_origin[0] + ox, search_origin[1] + oy, gz, cartesian=True):
+                    return False, None
+                continue
+            (tx, ty), conf = seen
+            dx, dy, dist = ws.clipped_step((tx, ty), (cx_, cy_), self.center_max_step)
+            self.get_logger().info(
+                f'center_over: {label} ({conf:.0%}) at ({tx:.3f},{ty:.3f}); fingers at '
+                f'({cx_:.3f},{cy_:.3f}); off by {dist * 100:.1f} cm')
+            if dist < self.center_tol:
+                return True, (gx, gy)        # FLANGE xy that puts the fingers over the object (a straight descent keeps it)
+            if corrections >= self.center_max_iter:
+                self.get_logger().error(f'center_over: still {dist * 100:.1f} cm off after {corrections} corrections')
+                return False, None
+            corrections += 1
+            self._publish_pp_status(f'centring over the {label}: {dist * 100:.1f} cm off')
+            if not self._move_to(gx + dx, gy + dy, gz, cartesian=True):
+                return False, None
 
     def _place(self, x, y, z):
         try:
@@ -665,8 +922,17 @@ class ArmControllerNode(Node):
         return True
 
     def _publish_status(self, text):
+        self._last_status = text
         msg = String(); msg.data = text
         self.status_pub.publish(msg)
+
+    def _status_heartbeat(self):
+        """Re-publish the current status: a status published once at startup is lost if the
+        dashboard is not listening yet, and it then keeps showing the PREVIOUS run's
+        'LIVE' for a controller that is in Dry Run."""
+        text = getattr(self, '_last_status', None)
+        if text:
+            self.status_pub.publish(String(data=text))
 
     def _publish_pp_status(self, text):
         msg = String(); msg.data = text

@@ -43,7 +43,8 @@ AVAILABLE ACTIONS — use only these, no others:
 WHICH ACTION FOR WHICH COMMAND:
   - "go to/near/over X", "move to X", "look at X" (no picking up) ->
     ONE move_to step. Use X's x/y from the world state, and
-    z = max(X's z + 0.15, {Z_FLOOR}) (hover above it, don't descend onto it).
+    z = max(X's z + 0.31, {Z_FLOOR}) (hover above it with the fingertips ~10 cm
+    clear of its top, don't descend onto it).
     Do NOT use pick for these — pick closes the gripper on the object,
     which is not what "go near" means.
   - "pick up X", "grab X", "get X" -> a pick step (approach_z>=0.15),
@@ -73,7 +74,9 @@ RESPOND WITH EXACTLY THIS JSON STRUCTURE — no other format:
 # from the target object, re-derive z from the matched object ourselves
 # instead of trusting the LLM's addition, rather than just rejecting and
 # hoping a retry does better.
-MOVE_TO_HOVER_M = 0.15
+# flange height above the object's centre: the fingertips hang TCP_REACH_M below the flange,
+# and we want them ~10 cm clear of the object (a cup is ~9 cm tall)
+MOVE_TO_HOVER_M = sg.TCP_REACH_M + 0.10
 _XY_MATCH_TOL_M = 0.05
 # z_floor comes from safety_geometry.flange_floor_z(): table height + the
 # 0.215 m flange-to-fingertip reach + clearance. (An earlier fixed 0.12
@@ -99,8 +102,60 @@ def fix_move_to_heights(plan, scene, z_floor):
             if dist < best_dist:
                 best_id, best_dist = obj_id, dist
         if best_id is not None:
-            step['z'] = max(scene[best_id]['z'] + MOVE_TO_HOVER_M, z_floor)
+            step['z'] = min(0.50, max(scene[best_id]['z'] + MOVE_TO_HOVER_M, z_floor))
     return plan
+
+
+PICK_HOVER_ABOVE_M = 0.12     # fingertips above the object's centre while the wrist camera centres on it
+
+
+def fix_pick_heights(plan, scene, z_floor):
+    """Set every pick's approach_z from the scene instead of trusting the LLM's arithmetic
+    (it returned 0.250 against a floor of 0.253 and the plan was rejected). The arm controller
+    uses approach_z only as a minimum; it derives the real hover height itself."""
+    if not isinstance(plan, list):
+        return plan
+    for step in plan:
+        if not isinstance(step, dict) or step.get('action') != 'pick':
+            continue
+        obj = scene.get(step.get('object_id')) if isinstance(scene, dict) else None
+        if isinstance(obj, dict) and _is_number(obj.get('z')):
+            step['approach_z'] = round(min(0.50, max(obj['z'] + sg.TCP_REACH_M + PICK_HOVER_ABOVE_M, z_floor)), 4)
+    return plan
+
+
+RELEASE_WORDS = ('place', 'put', 'drop', 'release', 'give', 'hand', 'set ', 'down', 'let go', 'throw',
+                 'bring', 'move it', 'carry', 'deliver', 'pour', 'open')
+HOME_WORDS = ('home', 'back', 'return', 'rest')
+
+
+def trim_pick_extras(plan, command):
+    """The 7B model likes to pad a pick with extra steps: go_home, open_gripper (drops what it
+    just picked up, from wherever the arm is), or a stray move_to over another object. The
+    command "pick up the cup" asked for none of that. After the first pick keep only what the
+    command asks for: everything if it mentions putting/releasing/moving the object somewhere,
+    only go_home if it mentions going home or back, nothing otherwise."""
+    if not isinstance(plan, list):
+        return plan
+    cmd = (command or '').lower()
+    wants_release = any(w in cmd for w in RELEASE_WORDS)
+    wants_home = any(w in cmd for w in HOME_WORDS)
+    # A pick approaches the object itself (hover, wrist-camera centring, straight descent). The
+    # model's own move_to before it is redundant, and was once 5 cm off the object at fingertip
+    # height, i.e. the open fingers beside the cup. Drop move_to steps that come before the pick.
+    first_pick = next((i for i, st in enumerate(plan) if isinstance(st, dict) and st.get('action') == 'pick'), None)
+    if first_pick is not None:
+        plan = [st for i, st in enumerate(plan)
+                if not (i < first_pick and isinstance(st, dict) and st.get('action') == 'move_to')]
+    out, picked = [], False
+    for step in plan:
+        act = step.get('action') if isinstance(step, dict) else None
+        if picked and not wants_release and not (wants_home and act == 'go_home'):
+            continue
+        if act == 'pick':
+            picked = True
+        out.append(step)
+    return out
 
 
 # ── SAFETY VALIDATOR ─────────────────────────────────────────────────
@@ -323,6 +378,8 @@ class LLMPlannerNode(Node):
             # than trusting the LLM's "z + 0.15" arithmetic (see comment on
             # fix_move_to_heights) — then validate as usual.
             plan = fix_move_to_heights(plan, self.latest_scene, z_floor)
+            plan = fix_pick_heights(plan, self.latest_scene, z_floor)
+            plan = trim_pick_extras(plan, command)
             ok, reason, warnings = validate_plan(plan, self.latest_scene, z_floor)
             for w in warnings:
                 self.get_logger().warn(w)
