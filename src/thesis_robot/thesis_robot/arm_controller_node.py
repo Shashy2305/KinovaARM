@@ -1001,13 +1001,15 @@ class ArmControllerNode(Node):
             return False
         return 0.08 < f < 0.65
 
-    def _scene_obstacles(self, exclude_id=None, min_height=0.0):
+    def _scene_obstacles(self, exclude_id=None, min_height=0.0, min_conf=0.65):
         """[(label, x, y)] of every real, non-stale object on the table whose top is above min_height
         (metres over the table), whether or not the arm could pick it."""
         out = []
         for oid, o in self.latest_scene.items():
             if oid == exclude_id or not isinstance(o, dict) or o.get('stale'):
                 continue
+            if float(o.get('confidence', 1.0)) < min_conf:
+                continue                          # phantoms read 0.5-0.62; real objects on the table 0.9+
             try:
                 x, y, z = float(o['x']), float(o['y']), float(o['z'])
             except (KeyError, TypeError, ValueError):
@@ -1098,7 +1100,8 @@ class ArmControllerNode(Node):
             neighbour of the target spot is in that sweep, turn the wrist 90 degrees (the object turns with it, in
             hand) and check again; if it still is, do not lower."""
             obstacles = [o for o in self._scene_obstacles(min_height=0.0)
-                         if math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) > ws.SAME_OBJECT_M]
+                         if math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) > ws.SAME_OBJECT_M
+                         and math.hypot(o[1] - tx, o[2] - ty) > ws.SAME_OBJECT_M]    # (the carried object is over the target)
             for turned in (False, True):
                 axis = self._closing_axis_xy()
                 blocker = ws.finger_sweep_blocker(

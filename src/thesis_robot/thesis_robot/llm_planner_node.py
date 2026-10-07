@@ -174,8 +174,9 @@ def trim_pick_extras(plan, command):
 
 
 # ── PLACE TARGETS ────────────────────────────────────────────────────
-PLACE_RINGS_M = (0.13, 0.16, 0.20)      # distance from the target object's centre to try
-PLACE_MIN_CLEAR_M = 0.11                # centre-to-centre distance to any OTHER object (mug r~0.045 + object r~0.05 + margin)
+PLACE_RINGS_M = (0.15, 0.18, 0.22)      # distance from the target object's centre to try (the open fingers swing ~9.5 cm
+                                        # to each side of the released object: 13 cm left no room, 2026-10-06)
+PLACE_MIN_CLEAR_M = 0.12                # centre-to-centre distance to any OTHER object (mug r~0.045 + object r~0.05 + margin)
 PLACE_EDGE_MARGIN_M = 0.03              # stay this far inside the planner's x/y limits
 PLACE_MIN_RADIUS_M = 0.25               # keep away from the robot's own base column
 
@@ -192,6 +193,8 @@ def _scene_points(scene, skip=()):
     for oid, o in (scene or {}).items():
         if oid in skip or not isinstance(o, dict) or o.get('stale'):
             continue
+        if _is_number(o.get('confidence')) and o['confidence'] < 0.65:
+            continue                                  # phantoms read 0.5-0.62; real objects 0.9+
         if not (_is_number(o.get('x')) and _is_number(o.get('y')) and _is_number(o.get('z'))):
             continue
         if (OBSTACLE_X_RANGE[0] <= o['x'] <= OBSTACLE_X_RANGE[1] and OBSTACLE_Y_RANGE[0] <= o['y'] <= OBSTACLE_Y_RANGE[1]
@@ -563,21 +566,32 @@ class LLMPlannerNode(Node):
                 f"Reason step by step, then output the JSON."
             )
 
-            # Call LLM
+            # Call LLM. An empty or non-JSON reply happens right after Ollama (re)loads the model; retry rather
+            # than abandon a command the operator already gave (2026-10-06: "JSON parse error", nothing happened).
             t0 = time.time()
-            response = self.llm.chat(
-                model=self.model,
-                messages=[
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user',   'content': user_msg},
-                ],
-                format='json'
-            )
+            parsed = None
+            for attempt in (1, 2, 3):
+                response = self.llm.chat(
+                    model=self.model,
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user',   'content': user_msg},
+                    ],
+                    format='json'
+                )
+                raw = (response['message']['content'] or '').strip()
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        break
+                except json.JSONDecodeError:
+                    pass
+                self.get_logger().warn(f'LLM returned an empty/invalid reply (attempt {attempt}/3) — retrying')
+                parsed = None
+                time.sleep(1.0)
+            if parsed is None:
+                raise json.JSONDecodeError('the language model returned no valid JSON after 3 attempts', '', 0)
             latency = time.time() - t0
-
-            # Parse response
-            raw = response['message']['content']
-            parsed = json.loads(raw)
             plan      = parsed.get('plan', [])
             # Sanitise — ensure each step is a dict not a string
             plan = [

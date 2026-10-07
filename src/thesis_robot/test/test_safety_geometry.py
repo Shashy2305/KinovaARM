@@ -132,3 +132,12 @@ def test_objects_behind_the_robot_or_off_the_table_are_not_in_the_table_region()
     assert not sg.in_table_region(geom, 0.5, 1.2, 0.05)             # beyond the table's side edge
     assert not sg.in_table_region(geom, 0.4, 0.2, 0.9)              # far above the table (a lamp, a person's head)
     assert not sg.in_table_region(geom, 0.4, 0.2, -0.5)             # below it
+
+
+def test_detections_in_the_carried_objects_volume_are_recognised():
+    pad_mid = (0.37, 0.18, 0.12)                                   # fingers holding a mouse above the target
+    assert sg.in_held_volume((0.367, 0.22, 0.087), pad_mid)         # "remote_00": the held mouse, 4 cm off
+    assert sg.in_held_volume((0.332, 0.191, 0.09), pad_mid)         # "blue_obj_02"
+    assert sg.in_held_volume((0.37, 0.18, -0.02), pad_mid)          # a bottle hanging below the pads
+    assert not sg.in_held_volume((0.30, 0.31, 0.10), pad_mid)       # the real bottle, 14 cm away
+    assert not sg.in_held_volume((0.37, 0.18, 0.4), pad_mid)        # high above

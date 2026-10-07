@@ -243,3 +243,18 @@ def in_table_region(geom, x, y, z, margin=0.05):
     if not (geom['x'][0] - margin <= x <= geom['x'][1] + margin and geom['y'][0] - margin <= y <= geom['y'][1] + margin):
         return False
     return z is None or geom['table_top_z'] - 0.05 <= z <= geom['table_top_z'] + 0.45
+
+
+HELD_RADIUS_XY_M = 0.07
+HELD_BELOW_M = 0.16            # a tall object (bottle) hangs this far below the pads
+HELD_ABOVE_M = 0.08
+
+
+def in_held_volume(point, pad_mid):
+    """True if a detection lies in the volume of the object the gripper is carrying (around the pad midpoint).
+    While carrying, the cameras report that object under any label ("remote", "blue_obj", "red_obj") at
+    changing positions; they are ghosts of the held object, not neighbours or targets."""
+    dx, dy = point[0] - pad_mid[0], point[1] - pad_mid[1]
+    if dx * dx + dy * dy > HELD_RADIUS_XY_M ** 2:
+        return False
+    return pad_mid[2] - HELD_BELOW_M <= point[2] <= pad_mid[2] + HELD_ABOVE_M

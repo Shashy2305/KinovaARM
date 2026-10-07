@@ -190,17 +190,26 @@ def _dist_to_segment(p, a, b):
 def finger_sweep_blocker(center_xy, axis_u, obstacles, same_object_m=0.06, half_span=None, margin=None):
     """Label of a neighbouring object the OPEN fingers would hit when they come down around center_xy, or None.
     axis_u: unit vector (x, y) of the closing axis. obstacles: [(label, x, y)] (the target itself excluded).
-    The fingers occupy the segment center +- FINGER_HALF_SPAN along the closing axis, about 4 cm wide."""
+    The fingers occupy center +- half_span along the closing axis and are ~4 cm wide across it. An obstacle
+    ALONGSIDE the fingers (inside the span) is hit if its lateral distance is below r + finger half width +
+    margin; one BEYOND the end of the span only if it is within r + margin of the fingertip end (the finger's
+    width does not matter there: it was making a bowl 19 cm away look like a collision)."""
     span = FINGER_HALF_SPAN_M if half_span is None else half_span
     marg = SWEEP_MARGIN_M if margin is None else margin
-    a = (center_xy[0] - span * axis_u[0], center_xy[1] - span * axis_u[1])
-    b = (center_xy[0] + span * axis_u[0], center_xy[1] + span * axis_u[1])
+    ux, uy = axis_u
     for label, x, y in obstacles:
-        if math.hypot(x - center_xy[0], y - center_xy[1]) < same_object_m:
+        dx, dy = x - center_xy[0], y - center_xy[1]
+        if math.hypot(dx, dy) < same_object_m:
             continue        # the target itself, or the same object under another label (a mouse seen from above is
                             # "cup" to the detectors): two real objects are never centre-to-centre this close
         r = OBJECT_RADIUS_M.get(label, DEFAULT_RADIUS_M)
-        if _dist_to_segment((x, y), a, b) < r + FINGER_HALF_WIDTH_M + marg:
+        t = dx * ux + dy * uy                      # along the closing axis
+        lat = abs(-dx * uy + dy * ux)              # across it
+        if abs(t) <= span:
+            hit = lat < r + FINGER_HALF_WIDTH_M + marg
+        else:
+            hit = math.hypot(abs(t) - span, lat) < r + marg
+        if hit:
             return label
     return None
 

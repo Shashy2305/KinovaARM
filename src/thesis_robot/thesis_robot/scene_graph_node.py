@@ -28,6 +28,7 @@ import os, rclpy, json, math, time, yaml
 from collections import defaultdict
 from rclpy.node import Node
 from std_msgs.msg import String
+from sensor_msgs.msg import JointState
 from geometry_msgs.msg import PointStamped
 from scipy.optimize import linear_sum_assignment
 import numpy as np
@@ -103,6 +104,8 @@ class SceneGraphNode(Node):
         # TF buffer for camera frame -> base_link
         self.tf_buffer   = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        self._finger = None                      # gripper finger joint, to know when the gripper is carrying something
+        self.create_subscription(JointState, '/joint_states', self._on_joint_state, 10)
 
         # ── subscribers ──────────────────────────────────────────────
         self.create_subscription(
@@ -257,11 +260,28 @@ class SceneGraphNode(Node):
         self._arm_body_cache = (now, chain, fingers)
         return chain, fingers
 
+    def _on_joint_state(self, msg):
+        try:
+            self._finger = msg.position[list(msg.name).index('finger_joint')]
+        except (ValueError, IndexError):
+            pass
+
+    def _in_held_object(self, point):
+        f = self._finger
+        if f is None or not (0.08 < f < 0.65):
+            return False                      # not carrying anything (open, or closed on air)
+        chain, fingers = self._arm_body()
+        if not fingers:
+            return False
+        a, b = fingers[0][1], fingers[1][1]
+        pad_mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2)
+        return sg.in_held_volume(point, pad_mid)
+
     def _on_robot(self, point):
         chain, fingers = self._arm_body()
         if chain is None:
             return False                      # no TF for the arm: cannot tell, keep the detection
-        return sg.point_on_robot(point, chain, fingers)
+        return sg.point_on_robot(point, chain, fingers) or self._in_held_object(point)
 
     # ── SNAPSHOT PUBLISHER ───────────────────────────────────────────
     def publish_snapshot(self):

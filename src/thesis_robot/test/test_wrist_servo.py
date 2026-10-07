@@ -222,3 +222,12 @@ def test_place_target_next_to_a_bottle_is_flagged_only_along_the_closing_axis():
     u /= np.linalg.norm(u)
     assert ws.finger_sweep_blocker(target, tuple(u), bottle) == 'bottle'          # fingers open toward it: blocked
     assert ws.finger_sweep_blocker(target, (-u[1], u[0]), bottle) is None         # perpendicular: clear
+
+
+def test_a_bowl_19_cm_along_the_closing_axis_is_clear_but_a_closer_one_is_not():
+    """2026-10-06: the mouse pick was refused for a bowl 19 cm away (real clearance about 3 cm)."""
+    c = (0.41, 0.056)
+    assert ws.finger_sweep_blocker(c, (0.0, -1.0), [('bowl', 0.41, 0.056 - 0.19)]) is None
+    assert ws.finger_sweep_blocker(c, (0.0, -1.0), [('bowl', 0.41, 0.056 - 0.165)]) == 'bowl'      # inside the swing
+    assert ws.finger_sweep_blocker(c, (0.0, -1.0), [('bottle', 0.41 + 0.06, 0.056 - 0.05)]) == 'bottle'   # alongside, 6 cm to the side
+    assert ws.finger_sweep_blocker(c, (0.0, -1.0), [('bottle', 0.41 + 0.10, 0.056 - 0.05)]) is None      # alongside, 10 cm: clear
