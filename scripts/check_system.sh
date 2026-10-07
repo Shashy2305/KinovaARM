@@ -37,8 +37,18 @@ import json, sys
 try: d = json.loads(sys.argv[1])
 except Exception: d = {}
 essential = ['robot_bringup', 'scene_graph_node', 'llm_planner_node', 'arm_controller']
+import os
+off = set()
+try:
+    off = {l.strip() for l in open(os.environ.get('SHASHPROJECT_DISABLED_CAMERAS', '/mnt/ros_workspace/Shashproject/config/disabled_cameras.txt'))
+           if l.strip() and not l.strip().startswith('#')}
+except OSError:
+    pass
 for k, v in d.items():
     up = v['status'] in ('running', 'running_external')
+    if not up and any(k.startswith(c) for c in off):
+        print(f"  [ OK ] {k:28s} {v['status']} (camera disabled on purpose)")
+        continue
     tag = ' OK ' if up else ('FAIL' if k in essential else 'WARN')
     print(f"  [{tag}] {k:28s} {v['status']}")
 if not d: print('  [FAIL] could not read /api/nodes')
@@ -103,6 +113,9 @@ try: c = json.loads(sys.argv[1])['ros'].get('camera_calibration_status') or {}
 except Exception: c = {}
 if not c: print('  [WARN] no camera status (camera_watchdog not running?)')
 for k, v in c.items():
+    if v == 'disabled':
+        print(f'  [ OK ] {k}: disabled on purpose (config/disabled_cameras.txt)')
+        continue
     tag = ' OK ' if v == 'ok' else 'FAIL'
     hint = '' if v == 'ok' else ('\n         -> no frames: check that camera\'s driver / USB; wrist needs the kinova_vision driver from cameras_bringup' if v == 'no_signal' else '\n         -> flagged after a drop/bump: recalibrate in the Calibration tab')
     print(f'  [{tag}] {k}: {v}{hint}')

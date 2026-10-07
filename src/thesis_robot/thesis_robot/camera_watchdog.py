@@ -42,6 +42,9 @@ RECAL_CAMERAS = {
 CAMERAS = dict(RECAL_CAMERAS, wrist='/camera/color/image_raw')
 
 
+DISABLED_FILE = os.environ.get('SHASHPROJECT_DISABLED_CAMERAS', '/mnt/ros_workspace/Shashproject/config/disabled_cameras.txt')
+
+
 class CameraWatchdog(Node):
     def __init__(self):
         super().__init__('camera_watchdog')
@@ -81,6 +84,14 @@ class CameraWatchdog(Node):
             f'recalibration. Its detections are blocked until you rerun '
             f'calibration/multi_camera_calibrate.py.')
 
+    def _disabled_cameras(self):
+        """Names listed in config/disabled_cameras.txt (read every tick, so no restart is needed)."""
+        try:
+            with open(DISABLED_FILE) as f:
+                return {ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')}
+        except OSError:
+            return set()
+
     def _tick(self):
         now = time.monotonic()
         stale_now = {}
@@ -98,9 +109,12 @@ class CameraWatchdog(Node):
 
         # needs_recalibration > no_signal > ok. Detection nodes treat anything
         # but 'ok' as "do not publish", which is right for a camera with no frames.
+        disabled = self._disabled_cameras()
         status = {}
         for name in CAMERAS:
-            if name in RECAL_CAMERAS and self._needs_recalibration(name):
+            if name in disabled:
+                status[name] = 'disabled'          # switched off on purpose (config/disabled_cameras.txt)
+            elif name in RECAL_CAMERAS and self._needs_recalibration(name):
                 status[name] = 'needs_recalibration'
             elif stale_now[name]:
                 status[name] = 'no_signal'

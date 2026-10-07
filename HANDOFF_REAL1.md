@@ -1,3 +1,46 @@
+# STATUS 2026-10-06 (read this first; the sections below are from the migration and partly dated)
+
+**What works, verified on the real arm** (typed commands through the dashboard; voice pipeline is built but the mic is broken):
+- `pick up the <mug|mouse|plastic bottle>` -> hover, wrist camera centres on it, wrist turned so the short side is between the
+  fingers, straight descent, close, 3 cm lift + grip check, lift, one automatic retry after a miss/drop.
+- `... and put it down | aside | next to the <object> | at x y` -> carry, lower, release, retreat; free-spot search keeps 11 cm
+  from everything and checks the open fingers will not sweep a neighbour.
+- Trial counts: mug 8+, mouse 6, plastic bottle 3 (all after the fixes below). Not graspable by this gripper: steel flask
+  (smooth + tapered shoulder), bowls (wider than the 11.4 cm finger gap).
+- Full recipes, safety checks and tuning knobs: `docs/RUNBOOK.md` sections 15-16 and the trial-series note at its end.
+
+**The big lessons** (each cost real time; do not rediscover them):
+1. The old static camera calibrations were garbage (anchored through a wrong wrist hand-eye). Recalibrated from clicked arm
+   landmarks (`calibration/pnp_extrinsics.py`, dashboard "Calibrate from arm"). Check with `calibration/check_extrinsics.py`.
+2. From straight above the detectors mislabel things (bottle -> "sports ball"/"bowl", mouse -> "cup"). The arm matches wrist
+   detections by POSITION (within 6 cm of the scene object), the label is only a tie-break. Never filter wrist detections by class.
+3. The cameras also see the lab: the scene now keeps only what is above the recorded table, drops detections on the robot's own
+   gripper/arm, drops mislabelled duplicates within 6 cm, and expires ghosts (20 s stale, 60 s gone).
+4. The scene's object height is unreliable (a cup read z=0.132, real 0.05): `pick_heights` ignores a z more than 4 cm from the
+   object's known size. Tall objects are grasped low on the straight body, hovered over with the fingertips 7 cm above the top.
+5. Closing the fingers drops the pads ~2 cm, so the path check lets a path START below the table margin but never go lower.
+6. Every controller restart returns it to Dry Run; the operator re-confirms Go Live. Status is re-published every 2 s so the
+   dashboard never shows a stale LIVE. Check knobs without restarting: `ros2 param set /arm_controller <name> <value>`
+   (`sweep_same_object_m`, `sweep_half_span_m`, `sweep_margin_m`, `carry_avoid_m`, `low_pick_tip_clearance_m`, ...).
+7. The dashboard Stop/Start used to match `curl .../api/nodes/<id>/stop` command lines and kill its own caller; fixed.
+8. A disk filled by `scene_graph_node` logging every callback (7 GB of ROS logs); throttled. If disk is full: `~/.ros/log`.
+
+**Known gaps / state**
+- OAK-D is OFF on purpose (`config/disabled_cameras.txt`): it enumerates but stays in the depthai BOOTLOADER state (marginal USB).
+  Try the driver's USB2 mode / another cable, then delete the `oakd` line. Detection and placement work fine on the two RealSense
+  cameras + wrist.
+- Microphone hardware is broken; the voice path (audio_node, faster-whisper small.en CPU, "ALC897 Analog" device) is untested since.
+- Unknown objects (a black box on the table, a laptop) are not in the scene, so the planner does not avoid them.
+- The planner (qwen2.5:7b) pads plans; `llm_planner_node.py` strips unrequested go_home/open_gripper/move_to, fixes pick heights and
+  targets deterministically. Always dry-run a new kind of command first (arm_controller starts in Dry Run).
+- Orphan static_transform_publisher processes from old bringups are harmless duplicates; `scripts/check_system.sh` reports them.
+- Not built: angled (non-vertical) approaches, grasping bowls/flasks, collision objects for unknown items in MoveIt.
+
+**Daily start**: `bash scripts/check_system.sh` (0 FAIL expected), dashboard -> Go Live (type the phrase) only with the E-stop in
+reach and the table clear. Dry-run any new command shape first.
+
+---
+
 # Session Handoff — continuing on REAL-1 directly
 
 This repo was migrated from the lab laptop to REAL-1 (Ubuntu 22.04.5, i9-13900KF,

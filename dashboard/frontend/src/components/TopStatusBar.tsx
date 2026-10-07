@@ -29,6 +29,7 @@ export function TopStatusBar({ status, connected }: { status: StatusPayload | nu
   const robotUp = !!robot && robot !== 'stopped'
 
   const cams = ['oakd', 'realsense', 'realsense2', 'wrist']
+  const camOff = cams.filter((c) => calib?.[c] === 'disabled')     // switched off on purpose: neither ok nor a fault
   const camOk = cams.filter((c) => calib?.[c] === 'ok').length
   const camBad = cams.some((c) => calib?.[c] === 'needs_recalibration')
   const camDown = cams.filter((c) => calib?.[c] === 'no_signal')
@@ -55,7 +56,7 @@ export function TopStatusBar({ status, connected }: { status: StatusPayload | nu
         <Cell label="Robot" value={robotUp ? 'bringup up' : 'bringup off'} tone={robotUp ? 'ok' : 'neutral'} />
         <Cell label="Arm" value={isLive ? 'LIVE — MOVES' : 'dry run'} tone={isLive ? 'bad' : 'warn'} blink={isLive} />
         <Cell label="Table" value={tableCell.v} tone={tableCell.t} wide />
-        <Cell label="Cameras" value={camDown.length ? `no signal: ${camDown.join(', ')}` : `${camOk}/${cams.length} ok${camBad ? ' · recal' : ''}`} tone={camBad || camDown.length ? 'bad' : camOk === cams.length ? 'ok' : 'warn'} wide={camDown.length > 0} />
+        <Cell label="Cameras" value={camDown.length ? `no signal: ${camDown.join(', ')}` : `${camOk}/${cams.length - camOff.length} ok${camOff.length ? ` · ${camOff.join(', ')} off` : ''}${camBad ? ' · recal' : ''}`} tone={camBad || camDown.length ? 'bad' : camOk === cams.length - camOff.length ? 'ok' : 'warn'} wide={camDown.length > 0 || camOff.length > 0} />
         <Cell label="Voice" value={voice.v} tone={voice.t} blink={voice.v === 'recording'} />
       </div>
     </header>
