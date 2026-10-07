@@ -604,3 +604,18 @@ detector uses the segmentation model so the object's axis angle is measured and 
 fingers; the pick lifts 3 cm and checks the grip before the full lift, retries once after a miss, and checks that the open fingers will
 not sweep a neighbour. The place does the same sweep check for the release.
 Tunable at run time (no restart): `ros2 param set /arm_controller sweep_same_object_m|sweep_half_span_m|sweep_margin_m|carry_avoid_m <value>`.
+
+## 17. Trajectory smoothing (2026-10-07)
+
+Every verified path is re-timed in `trajectory_smoothing.py` along a minimum-jerk curve before it is executed
+(`_smoothed` in `arm_controller_node.py`, the single place that calls `moveit2.execute`). The path is the one the
+safety check approved; only the timing changes, so velocity and acceleration are zero at both ends and nothing steps.
+Pilz PTP's trapezoid had acceleration jumping to ~7 rad/s^2 at each move boundary.
+
+Measured on the arm (3 high moves, joint states at 100 Hz): peak jerk 40.5 -> 7.4 rad/s^3, peak acceleration
+7.06 -> 1.36 rad/s^2. Runtime parameters (no restart): `smooth_trajectories` (false = planner timing, for A/B),
+`smooth_vel_scale` 0.30 and `smooth_acc_scale` 0.20 (fractions of the joint limits), `smooth_min_duration_s` 0.6.
+`/tmp/jerkprobe.py`-style probes: record /joint_states while a plan runs and Savitzky-Golay the derivatives.
+
+The controller process runs on the system Python, whose user-site scipy cannot import `scipy.interpolate`, so the
+spline is numpy-only. If smoothing ever fails the move runs with the planner's timing and logs a warning.

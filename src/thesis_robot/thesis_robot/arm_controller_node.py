@@ -15,12 +15,16 @@ from std_msgs.msg import String
 
 from thesis_robot import motion_utils as mu
 from thesis_robot import safety_geometry as sg
+from thesis_robot import trajectory_smoothing as ts
 from thesis_robot import wrist_servo as ws
 
 JOINT_NAMES = [
     "joint_1", "joint_2", "joint_3", "joint_4",
     "joint_5", "joint_6", "joint_7"
 ]
+# Joint limits of the Gen3 (config/joint_limits.yaml): rad/s and rad/s^2.
+JOINT_VMAX = [1.3963, 1.3963, 1.3963, 1.3963, 1.2218, 1.2218, 1.2218]
+JOINT_AMAX = [8.6] * 7
 BASE_LINK   = "base_link"
 EE_LINK     = "end_effector_link"
 GROUP_NAME  = "manipulator"
@@ -77,6 +81,12 @@ class ArmControllerNode(Node):
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
+        # Re-time every verified path along a minimum-jerk curve (zero speed AND acceleration at both ends, no
+        # acceleration steps) instead of the planner's trapezoid. Settable at run time for A/B tests.
+        self.declare_parameter('smooth_trajectories', True)
+        self.declare_parameter('smooth_vel_scale', 0.30)    # peak joint speed as a fraction of the joint limit
+        self.declare_parameter('smooth_acc_scale', 0.20)    # peak joint acceleration as a fraction of the limit
+        self.declare_parameter('smooth_min_duration_s', 0.6)
 
         self.dry_run   = self.get_parameter('dry_run').value
         self.speed     = self.get_parameter('speed').value
@@ -555,7 +565,7 @@ class ArmControllerNode(Node):
                     return self._refuse(f'{label} unsafe: {why}')
                 self.get_logger().error(f'{label}: {why}')
                 return False
-            self.moveit2.execute(traj)
+            self.moveit2.execute(self._smoothed(traj, label))
             if self.moveit2.wait_until_executed() is False:
                 self.get_logger().error(f'{label} not executed')
                 return False
@@ -565,6 +575,43 @@ class ArmControllerNode(Node):
         except Exception as e:
             self.get_logger().error(f'{label} failed: {e}')
             return False
+
+    def _smoothed(self, traj, label):
+        """The verified path `traj` re-timed along a minimum-jerk curve (see trajectory_smoothing), or `traj`
+        itself if smoothing is off or fails: a smoothing problem must never stop a safe move."""
+        if not self.get_parameter('smooth_trajectories').value:
+            return traj
+        try:
+            from builtin_interfaces.msg import Duration
+            from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+            idx = [list(traj.joint_names).index(j) for j in JOINT_NAMES]
+            pos = [[p.positions[i] for i in idx] for p in traj.points]
+            last = traj.points[-1].time_from_start
+            old_t = last.sec + last.nanosec * 1e-9
+            r = ts.smooth(pos, JOINT_VMAX, JOINT_AMAX,
+                          vel_scale=float(self.get_parameter('smooth_vel_scale').value),
+                          acc_scale=float(self.get_parameter('smooth_acc_scale').value),
+                          min_duration=float(self.get_parameter('smooth_min_duration_s').value))
+            if r is None:
+                return traj
+            out = JointTrajectory()
+            out.header = traj.header
+            out.joint_names = list(JOINT_NAMES)
+            for k in range(len(r['t'])):
+                pt = JointTrajectoryPoint()
+                pt.positions = [float(v) for v in r['q'][k]]
+                pt.velocities = [float(v) for v in r['qd'][k]]
+                pt.accelerations = [float(v) for v in r['qdd'][k]]
+                t = float(r['t'][k])
+                pt.time_from_start = Duration(sec=int(t), nanosec=int((t % 1.0) * 1e9))
+                out.points.append(pt)
+            self.get_logger().info(
+                f'{label}: smoothed {len(traj.points)} points / {old_t:.1f}s -> {len(out.points)} points / '
+                f'{r["duration"]:.1f}s ({r["path"]})')
+            return out
+        except Exception as e:
+            self.get_logger().warn(f'{label}: smoothing failed ({e}), using the planner timing')
+            return traj
 
     def _actual_tool_quat(self, default=None):
         """[x, y, z, w] orientation of end_effector_link in base_link right now (TF);
