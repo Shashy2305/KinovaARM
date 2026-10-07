@@ -59,6 +59,7 @@ class ArmControllerNode(Node):
         # wrist-camera centering over the target before the descent
         self.declare_parameter('center_tol',      0.010)  # m, stop correcting inside this
         self.declare_parameter('center_max_step', 0.06)   # m, largest single correction
+        self.declare_parameter('center_accept_m', 0.02)   # m, accepted after >= 3 corrections if the detection jitters
         self.declare_parameter('center_max_iter', 5)      # corrections before giving up
         self.declare_parameter('hover_above_m',   0.12)   # fingertips this far above the object centre while centering
         # How far the FINGERTIPS may come down to the table during a pick's straight descent (and a place
@@ -82,6 +83,7 @@ class ArmControllerNode(Node):
         self.pregrasp_clearance = self.get_parameter('pregrasp_clearance').value
         self.yaw_flex  = self.get_parameter('yaw_flex').value
         self.center_tol = self.get_parameter('center_tol').value
+        self.center_accept_m = float(self.get_parameter('center_accept_m').value)
         self.center_max_step = self.get_parameter('center_max_step').value
         self.center_max_iter = self.get_parameter('center_max_iter').value
         self.hover_above_m = self.get_parameter('hover_above_m').value
@@ -612,6 +614,10 @@ class ArmControllerNode(Node):
         return False
 
     def _pick_once(self, object_id, pos, approach_z):
+        if not (self.dry_run or self.moveit2 is None) and self._is_holding():
+            self._refuse('pick: the gripper is already holding something — put it down first '
+                         '("put it down"); opening it now would drop it from the air')
+            return False, 'already holding'
         try:
             ox, oy, oz = (float(v) for v in pos)
         except (TypeError, ValueError) as e:
@@ -834,10 +840,16 @@ class ArmControllerNode(Node):
         if det is None:
             self.get_logger().error(f'align: the wrist camera cannot see the {label}')
             return False
+        if ws.OBJECT_HEIGHT_M.get(label, ws.DEFAULT_HEIGHT_M) >= ws.TALL_OBJECT_M:
+            # A tall round object (a bottle) seen from above, off-axis, smears into an elongated silhouette that
+            # points away from the image centre: its "axis" is perspective, not shape. Turning to it made the wrist
+            # flip three times (2026-10-06). The fingers straddle a round body at any angle.
+            self.get_logger().info(f'align: the {label} is tall and round — no wrist turn')
+            return True
         if 'elong' not in det:
             return self._align_quarter_turn(label, (det['x1'], det['y1'], det['x2'], det['y2']))
         sign = getattr(self, '_yaw_sign', 1.0)
-        for attempt in range(3):
+        for attempt in range(2):
             delta = ws.rotation_to_align(det.get('orient_deg'), det.get('elong'))
             if delta is None:
                 self.get_logger().info(
@@ -965,6 +977,10 @@ class ArmControllerNode(Node):
                 f'({cx_:.3f},{cy_:.3f}); off by {dist * 100:.1f} cm')
             if dist < self.center_tol:
                 return True, (gx, gy)        # FLANGE xy that puts the fingers over the object (a straight descent keeps it)
+            if corrections >= 3 and dist < self.center_accept_m:
+                self.get_logger().info(f'center_over: {dist * 100:.1f} cm off after {corrections} corrections — close enough '
+                                       f'(the fingers have 2.4+ cm of clearance each side)')
+                return True, (gx, gy)
             if corrections >= self.center_max_iter:
                 self.get_logger().error(f'center_over: still {dist * 100:.1f} cm off after {corrections} corrections')
                 return False, None

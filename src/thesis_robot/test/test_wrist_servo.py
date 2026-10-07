@@ -231,3 +231,8 @@ def test_a_bowl_19_cm_along_the_closing_axis_is_clear_but_a_closer_one_is_not():
     assert ws.finger_sweep_blocker(c, (0.0, -1.0), [('bowl', 0.41, 0.056 - 0.165)]) == 'bowl'      # inside the swing
     assert ws.finger_sweep_blocker(c, (0.0, -1.0), [('bottle', 0.41 + 0.06, 0.056 - 0.05)]) == 'bottle'   # alongside, 6 cm to the side
     assert ws.finger_sweep_blocker(c, (0.0, -1.0), [('bottle', 0.41 + 0.10, 0.056 - 0.05)]) is None      # alongside, 10 cm: clear
+
+
+def test_tall_objects_are_not_aligned_by_silhouette():
+    assert ws.OBJECT_HEIGHT_M['bottle'] >= ws.TALL_OBJECT_M            # the controller skips the wrist turn for these
+    assert ws.OBJECT_HEIGHT_M['mouse'] < ws.TALL_OBJECT_M and ws.OBJECT_HEIGHT_M['cup'] < ws.TALL_OBJECT_M

@@ -87,6 +87,7 @@ def _load_workspace(logger):
 
 
 TABLE_REGION_MARGIN_M = 0.05    # keep detections this far outside the recorded table footprint
+SAME_LABEL_MERGE_M = 0.10      # same-label tracks closer than this are one object in the snapshot
 DUP_RADIUS_M = 0.06          # two detections of different labels this close are one object
 
 
@@ -198,6 +199,20 @@ class SceneGraphNode(Node):
             throttle_duration_sec=10.0,
         )
 
+    def _same_label_duplicates(self):
+        """Ids of fresh tracks that are a duplicate of a more confident fresh track of the same label within
+        SAME_LABEL_MERGE_M. A transparent bottle is read 5-9 cm apart by two cameras and tracked twice; a ghost
+        track near a place target made the carry guard refuse. The more confident track is kept."""
+        fresh = [(oid, o) for oid, o in self.scene.items() if not o['stale']]
+        dups = set()
+        for i, (a, oa) in enumerate(fresh):
+            for b, ob in fresh[i + 1:]:
+                if oa['label'] != ob['label'] or a in dups or b in dups:
+                    continue
+                if math.hypot(oa['x'] - ob['x'], oa['y'] - ob['y']) < SAME_LABEL_MERGE_M:
+                    dups.add(a if oa['confidence'] < ob['confidence'] else b)
+        return dups
+
     def _drop_relabelled_duplicates(self, resolved):
         """A mouse seen from above is "cup" to the detectors, a bottle "cup", a bowl "mouse": the same object
         shows up under two labels a few cm apart. Keep the more confident one. Only within one batch and
@@ -296,8 +311,11 @@ class SceneGraphNode(Node):
         # computing them against every ghost made the payload quadratic and
         # repeated the same "right_of_mouse" dozens of times.
         live = [oid for oid, o in self.scene.items() if o['reachable'] and not o['stale']]
+        dups = self._same_label_duplicates()
 
         for obj_id, obj in self.scene.items():
+            if obj_id in dups:
+                continue                      # a second track of an object already listed (two cameras, two depths)
             entry = {
                 'label':      obj['label'],
                 'x':          obj['x'],
