@@ -1114,6 +1114,13 @@ class ArmControllerNode(Node):
         tip_clear = float(self.get_parameter('low_pick_tip_clearance_m').value)
         low_floor = min(floor, geom['table_top_z'] + sg.TCP_REACH_M + tip_clear) if geom else floor
         set_z = max(low_floor, grasp_z + self.SET_DOWN_GAP_M)
+        # Closed on the object the pad frames hang lower than they did when the fingers were open at the pick
+        # (about 2 cm), so the pick's height can put them under the table margin (it refused by 1 mm with a mouse).
+        try:
+            pad_z = min(self._tf_pose(BASE_LINK, f)[1][2] for f in ('left_inner_finger_pad', 'right_inner_finger_pad'))
+            set_z = max(set_z, geom['table_top_z'] + sg.LINK_TABLE_CLEARANCE_M + (g[2] - pad_z) + 0.003)
+        except Exception:
+            pass
         carry_z = min(0.50, max(grasp_z + self.CARRY_CLEARANCE_M, floor + 0.02))
         far = math.hypot(fx - g[0], fy - g[1]) > 0.02
         if far:
