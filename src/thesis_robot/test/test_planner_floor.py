@@ -229,3 +229,12 @@ def test_ghosts_behind_the_robot_and_stale_objects_are_not_obstacles():
              'below': {'label': 'cup', 'x': 0.5, 'y': 0.0, 'z': -0.3, 'reachable': False, 'stale': False}}
     spot = find_free_spot((0.5, 0.0), scene, (0.5, 0.0), rings=(0.13,))
     assert spot is not None
+
+
+def test_put_it_down_alone_drops_any_pick_the_model_added():
+    from thesis_robot.llm_planner_node import normalize_place_here
+    plan = [{'action': 'pick', 'object_id': 'cup_00'}, {'action': 'place', 'x': 0.4, 'y': 0.0}]
+    out = normalize_place_here([dict(s) for s in plan], 'put it down')
+    assert out == [{'action': 'place', 'here': True}]
+    kept = normalize_place_here([dict(s) for s in plan], 'pick up the cup and put it back')
+    assert [s['action'] for s in kept] == ['pick', 'place']

@@ -288,6 +288,9 @@ DESTINATION_WORDS = ('next to', 'beside', 'near', 'by the', 'left', 'right', 'fr
                      'over', 'under', 'between', 'x ', 'y ', ' to the', 'other side', 'away')
 
 
+PICK_WORDS = ('pick', 'grab', 'take', 'lift', 'fetch', 'get the', 'grasp')
+
+
 def normalize_place_here(plan, command):
     """"put it down" / "set it down" / "put it back" with no destination word means: where it was
     picked up. The model tends to invent coordinates for it (it once moved the mug 10 cm), so turn
@@ -304,6 +307,12 @@ def normalize_place_here(plan, command):
             for k in ('x', 'y', 'z', 'near', 'unplaceable'):
                 st.pop(k, None)
             st['here'] = True
+    if not any(w in cmd for w in PICK_WORDS):
+        # "put it down" on its own releases what is already in the gripper. The model once added a pick of some
+        # other object in front of it (2026-10-07), which the controller refused only because it was holding.
+        only = [st for st in plan if isinstance(st, dict) and st.get('action') == 'place']
+        if only:
+            return only
     return plan
 
 

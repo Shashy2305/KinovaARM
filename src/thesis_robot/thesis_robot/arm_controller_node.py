@@ -32,6 +32,7 @@ HOME_JOINTS = [0.0, -0.35, 3.14, -2.27, 0.0, 0.96, 1.57]
 # closes the gripper and 0.02 leaves it nearly fully open, so a pick
 # sequence would never actually grip anything.
 GRIPPER_OPEN   = 0.0
+CARRY_CEILING_Z = 0.50       # highest flange height a carry is raised to (the same ceiling the hover uses)
 GRIPPER_CLOSED = 0.695
 CAMERA_FRAME   = "global_camera_link"
 # Verified on hardware 2026-09-30 (TESTING.md Stage 4): jogged the gripper
@@ -1052,10 +1053,12 @@ class ArmControllerNode(Node):
             out.append((o.get('label', oid), x, y))
         return out
 
-    def _carry_path_blocked(self, start_xy, end_xy):
-        """Label of a tall scene object the carry path comes within CARRY_AVOID_M of (moving closer than it
-        started), or None. See ws.carry_path_blocker."""
-        return ws.carry_path_blocker(start_xy, end_xy, self._scene_obstacles(min_height=self.TALL_OBJECT_M),
+    def _carry_path_blocked(self, start_xy, end_xy, min_height=None):
+        """Label of a scene object whose top is above min_height (the underside of the carried object, less a
+        3 cm margin; default TALL_OBJECT_M) that the carry path comes within CARRY_AVOID_M of (moving closer
+        than it started), or None. See ws.carry_path_blocker."""
+        h = self.TALL_OBJECT_M if min_height is None else min_height
+        return ws.carry_path_blocker(start_xy, end_xy, self._scene_obstacles(min_height=h),
                                      avoid=float(self.get_parameter('carry_avoid_m').value))
 
     def _move_verified(self, x, y, z, label, xy_tol=0.015, z_tol=0.01, min_flange_z=None):
@@ -1114,7 +1117,19 @@ class ArmControllerNode(Node):
         carry_z = min(0.50, max(grasp_z + self.CARRY_CLEARANCE_M, floor + 0.02))
         far = math.hypot(fx - g[0], fy - g[1]) > 0.02
         if far:
-            blocked = self._carry_path_blocked((g[0], g[1]), (fx, fy))
+            # The carried object's underside is (carry_z - grasp_z) over the table. Obstacles lower than that clear
+            # it; for a taller one raise the carry (up to the ceiling) before giving up.
+            blocked = None
+            for cz in sorted({carry_z, max(carry_z, min(0.44, CARRY_CEILING_Z)), CARRY_CEILING_Z}):
+                if cz < carry_z:
+                    continue
+                blocked = self._carry_path_blocked((g[0], g[1]), (fx, fy), min_height=cz - grasp_z - 0.03)
+                if not blocked:
+                    if cz > carry_z + 0.005:
+                        self.get_logger().info(
+                            f'place: carrying higher (flange z={cz:.3f}) so the object clears what is on the way')
+                    carry_z = cz
+                    break
             if blocked:
                 return self._refuse(f'place: the carry path passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
         self.get_logger().info(
