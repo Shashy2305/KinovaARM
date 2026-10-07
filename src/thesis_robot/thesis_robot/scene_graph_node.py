@@ -87,6 +87,7 @@ def _load_workspace(logger):
 
 
 TABLE_REGION_MARGIN_M = 0.05    # keep detections this far outside the recorded table footprint
+SAME_LABEL_MERGE_BY_LABEL_M = {'bottle': 0.14, 'cup': 0.12}   # transparent/low-contrast objects: depth differs most between cameras
 SAME_LABEL_MERGE_M = 0.10      # same-label tracks closer than this are one object in the snapshot
 DUP_RADIUS_M = 0.06          # two detections of different labels this close are one object
 
@@ -209,7 +210,7 @@ class SceneGraphNode(Node):
             for b, ob in fresh[i + 1:]:
                 if oa['label'] != ob['label'] or a in dups or b in dups:
                     continue
-                if math.hypot(oa['x'] - ob['x'], oa['y'] - ob['y']) < SAME_LABEL_MERGE_M:
+                if math.hypot(oa['x'] - ob['x'], oa['y'] - ob['y']) < SAME_LABEL_MERGE_BY_LABEL_M.get(oa['label'], SAME_LABEL_MERGE_M):
                     dups.add(a if oa['confidence'] < ob['confidence'] else b)
         return dups
 
