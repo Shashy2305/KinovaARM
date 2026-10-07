@@ -315,12 +315,12 @@ def generate_launch_description():
                          "assignment is kept deterministic."),
         DeclareLaunchArgument(
             "realsense_serial",
-            # Spare D435 (207522071578), installed 2026-10-06 in place of the original D435I (938422070760). Both serials are pinned
+            # D435I — the original global_camera (cable swapped with the third RealSense 2026-10-06). Both serials are pinned
             # (not left empty/"any device") now that two RealSense units are
             # connected on the same USB hub — otherwise realsense2_camera_node's
             # choice of which physical camera becomes which ROS node is
             # undefined, and could silently swap between runs.
-            default_value="207522071578",
+            default_value="938422070760",
             description="Serial number to pin the first RealSense to. "
                          "Get it via: python3 -c \"import pyrealsense2 as rs; "
                          "[print(d.get_info(rs.camera_info.name), "
