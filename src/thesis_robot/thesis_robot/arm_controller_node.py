@@ -650,23 +650,38 @@ class ArmControllerNode(Node):
             return False
 
         def fingers_clear():
-            """The open fingers span ~19 cm along the closing axis. If a neighbour is in that sweep, turn the
-            wrist 90 degrees (and centre again); if it still is, do not descend."""
+            """The open fingers span ~19 cm along the closing axis. If a neighbour is in that sweep, first try
+            narrowing the opening to the object's width; then turn the wrist 90 degrees (and centre again); if it
+            still is blocked, do not descend."""
             if self.dry_run or self.moveit2 is None:
                 return True
             obstacles = self._scene_obstacles(exclude_id=object_id, min_height=max(0.0, tip_over_table))
+            same = float(self.get_parameter('sweep_same_object_m').value)
+            margin = float(self.get_parameter('sweep_margin_m').value)
+            full_span = float(self.get_parameter('sweep_half_span_m').value)
+            narrow = ws.preshape_for(label)
             for turned in (False, True):
                 axis = self._closing_axis_xy()
                 mid = self._pad_midpoint_xy(default=centred['xy'])
-                blocker = ws.finger_sweep_blocker(
-                    mid, axis, obstacles,
-                    same_object_m=float(self.get_parameter('sweep_same_object_m').value),
-                    half_span=float(self.get_parameter('sweep_half_span_m').value),
-                    margin=float(self.get_parameter('sweep_margin_m').value)) if axis else None
+
+                def blocker_for(span):
+                    return ws.finger_sweep_blocker(mid, axis, obstacles, same_object_m=same,
+                                                   half_span=span, margin=margin) if axis else None
+                blocker = blocker_for(full_span)
                 if blocker is None:
                     return True
+                if narrow is not None and blocker_for(min(full_span, narrow[1])) is None:
+                    self.get_logger().info(
+                        f'pick: narrowing the fingers to the {label} (finger position {narrow[0]:.2f}) '
+                        f'so they clear the {blocker}')
+                    return self._gripper(narrow[0], 'narrow the fingers')
                 if turned:
                     return self._refuse(f'pick: the open fingers would hit the {blocker} next to the {label}')
+                if label in ws.LONG_AXIS_UNRELIABLE:
+                    return self._refuse(
+                        f'pick: the {blocker} is too close to grip the {label} across its short side, and gripping '
+                        f'it along its length slips off (it is low and tapered) - move the {label} or the {blocker} '
+                        f'about 5 cm apart')
                 self.get_logger().info(f'pick: the open fingers would sweep the {blocker} — turning the wrist 90 degrees')
                 try:
                     q7 = self._current_joint_vector()[6]

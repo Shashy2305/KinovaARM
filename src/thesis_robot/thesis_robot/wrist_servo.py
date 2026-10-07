@@ -177,6 +177,34 @@ FINGER_HALF_SPAN_M = 0.095     # open fingers reach this far (outer edge) either
 FINGER_HALF_WIDTH_M = 0.02     # finger/pad half width along the other horizontal axis
 SWEEP_MARGIN_M = 0.015
 
+# Pad-to-pad gap of the 2F-140 against finger_joint, measured from TF on the arm (2026-10-07).
+FINGER_GAP_TABLE = ((0.0, 0.135), (0.2, 0.1035), (0.3, 0.0857), (0.4, 0.0665))
+FINGER_OUTER_EXTRA_M = 0.0275  # the outer edge of a finger sits this far beyond its pad: half-span = gap/2 + this
+GRIP_WIDTH_M = {'mouse': 0.062, 'bottle': 0.07}   # object width across the preferred closing axis
+PRESHAPE_CLEARANCE_M = 0.05    # total slack added to that width (about 2.5 cm a side: the centring accepts 2 cm)
+LONG_AXIS_UNRELIABLE = {'mouse'}  # a 90-degree turn puts these low, tapered objects between the fingers by their ends
+
+
+def gap_to_position(gap):
+    """finger_joint position that gives a pad-to-pad gap of `gap` metres (clamped to the measured range)."""
+    pts = FINGER_GAP_TABLE
+    if gap >= pts[0][1]:
+        return pts[0][0]
+    for (q0, g0), (q1, g1) in zip(pts, pts[1:]):
+        if gap >= g1:
+            return q0 + (q1 - q0) * (g0 - gap) / (g0 - g1)
+    return pts[-1][0]
+
+
+def preshape_for(label):
+    """(finger_joint position, outer half-span) to open the fingers to before coming down around `label`, or None
+    when its width is not known (those are approached fully open)."""
+    w = GRIP_WIDTH_M.get(label)
+    if w is None:
+        return None
+    gap = min(FINGER_GAP_TABLE[0][1], w + PRESHAPE_CLEARANCE_M)
+    return gap_to_position(gap), gap / 2 + FINGER_OUTER_EXTRA_M
+
 
 def _dist_to_segment(p, a, b):
     ax, ay = a

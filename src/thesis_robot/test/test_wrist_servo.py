@@ -236,3 +236,17 @@ def test_a_bowl_19_cm_along_the_closing_axis_is_clear_but_a_closer_one_is_not():
 def test_tall_objects_are_not_aligned_by_silhouette():
     assert ws.OBJECT_HEIGHT_M['bottle'] >= ws.TALL_OBJECT_M            # the controller skips the wrist turn for these
     assert ws.OBJECT_HEIGHT_M['mouse'] < ws.TALL_OBJECT_M and ws.OBJECT_HEIGHT_M['cup'] < ws.TALL_OBJECT_M
+
+
+def test_gap_to_position_matches_the_measured_table():
+    assert ws.gap_to_position(0.2) == 0.0
+    assert abs(ws.gap_to_position(0.1035) - 0.2) < 1e-9
+    assert abs(ws.gap_to_position(0.0857) - 0.3) < 1e-9
+    assert 0.2 < ws.gap_to_position(0.095) < 0.3
+    assert ws.gap_to_position(0.01) == 0.4
+
+
+def test_preshape_narrows_the_span_only_for_known_widths():
+    q, span = ws.preshape_for('mouse')
+    assert 0.1 < q < 0.3 and span < ws.FINGER_HALF_SPAN_M
+    assert ws.preshape_for('bowl') is None
