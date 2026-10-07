@@ -619,3 +619,18 @@ Measured on the arm (3 high moves, joint states at 100 Hz): peak jerk 40.5 -> 7.
 
 The controller process runs on the system Python, whose user-site scipy cannot import `scipy.interpolate`, so the
 spline is numpy-only. If smoothing ever fails the move runs with the planner's timing and logs a warning.
+
+## 18. Outcome log (2026-10-07)
+
+Every pick, place and command appends one JSON line to `~/.ros/outcomes/outcomes-YYYY-MM.jsonl` (outside git; this
+table's data). Pick records carry: object, position, nearest neighbours (distance, bearing), grip strategy
+(`full_open` / `narrowed` / `turned_90`), alignment and centring events, the finger reading at each grip check,
+per-step durations, and ok / failed step / reason. Place records carry the target, carry and set-down heights and the
+neighbours; command records the text, plan and result. Logging is wrapped so an error in it cannot affect a move;
+switch it off with `ros2 param set /arm_controller outcome_log false`.
+
+    python3 scripts/outcome_report.py [--all] [--recent 10]
+
+prints success by object, strategy and neighbour distance, where picks fail, typical grip readings and plain-language
+lessons (dry-run records are ignored unless `--all`). This is the data the planner prompt memory and per-object grasp
+tuning will read; nothing learns from it automatically yet.

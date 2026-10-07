@@ -14,6 +14,7 @@ from sensor_msgs.msg import CameraInfo, JointState
 from std_msgs.msg import String
 
 from thesis_robot import motion_utils as mu
+from thesis_robot import outcome_log as ol
 from thesis_robot import safety_geometry as sg
 from thesis_robot import trajectory_smoothing as ts
 from thesis_robot import wrist_servo as ws
@@ -81,6 +82,7 @@ class ArmControllerNode(Node):
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
+        self.declare_parameter('outcome_log', True)   # one JSON line per pick/place/command in ~/.ros/outcomes
         # Re-time every verified path along a minimum-jerk curve (zero speed AND acceleration at both ends, no
         # acceleration steps) instead of the planner's trapezoid. Settable at run time for A/B tests.
         self.declare_parameter('smooth_trajectories', True)
@@ -90,6 +92,8 @@ class ArmControllerNode(Node):
 
         self.dry_run   = self.get_parameter('dry_run').value
         self.speed     = self.get_parameter('speed').value
+        self._attempt = None
+        self._outcomes = ol.OutcomeLog()
         self.grasp_z_offset     = self.get_parameter('grasp_z_offset').value
         self.pregrasp_clearance = self.get_parameter('pregrasp_clearance').value
         self.yaw_flex  = self.get_parameter('yaw_flex').value
@@ -204,6 +208,7 @@ class ArmControllerNode(Node):
 
             self.get_logger().info(f'Executing: "{command}" ({len(plan)} steps)')
             self._publish_status(f'EXECUTING: {command}')
+            t_cmd = time.monotonic()
 
             for i, step in enumerate(plan):
                 act = step.get('action', '')
@@ -220,11 +225,13 @@ class ArmControllerNode(Node):
                         f'automatically after a failure (use go_home when it is clear)')
                     why = f': {self._block_reason}' if self._blocked else ''
                     self._publish_status(f'FAILED at step {i+1}{why}'[:100])
+                    self._log_command(command, model, plan, False, i + 1, self._block_reason if self._blocked else None, t_cmd)
                     return
                 time.sleep(0.3)
 
             self.get_logger().info('Plan executed successfully')
             self._publish_status('COMPLETE')
+            self._log_command(command, model, plan, True, None, None, t_cmd)
 
         except Exception as e:
             self.get_logger().error(f'Execution error: {e}')
@@ -576,6 +583,49 @@ class ArmControllerNode(Node):
             self.get_logger().error(f'{label} failed: {e}')
             return False
 
+    # ── OUTCOME LOG (never allowed to affect a move) ─────────────────
+    def _log_note(self, **kw):
+        try:
+            if self._attempt is not None:
+                self._attempt.note(**kw)
+        except Exception:
+            pass
+
+    def _log_event(self, name, **kw):
+        try:
+            if self._attempt is not None:
+                self._attempt.event(name, **kw)
+        except Exception:
+            pass
+
+    def _log_begin(self, kind, **fields):
+        try:
+            if not self.get_parameter('outcome_log').value:
+                self._attempt = None
+                return
+            self._attempt = ol.Attempt(kind, live=not (self.dry_run or self.moveit2 is None), **fields)
+        except Exception:
+            self._attempt = None
+
+    def _log_end(self, ok, failed_step=None, reason=None):
+        try:
+            att, self._attempt = self._attempt, None
+            if att is not None:
+                self._outcomes.append(att.finish(ok, failed_step, reason or (self._block_reason if self._blocked else None)))
+        except Exception as e:
+            self.get_logger().warn(f'outcome log: {e}')
+
+    def _log_command(self, command, model, plan, ok, failed_step, reason, t0):
+        try:
+            if not self.get_parameter('outcome_log').value:
+                return
+            self._outcomes.append({
+                'kind': 'command', 'live': not (self.dry_run or self.moveit2 is None), 'command': command,
+                'model': model, 'plan': plan, 'ok': bool(ok), 'failed_step': failed_step, 'reason': reason,
+                'seconds': round(time.monotonic() - t0, 1)})
+        except Exception as e:
+            self.get_logger().warn(f'outcome log: {e}')
+
     def _smoothed(self, traj, label):
         """The verified path `traj` re-timed along a minimum-jerk curve (see trajectory_smoothing), or `traj`
         itself if smoothing is off or fails: a smoothing problem must never stop a safe move."""
@@ -650,6 +700,7 @@ class ArmControllerNode(Node):
             pos = self._lookup_object(object_id)
             if pos is None:
                 return False
+            self._pick_attempt = attempt
             ok, failed = self._pick_once(object_id, pos, approach_z)
             if ok:
                 return True
@@ -686,6 +737,16 @@ class ArmControllerNode(Node):
 
         centred = {'xy': (ox, oy)}
         tip_over_table = grasp_z - sg.TCP_REACH_M - geom['table_top_z']
+        try:
+            self._log_begin(
+                'pick', object_id=object_id, label=label, xy=[round(ox, 3), round(oy, 3)], z=round(oz, 3),
+                attempt=getattr(self, '_pick_attempt', 1), strategy='full_open',
+                neighbours=ol.neighbours(self._scene_obstacles(exclude_id=object_id), (ox, oy)),
+                grasp_z=round(grasp_z, 3), hover_z=round(hover_z, 3),
+                scene_conf=round(float((self.latest_scene.get(object_id) or {}).get('confidence', 0) or 0), 2),
+                tip_clearance_m=tip_clear)
+        except Exception:
+            pass
 
         def center():
             ok, xy = self._center_over(label, (ox, oy))
@@ -722,6 +783,7 @@ class ArmControllerNode(Node):
                     self.get_logger().info(
                         f'pick: narrowing the fingers to the {label} (finger position {narrow[0]:.2f}) '
                         f'so they clear the {blocker}')
+                    self._log_note(strategy='narrowed' if not turned else 'turned_90+narrowed', blocker=blocker)
                     return self._gripper(narrow[0], 'narrow the fingers')
                 if turned:
                     return self._refuse(f'pick: the open fingers would hit the {blocker} next to the {label}')
@@ -731,6 +793,7 @@ class ArmControllerNode(Node):
                         f'it along its length slips off (it is low and tapered) - move the {label} or the {blocker} '
                         f'about 5 cm apart')
                 self.get_logger().info(f'pick: the open fingers would sweep the {blocker} — turning the wrist 90 degrees')
+                self._log_note(strategy='turned_90', blocker=blocker)
                 try:
                     q7 = self._current_joint_vector()[6]
                 except RuntimeError as e:
@@ -761,10 +824,19 @@ class ArmControllerNode(Node):
         ]
         for name, action in steps:
             self._publish_pp_status(f'pick {object_id}: {name}')
-            if not action():
+            t_step = time.monotonic()
+            ok_step = action()
+            try:
+                if self._attempt is not None:
+                    self._attempt.step_time(name, time.monotonic() - t_step)
+            except Exception:
+                pass
+            if not ok_step:
                 self.get_logger().error(f'pick {object_id} failed at: {name}')
+                self._log_end(False, name)
                 return False, name
         self._held = {'label': label, 'object_id': object_id, 'grasp_z': grasp_z}
+        self._log_end(True)
         return True, None
 
     def _closing_axis_xy(self):
@@ -923,6 +995,8 @@ class ArmControllerNode(Node):
             except RuntimeError as e:
                 return self._refuse(str(e))
             dq = sign * math.radians(delta)
+            self._log_event('align', axis_deg=round(float(det['orient_deg']), 0), elong=round(float(det['elong']), 2),
+                            turn_deg=round(delta, 0))
             lim = mu.PLANNER_JOINT_LIMIT - 0.1
             if abs(q7 + dq) > lim:                       # a parallel gripper is symmetric: 180 degrees is the same grasp
                 alt = dq - math.copysign(math.pi, dq)
@@ -1038,6 +1112,7 @@ class ArmControllerNode(Node):
             self.get_logger().info(
                 f'center_over: {label} ({conf:.0%}) at ({tx:.3f},{ty:.3f}); fingers at '
                 f'({cx_:.3f},{cy_:.3f}); off by {dist * 100:.1f} cm')
+            self._log_event('center', off_cm=round(dist * 100, 1), conf=round(float(conf), 2), corrections=corrections)
             if dist < self.center_tol:
                 return True, (gx, gy)        # FLANGE xy that puts the fingers over the object (a straight descent keeps it)
             if corrections >= 3 and dist < self.center_accept_m:
@@ -1063,6 +1138,11 @@ class ArmControllerNode(Node):
         if self.dry_run or self.moveit2 is None:
             return True
         time.sleep(0.5)
+        try:
+            if self._attempt is not None:
+                self._attempt.grip_reading(what, (self._js or {}).get('finger_joint'))
+        except Exception:
+            pass
         if self._is_holding():
             return True
         f = (self._js or {}).get('finger_joint')
@@ -1123,6 +1203,18 @@ class ArmControllerNode(Node):
         return True
 
     def _place(self, x=None, y=None, z=None, here=False):
+        """Logged wrapper around _place_impl: one outcome-log record per place."""
+        held = dict(self._held) if self._held else {}
+        self._log_begin('place', label=held.get('label'), object_id=held.get('object_id'),
+                        requested={'x': x, 'y': y, 'z': z, 'here': bool(here)}, strategy='straight_carry')
+        ok = False
+        try:
+            ok = self._place_impl(x, y, z, here)
+            return ok
+        finally:
+            self._log_end(ok, None if ok else ((self._attempt.data.get('failed_in') if self._attempt else None) or 'place'), None)
+
+    def _place_impl(self, x=None, y=None, z=None, here=False):
         """Put the held object down: carry it (object ~12 cm above the table) to the target, lower
         it to the height it stood at when it was picked, open the gripper, back straight up.
         Every move is a guarded cartesian move; any failure stops with the object still held."""
@@ -1188,6 +1280,12 @@ class ArmControllerNode(Node):
                 return self._refuse(f'place: the carry path passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
         self.get_logger().info(
             f'place: object to ({tx:.3f},{ty:.3f}); flange carry z={carry_z:.3f}, set-down z={set_z:.3f}')
+        try:
+            self._log_note(target=[round(tx, 3), round(ty, 3)], carry_z=round(carry_z, 3), set_z=round(set_z, 3),
+                           carried_far=bool(far),
+                           neighbours=ol.neighbours(self._scene_obstacles(), (tx, ty)))
+        except Exception:
+            pass
         steps = []
         if g[2] < carry_z - 0.005:
             steps.append(('lift', lambda: self._move_verified(g[0], g[1], carry_z, 'lift')))
@@ -1229,6 +1327,7 @@ class ArmControllerNode(Node):
             self._publish_pp_status(f'place: {name}')
             if not action():
                 self.get_logger().error(f'place failed at: {name} — still holding the object')
+                self._log_note(failed_in=name)
                 return False
         self._publish_pp_status('place: release')
         if not self._open_gripper():
