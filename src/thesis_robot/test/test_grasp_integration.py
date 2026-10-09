@@ -129,3 +129,27 @@ def test_use_candidates_only_on_a_retry_unless_forced():
     assert acn.ArmControllerNode._use_candidates(n3) is True
     n4 = make_node({}, params={'grasp_candidates': False, 'grasp_retry_new_angle': False}, tried=[10.0])
     assert acn.ArmControllerNode._use_candidates(n4) is False
+
+
+def test_unknown_obstacles_join_the_checks_only_when_enabled_and_confirmed():
+    import time as _t
+    n = types.SimpleNamespace()
+    params = {'use_unknown_obstacles': False, 'unknown_obstacles_min_cameras': 2}
+    n.get_parameter = lambda k: Param(params[k])
+    n.latest_scene = {}
+    n._unknown = (_t.monotonic(), [
+        {'x': 0.4, 'y': 0.1, 'height': 0.12, 'confirmed': True},
+        {'x': 0.2, 'y': -0.2, 'height': 0.05, 'confirmed': False}])
+    n._unknown_list = lambda confirmed_only=False: acn.ArmControllerNode._unknown_list(n, confirmed_only)
+    f = acn.ArmControllerNode._scene_obstacles
+    assert f(n) == []                                                     # flag off: nothing joins
+    params['use_unknown_obstacles'] = True
+    assert f(n) == [('unknown object', 0.4, 0.1)]                         # on: only the camera-confirmed one
+    assert f(n, min_height=0.2) == []                                     # lower than the carried object's underside
+    params['unknown_obstacles_min_cameras'] = 1
+    assert len(f(n)) == 2                                                 # one camera is enough when asked
+    n._unknown = (_t.monotonic() - 10.0, n._unknown[1])
+    assert f(n) == []                                                     # a silent guard (10 s old) adds nothing
+    near = acn.ArmControllerNode._unknown_near(types.SimpleNamespace(_unknown_list=lambda confirmed_only=False: [
+        {'x': 0.4, 'y': 0.1, 'height': 0.12, 'confirmed': True}]), (0.35, 0.1), 0.3)
+    assert near[0]['confirmed'] is True and near[0]['d'] == pytest.approx(0.05, abs=1e-3)

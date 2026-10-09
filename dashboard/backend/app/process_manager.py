@@ -272,6 +272,10 @@ class ProcessManager:
                        else 'none found (already clean).'})
 
         time.sleep(1.0)
+        if 'oakd_driver' in config.disabled_camera_procs():
+            steps.append({'step': 'start this repo\'s OAK-D driver (640x400)', 'ok': True,
+                          'message': 'skipped: the OAK-D is listed in config/disabled_cameras.txt'})
+            return steps
         ok, msg = self.start('oakd_driver')
         steps.append({'step': 'start this repo\'s OAK-D driver (640x400)', 'ok': ok, 'message': msg})
 

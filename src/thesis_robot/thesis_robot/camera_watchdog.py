@@ -25,7 +25,10 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
-STALE_SEC = 6.0
+# A real unplug/replug takes longer than this. A shorter limit false-flagged BOTH cameras (2026-10-09, three times in an
+# hour) whenever the dashboard backend was restarted: killing it leaves a dead reader on the cameras' reliable image
+# topics and the driver stalls for ~6-10 s, which looked like an unplug and blocked the cameras' detections.
+STALE_SEC = 15.0
 CHECK_PERIOD_SEC = 0.5
 FLAG_DIR = os.path.expanduser('~/.ros')
 

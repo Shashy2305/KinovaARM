@@ -32,6 +32,7 @@ setup(
             'audio_node           = thesis_robot.audio_node:main',
             'arm_controller       = thesis_robot.arm_controller_node:main',
             'camera_tf_broadcaster = thesis_robot.static_tf_broadcaster:main',
+            'obstacle_guard       = thesis_robot.obstacle_guard_node:main',
         ],
     },
 )

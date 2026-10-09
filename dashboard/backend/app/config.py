@@ -156,6 +156,15 @@ PROCESSES = {
         'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot wrist_detection',
         'signature': 'thesis_robot/lib/thesis_robot/wrist_detection',
     },
+    'obstacle_guard': {
+        'label': 'Unknown-obstacle guard (depth)',
+        'category': 'perception',
+        'hardware_affecting': False,
+        # run as a module so it works without a rebuild; publishes /unknown_obstacles (the arm only uses it when
+        # arm_controller's use_unknown_obstacles is on)
+        'cmd': f'{ROS_ENV_CMD} python3 -m thesis_robot.obstacle_guard_node',
+        'signature': 'thesis_robot.obstacle_guard_node',
+    },
     'scene_graph_node': {
         'label': 'Scene graph (fusion)',
         'category': 'perception',
@@ -194,6 +203,28 @@ PROCESSES = {
 # (seconds) after each before moving on. Robot/cameras bringup are left
 # out deliberately -- those need a human confirming robot_ip/E-stop/etc,
 # see the dashboard's bring-up checklist copy.
+# A camera listed in config/disabled_cameras.txt (the OAK-D, parked because its USB link is marginal) must not have its
+# driver, TF broadcaster or detector started: they only burn CPU and USB for a stream nobody uses (the OAK detection
+# node alone took ~45% of a core while the watchdog showed the camera as disabled).
+PROCS_OF_CAMERA = {
+    'oakd': ('oakd_driver', 'oakd_tf_broadcaster', 'object_detection'),
+}
+
+
+def disabled_camera_procs():
+    """Process ids that belong to cameras listed in config/disabled_cameras.txt."""
+    path = os.path.join(REPO_ROOT, 'config', 'disabled_cameras.txt')
+    try:
+        with open(path) as f:
+            names = {ln.strip() for ln in f if ln.strip() and not ln.strip().startswith('#')}
+    except OSError:
+        return set()
+    out = set()
+    for n in names:
+        out.update(PROCS_OF_CAMERA.get(n, ()))
+    return out
+
+
 FULL_BRINGUP_ORDER = [
     ('oakd_tf_broadcaster', 1.0),
     ('realsense_tf_broadcaster', 1.0),
@@ -202,6 +233,7 @@ FULL_BRINGUP_ORDER = [
     ('realsense_detection', 2.0),
     ('wrist_detection', 2.0),
     ('scene_graph_node', 1.0),
+    ('obstacle_guard', 1.0),
     ('llm_planner_node', 1.0),
     ('audio_node', 3.0),
     ('arm_controller', 1.0),

@@ -87,6 +87,10 @@ class ArmControllerNode(Node):
         self.declare_parameter('grasp_candidates', False)        # rank directions from the object's shape on EVERY attempt
         self.declare_parameter('grasp_retry_new_angle', True)    # on a retry, close along a NEW direction, not the failed one
         self.declare_parameter('use_shape_width', False)         # preshape from the measured width instead of the table
+        # Things on the table that the detectors cannot name, from depth (obstacle_guard_node, /unknown_obstacles).
+        # OFF: they are only logged. ON: confirmed ones (seen by 2+ cameras) join the carry and finger-sweep checks.
+        self.declare_parameter('use_unknown_obstacles', False)
+        self.declare_parameter('unknown_obstacles_min_cameras', 2)
         self.declare_parameter('outcome_log', True)   # one JSON line per pick/place/command in ~/.ros/outcomes
         # Re-time every verified path along a minimum-jerk curve (zero speed AND acceleration at both ends, no
         # acceleration steps) instead of the planner's trapezoid. Settable at run time for A/B tests.
@@ -129,6 +133,8 @@ class ArmControllerNode(Node):
         self.pp_status_pub = self.create_publisher(String, '/pick_place_status', 10)
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
         self.create_subscription(String, '/scene_snapshot', self._scene_callback, 10)
+        self.create_subscription(String, '/unknown_obstacles', self._on_unknown_obstacles, 5)
+        self._unknown = (0.0, [])
         self.create_subscription(JointState, '/joint_states', self._on_joint_state, 10)
         self.create_subscription(String, '/wrist_pixel_detections', self._on_wrist_dets, 5)
         self.create_subscription(CameraInfo, '/camera/color/camera_info', self._on_wrist_info, 1)
@@ -752,7 +758,7 @@ class ArmControllerNode(Node):
                 neighbours=ol.neighbours(self._scene_obstacles(exclude_id=object_id), (ox, oy)),
                 grasp_z=round(grasp_z, 3), hover_z=round(hover_z, 3),
                 scene_conf=round(float((self.latest_scene.get(object_id) or {}).get('confidence', 0) or 0), 2),
-                tip_clearance_m=tip_clear)
+                tip_clearance_m=tip_clear, unknown_near=self._unknown_near((ox, oy)))
         except Exception:
             pass
 
@@ -1296,6 +1302,25 @@ class ArmControllerNode(Node):
             return False
         return 0.08 < f < 0.65
 
+    def _on_unknown_obstacles(self, msg):
+        try:
+            self._unknown = (time.monotonic(), json.loads(msg.data).get('obstacles', []))
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    def _unknown_list(self, confirmed_only=False):
+        """Fresh unknown obstacles [{'x','y','height','confirmed',...}] (empty if the guard is silent for 3 s)."""
+        t, obs = getattr(self, '_unknown', (0.0, []))
+        if time.monotonic() - t > 3.0:
+            return []
+        return [o for o in obs if o.get('confirmed') or not confirmed_only]
+
+    def _unknown_near(self, xy, radius=0.30):
+        """Unknown obstacles within `radius` of xy, for the outcome log (whatever the use_unknown_obstacles flag says)."""
+        return [{'x': round(o['x'], 3), 'y': round(o['y'], 3), 'h': round(o['height'], 3), 'confirmed': bool(o.get('confirmed')),
+                 'd': round(math.hypot(o['x'] - xy[0], o['y'] - xy[1]), 3)}
+                for o in self._unknown_list() if math.hypot(o['x'] - xy[0], o['y'] - xy[1]) <= radius]
+
     def _scene_obstacles(self, exclude_id=None, min_height=0.0, min_conf=0.65):
         """[(label, x, y)] of every real, non-stale object on the table whose top is above min_height
         (metres over the table), whether or not the arm could pick it."""
@@ -1314,6 +1339,11 @@ class ArmControllerNode(Node):
             if ws.OBJECT_HEIGHT_M.get(o.get('label'), ws.DEFAULT_HEIGHT_M) < min_height:
                 continue
             out.append((o.get('label', oid), x, y))
+        if bool(self.get_parameter('use_unknown_obstacles').value):
+            need = int(self.get_parameter('unknown_obstacles_min_cameras').value)
+            for u in self._unknown_list(confirmed_only=need >= 2):
+                if float(u.get('height', 0.0)) >= min_height:
+                    out.append(('unknown object', float(u['x']), float(u['y'])))
         return out
 
     def _carry_path_blocked(self, start_xy, end_xy, min_height=None):
@@ -1428,7 +1458,7 @@ class ArmControllerNode(Node):
             f'place: object to ({tx:.3f},{ty:.3f}); flange carry z={carry_z:.3f}, set-down z={set_z:.3f}')
         try:
             self._log_note(target=[round(tx, 3), round(ty, 3)], carry_z=round(carry_z, 3), set_z=round(set_z, 3),
-                           carried_far=bool(far),
+                           carried_far=bool(far), unknown_near=self._unknown_near((tx, ty)),
                            neighbours=ol.neighbours(self._scene_obstacles(), (tx, ty)))
         except Exception:
             pass

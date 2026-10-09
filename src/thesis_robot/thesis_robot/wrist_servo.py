@@ -175,6 +175,7 @@ def match_detection(cands, label, expected_xy, same_tol=None):
 OBJECT_RADIUS_M = {'cup': 0.045, 'mug': 0.045, 'bowl': 0.07, 'bottle': 0.035, 'mouse': 0.035, 'cell phone': 0.04,
                    'remote': 0.03, 'book': 0.10, 'scissors': 0.05, 'vase': 0.05}
 DEFAULT_RADIUS_M = 0.04
+OBJECT_RADIUS_M['unknown object'] = 0.06      # an unidentified obstacle from the depth guard: assume a hand-sized footprint
 FINGER_HALF_SPAN_M = 0.095     # open fingers reach this far (outer edge) either side of the grasp centre
 FINGER_HALF_WIDTH_M = 0.02     # finger/pad half width along the other horizontal axis
 SWEEP_MARGIN_M = 0.015
