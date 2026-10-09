@@ -1,0 +1,14 @@
+tilt    0 deg  azimuth    0 deg : 20/20 targets reachable   {'no_ik': 0, 'swing': 0, 'low_pad': 0, 'limit': 1, 'line': 0}
+tilt   10 deg  azimuth    0 deg : 20/20 targets reachable   {'no_ik': 0, 'swing': 1, 'low_pad': 0, 'limit': 3, 'line': 0}
+tilt   10 deg  azimuth   90 deg : 20/20 targets reachable   {'no_ik': 0, 'swing': 0, 'low_pad': 0, 'limit': 0, 'line': 0}
+tilt   10 deg  azimuth  180 deg : 18/20 targets reachable   {'no_ik': 6, 'swing': 1, 'low_pad': 0, 'limit': 1, 'line': 0}
+tilt   10 deg  azimuth  270 deg : 20/20 targets reachable   {'no_ik': 0, 'swing': 1, 'low_pad': 0, 'limit': 0, 'line': 0}
+tilt   20 deg  azimuth    0 deg : 17/20 targets reachable   {'no_ik': 4, 'swing': 5, 'low_pad': 0, 'limit': 3, 'line': 0}
+tilt   20 deg  azimuth   90 deg : 19/20 targets reachable   {'no_ik': 2, 'swing': 0, 'low_pad': 21, 'limit': 0, 'line': 0}
+tilt   20 deg  azimuth  180 deg : 15/20 targets reachable   {'no_ik': 11, 'swing': 0, 'low_pad': 3, 'limit': 6, 'line': 0}
+tilt   20 deg  azimuth  270 deg : 19/20 targets reachable   {'no_ik': 3, 'swing': 3, 'low_pad': 19, 'limit': 0, 'line': 0}
+tilt   30 deg  azimuth    0 deg : 15/20 targets reachable   {'no_ik': 16, 'swing': 1, 'low_pad': 2, 'limit': 1, 'line': 0}
+tilt   30 deg  azimuth   90 deg : 19/20 targets reachable   {'no_ik': 4, 'swing': 0, 'low_pad': 38, 'limit': 0, 'line': 0}
+tilt   30 deg  azimuth  180 deg : 10/20 targets reachable   {'no_ik': 25, 'swing': 2, 'low_pad': 7, 'limit': 6, 'line': 0}
+tilt   30 deg  azimuth  270 deg : 12/20 targets reachable   {'no_ik': 4, 'swing': 11, 'low_pad': 34, 'limit': 7, 'line': 0}
+saved /home/shash/.ros/angled_study/study_low_line.json

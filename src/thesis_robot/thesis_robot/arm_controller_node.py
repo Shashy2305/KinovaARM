@@ -6,6 +6,7 @@ Subscribes to:  /action_plan
 Publishes to:   /arm_status, /pick_place_status
 """
 import rclpy, json, math, time, threading
+import numpy as np
 import tf2_ros
 import tf2_geometry_msgs
 from geometry_msgs.msg import PointStamped
@@ -17,6 +18,7 @@ from thesis_robot import motion_utils as mu
 from thesis_robot import outcome_log as ol
 from thesis_robot import grasp_planner as gp
 from thesis_robot import grasp_policy as gpol
+from thesis_robot import angled_approach as aa
 from thesis_robot import safety_geometry as sg
 from thesis_robot import trajectory_smoothing as ts
 from thesis_robot import wrist_servo as ws
@@ -87,6 +89,14 @@ class ArmControllerNode(Node):
         # Grasp-angle planning (grasp_planner.py): which direction the fingers close along.
         self.declare_parameter('grasp_candidates', False)        # rank directions from the object's shape on EVERY attempt
         self.declare_parameter('grasp_retry_new_angle', True)    # on a retry, close along a NEW direction, not the failed one
+        # Angled (tilted-tool) approach, see docs/ANGLED_APPROACH.md. 0 = straight down (the default, unchanged).
+        # approach_tilt_deg: lean the tool this much for the final approach of every pick (capped at 30; flat/low objects only).
+        # retry_tilt_deg: the same, but only for a RETRY after a failed grip (a genuinely different entry).
+        # tilt_azimuth_deg: which way the fingertips lead (0 = +x, 90 = +y, 270 = -y); -1 = automatic (lean toward the nearest neighbour,
+        # so the gripper body shifts away from it, +y first: the study found +-y the most reachable).
+        self.declare_parameter('approach_tilt_deg', 0.0)
+        self.declare_parameter('retry_tilt_deg', 0.0)
+        self.declare_parameter('tilt_azimuth_deg', -1.0)
         self.declare_parameter('collect_training_samples', True)  # save a labelled wrist frame before each descent, keep it if the pick succeeds
         self.declare_parameter('grasp_policy', False)            # bias the ranking by what past outcomes say works (grasp_policy.py)
         self.declare_parameter('use_shape_width', False)         # preshape from the measured width instead of the table
@@ -739,6 +749,32 @@ class ArmControllerNode(Node):
             return False
         return False
 
+    TILT_CAP_DEG = 30.0
+    TILT_STANDOFF_M = 0.10        # the pregrasp sits this far back along the tool axis
+
+    def _tilt_for(self, label, centre_xy, object_id):
+        """(tilt_deg, azimuth_deg) for this attempt's final approach, or None for the usual straight-down one."""
+        t = float(self.get_parameter('approach_tilt_deg').value)
+        if int(getattr(self, '_pick_attempt', 1)) >= 2:
+            t = max(t, float(self.get_parameter('retry_tilt_deg').value))
+        t = min(max(t, 0.0), self.TILT_CAP_DEG)
+        if t < 5.0 or ws.OBJECT_HEIGHT_M.get(label, ws.DEFAULT_HEIGHT_M) >= ws.TALL_OBJECT_M:
+            return None
+        az = float(self.get_parameter('tilt_azimuth_deg').value)
+        if az < 0:
+            az = 90.0
+            near = [(math.hypot(x - centre_xy[0], y - centre_xy[1]), math.degrees(math.atan2(y - centre_xy[1], x - centre_xy[0])) % 360.0)
+                    for _l, x, y in self._scene_obstacles(exclude_id=object_id)]
+            near = [n for n in near if n[0] < 0.25]
+            if near:
+                bearing = min(near)[1]
+                az = min((0.0, 90.0, 270.0), key=lambda c: abs((c - bearing + 180.0) % 360.0 - 180.0))
+        return t, az % 360.0
+
+    def _tilted_pose(self, tip_xyz, tilt, az):
+        """(pregrasp flange, grasp flange, axis) for a tilted approach whose fingertips end at tip_xyz."""
+        return aa.approach_poses(tip_xyz, tilt, az, standoff=self.TILT_STANDOFF_M)
+
     def _pick_once(self, object_id, pos, approach_z):
         if not (self.dry_run or self.moveit2 is None) and self._is_holding():
             self._refuse('pick: the gripper is already holding something — put it down first '
@@ -833,8 +869,49 @@ class ArmControllerNode(Node):
                     return False
             return False
 
-        def descend():
+        def descend_vertical():
             return self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True, min_flange_z=low_floor)
+
+        tilt_state = {'on': None}                       # {'tilt', 'az', 'pre', 'grasp'} once the tool is leaning
+
+        def descend():
+            plan = self._tilt_for(label, centred['xy'], object_id) if not (self.dry_run or self.moveit2 is None) else None
+            if plan is None:
+                return descend_vertical()
+            tilt, az = plan
+            tip = np.array([centred['xy'][0], centred['xy'][1], grasp_z - sg.TCP_REACH_M])
+            pre, grasp_fl, axis = self._tilted_pose(tip, tilt, az)
+            inside = all(sg.PLAN_X_RANGE[0] <= p[0] <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= p[1] <= sg.PLAN_Y_RANGE[1]
+                         for p in (pre, grasp_fl))
+            if not inside:
+                self.get_logger().info(f'pick: a {tilt:.0f} deg approach from azimuth {az:.0f} would leave the planner limits - straight down instead')
+                return descend_vertical()
+            try:
+                quat = aa.tilted_from(self._actual_tool_quat(), tilt, az)
+                goal, _q = self._solve_goal_joints([float(v) for v in pre], quat, False)
+            except Exception as e:
+                self.get_logger().info(f'pick: no tilted approach ({e}) - straight down instead')
+                return descend_vertical()
+            self.get_logger().info(f'pick: coming in at {tilt:.0f} deg leaning toward azimuth {az:.0f} (fingertips lead, the gripper body stays behind)')
+            self._log_event('tilt', tilt=round(tilt, 1), az=round(az, 1))
+            if not self._guarded_move(geom, 'tilt in', joint_positions=goal):
+                return False
+            tilt_state['on'] = {'tilt': tilt, 'az': az, 'pre': pre, 'grasp': grasp_fl}
+            return self._move_to(float(grasp_fl[0]), float(grasp_fl[1]), float(grasp_fl[2]), cartesian=True,
+                                 min_flange_z=float(grasp_fl[2]) - 0.02)
+
+        def lift_small():
+            t = tilt_state['on']
+            if t is None:
+                return self._move_to(centred['xy'][0], centred['xy'][1], grasp_z + 0.03, cartesian=True)
+            return self._move_to(float(t['pre'][0]), float(t['pre'][1]), float(t['pre'][2]), cartesian=True,
+                                 min_flange_z=float(t['grasp'][2]) - 0.02)            # straight back up the tool axis
+
+        def lift_full():
+            if tilt_state['on'] is not None:                                        # stand the tool upright over the object, at the lift height
+                tilt_state['on'] = None
+                return self._move_to(centred['xy'][0], centred['xy'][1], lift_z, max_flange_z=ws.HOVER_MAX_Z)
+            return self._move_to(centred['xy'][0], centred['xy'][1], lift_z, cartesian=True, max_flange_z=ws.HOVER_MAX_Z)
 
         steps = [
             ('open gripper', lambda: self._open_gripper()),
@@ -847,10 +924,9 @@ class ArmControllerNode(Node):
             ('descend',      descend),
             ('close gripper', lambda: self._close_gripper()),
             ('check the grip', lambda: self._check_grip(object_id)),
-            ('lift 3 cm',    lambda: self._move_to(centred['xy'][0], centred['xy'][1], grasp_z + 0.03, cartesian=True)),
+            ('lift 3 cm',    lift_small),
             ('check the grip (3 cm up)', lambda: self._check_grip(object_id)),
-            ('lift',         lambda: self._move_to(centred['xy'][0], centred['xy'][1], lift_z, cartesian=True,
-                                                    max_flange_z=ws.HOVER_MAX_Z)),
+            ('lift',         lift_full),
             ('check it is still held', lambda: self._check_grip(object_id)),
         ]
         for name, action in steps:

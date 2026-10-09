@@ -4,7 +4,7 @@ Angled-approach feasibility study. READ-ONLY: asks MoveIt's /compute_ik and /com
 
 For a grid of fingertip targets on the table it asks: can the gripper reach the grasp pose with the tool tilted by
 `tilt` degrees from vertical, leading toward azimuth `az` (the direction the fingertips point toward), and the pregrasp
-pose `standoff` metres back along the tool axis? A pose counts as feasible when IK finds a solution, the joints stay
+pose `standoff` metres back along the tool axis? A pose counts as feasible when IK finds a solution, MoveIt can follow the straight line from the pregrasp to the grasp (>= 98%), the joints stay
 inside the planner's limits, the swing from the seed pose is acceptable, and FK shows both finger pads at least 5 cm
 above the table at the grasp AND the pregrasp.
 
@@ -20,7 +20,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import RobotState
-from moveit_msgs.srv import GetPositionFK, GetPositionIK
+from moveit_msgs.srv import GetCartesianPath, GetPositionFK, GetPositionIK
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation as R
 from sensor_msgs.msg import JointState
@@ -40,6 +40,7 @@ class Study(Node):
         super().__init__('angled_approach_study')
         self.ik = self.create_client(GetPositionIK, '/compute_ik')
         self.fk = self.create_client(GetPositionFK, '/compute_fk')
+        self.cart = self.create_client(GetCartesianPath, '/compute_cartesian_path')
         self.js = None
         self.create_subscription(JointState, '/joint_states', lambda m: setattr(self, 'js', dict(zip(m.name, m.position))), 5)
 
@@ -77,6 +78,25 @@ class Study(Node):
         sol = dict(zip(res.solution.joint_state.name, res.solution.joint_state.position))
         return [sol[j] for j in JOINTS]
 
+    def cartesian_fraction(self, start_q, pos, quat):
+        """Fraction of the straight-line (Cartesian) path from the start joints to the pose that MoveIt can follow
+        with the tool orientation held (1.0 = all of it)."""
+        req = GetCartesianPath.Request()
+        req.header.frame_id = 'base_link'
+        req.group_name = 'manipulator'
+        req.link_name = 'end_effector_link'
+        req.start_state = self.seed_state(start_q)
+        ps = PoseStamped()
+        ps.header.frame_id = 'base_link'
+        ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = [float(v) for v in pos]
+        ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z, ps.pose.orientation.w = [float(v) for v in quat]
+        req.waypoints = [ps.pose]
+        req.max_step = 0.01
+        req.jump_threshold = 0.0
+        req.avoid_collisions = False
+        res = self.call(self.cart, req, 5.0)
+        return 0.0 if res is None else float(res.fraction)
+
     def pad_heights(self, q):
         req = GetPositionFK.Request()
         req.header.frame_id = 'base_link'
@@ -112,7 +132,7 @@ def main():
     for tilt in args.tilts:
         for az in (args.azimuths if tilt > 0 else [0.0]):
             ok = total = 0
-            reasons = {'no_ik': 0, 'swing': 0, 'low_pad': 0, 'limit': 0}
+            reasons = {'no_ik': 0, 'swing': 0, 'low_pad': 0, 'limit': 0, 'line': 0}
             for x in xs:
                 for y in ys:
                     total += 1
@@ -141,6 +161,10 @@ def main():
                                 why = 'low_pad'
                                 break
                             solved[name] = sol
+                        if why is None:
+                            frac = n.cartesian_fraction(solved['pregrasp'], poses['grasp'], quat)
+                            if frac < 0.98:
+                                why = 'line'
                         if why is None:
                             good = True
                             break

@@ -259,3 +259,102 @@ def test_training_requests_are_valid_json_with_the_pixel_and_the_label(node, wor
     assert run_pick(node) is True
     assert sent[0]['action'] == 'save' and sent[0]['label'] == 'mouse' and sent[0]['u'] == 321 and sent[0]['v'] == 222
     assert sent[-1]['action'] == 'commit' and sent[-1]['id'] == sent[0]['id']
+
+
+# ── the optional tilted approach (all parameters default to 0 = straight down) ─────────────────────────────────────────
+from thesis_robot import angled_approach as aa  # noqa: E402
+
+GRASP_QUAT = [0.773, 0.635, -0.015, 0.019]
+
+
+def set_params(node, **kw):
+    from rclpy.parameter import Parameter
+    node.set_parameters([Parameter(k, Parameter.Type.DOUBLE, float(v)) for k, v in kw.items()])
+
+
+@pytest.fixture
+def tilt_world(node, world, monkeypatch):
+    world.guarded, world.ik_calls = [], []
+    monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: list(GRASP_QUAT))
+
+    def fake_ik(position, quat, allow_yaw):
+        world.ik_calls.append((tuple(round(float(v), 4) for v in position), [round(v, 4) for v in quat], allow_yaw))
+        return [0.0] * 7, quat
+    monkeypatch.setattr(node, '_solve_goal_joints', fake_ik)
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False: (world.guarded.append(label) or True))
+    yield world
+    set_params(node, approach_tilt_deg=0.0, retry_tilt_deg=0.0, tilt_azimuth_deg=-1.0)
+
+
+def vertical_grasp_move(node, world):
+    """The cartesian descent target of an ordinary pick (flange xyz)."""
+    assert run_pick(node) is True
+    return [m for m in world.moves if m[3] == 'cart'][0]
+
+
+def test_default_is_straight_down_nothing_leans(node, tilt_world):
+    assert run_pick(node) is True
+    assert tilt_world.guarded == [] and tilt_world.ik_calls == []
+
+
+def test_a_tilted_pick_goes_tilt_in_then_down_the_axis_back_up_it_and_stands_upright(node, tilt_world):
+    # reference: where the vertical grasp puts the flange
+    set_params(node, approach_tilt_deg=0.0)
+    ref = vertical_grasp_move(node, tilt_world)
+    tip_z = ref[2] - aa.TCP_REACH_M
+    tilt_world.moves.clear(); tilt_world.grippers.clear(); node._held = None
+    set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=90.0)
+    assert run_pick(node) is True
+    assert tilt_world.guarded == ['tilt in']
+    pre, grasp, axis = aa.approach_poses([0.40, 0.0, tip_z], 20.0, 90.0, standoff=0.10)
+    assert np.allclose(tilt_world.ik_calls[0][0], pre, atol=2e-3) and tilt_world.ik_calls[0][2] is False
+    carts = [m for m in tilt_world.moves if m[3] == 'cart']
+    # descend along the tool axis: the fingertips arrive exactly where the vertical grasp would have put them
+    assert np.allclose(aa.tip_for_flange(carts[0][:3], axis), [0.40, 0.0, tip_z], atol=2e-3)
+    assert carts[0][1] < 0.0 < pre[2] and carts[0][2] < ref[2]                      # the flange sits BEHIND the tips, lower than a vertical grasp
+    # after closing: straight back up the axis to the pregrasp, then upright over the object at the lift height (a PTP)
+    assert np.allclose(carts[1][:3], pre, atol=2e-3)
+    assert tilt_world.moves[-1][3] == 'ptp' and tilt_world.moves[-1][:2] == (0.4, 0.0)
+    names = [g[1] for g in tilt_world.grippers]
+    assert names.index('close_gripper') > 0 and names[-1] == 'close_gripper'
+
+
+def test_no_tilted_approach_falls_back_to_straight_down_when_ik_fails(node, tilt_world, monkeypatch):
+    def no_ik(position, quat, allow_yaw):
+        raise RuntimeError('no collision-free IK solution for that pose')
+    monkeypatch.setattr(node, '_solve_goal_joints', no_ik)
+    set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=90.0)
+    assert run_pick(node) is True
+    assert tilt_world.guarded == []                                              # never leaned
+    assert [m for m in tilt_world.moves if m[3] == 'cart']                        # the usual straight descent happened
+
+
+def test_leaving_the_planner_limits_falls_back_to_straight_down(node, tilt_world):
+    node.latest_scene['mouse_00'].update(x=0.55)
+    set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=180.0)             # leaning toward -x pushes the flange to x > 0.6
+    assert run_pick(node) is True
+    assert tilt_world.guarded == []
+
+
+def test_the_tilt_is_capped_and_tall_objects_are_never_tilted(node, tilt_world):
+    set_params(node, approach_tilt_deg=70.0, tilt_azimuth_deg=90.0)
+    t = node._tilt_for('mouse', (0.4, 0.0), 'mouse_00')
+    assert t == (30.0, 90.0)                                                      # capped at 30
+    assert node._tilt_for('bottle', (0.4, 0.0), 'bottle_00') is None              # tall: grasped on the body, no lean
+
+
+def test_automatic_azimuth_leans_toward_the_nearest_neighbour_snapped_to_a_reachable_azimuth(node, tilt_world):
+    set_params(node, approach_tilt_deg=15.0, tilt_azimuth_deg=-1.0)
+    assert node._tilt_for('mouse', (0.4, 0.0), 'mouse_00') == (15.0, 90.0)       # nothing near: +y by default
+    node.latest_scene['bowl_00'] = {'label': 'bowl', 'x': 0.40, 'y': -0.18, 'z': 0.03, 'confidence': 0.9, 'reachable': True, 'stale': False}
+    assert node._tilt_for('mouse', (0.4, 0.0), 'mouse_00') == (15.0, 270.0)      # a bowl at -y: lean toward it, body stays at +y
+    node.latest_scene['bowl_00'].update(x=0.58, y=0.0)
+    assert node._tilt_for('mouse', (0.4, 0.0), 'mouse_00') == (15.0, 0.0)        # a bowl at +x
+
+
+def test_retry_tilt_applies_to_the_second_attempt_only(node, tilt_world):
+    set_params(node, approach_tilt_deg=0.0, retry_tilt_deg=15.0, tilt_azimuth_deg=90.0)
+    tilt_world.grips = [False, True, True, True]
+    assert run_pick(node) is True
+    assert tilt_world.guarded == ['tilt in']                                      # once: attempt 2
+    assert len(tilt_world.ik_calls) == 1

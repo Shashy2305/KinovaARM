@@ -1,6 +1,6 @@
 # Angled (tilted-tool) approach: findings and integration design (2026-10-09)
 
-Status: **geometry module + read-only feasibility study done; NOT wired into the pick.** The arm has only ever come
+Status: **geometry module, read-only feasibility study (endpoints AND the straight line) and the pick-sequence wiring are done, all parameters default OFF; the sequence is verified in the flow harness (fake hardware) but has NEVER moved the arm.** The arm has only ever come
 straight down. This document says what a tilt can and cannot buy, what the arm can actually reach, and the exact way to
 integrate it so that it can be tested step by step with the arm live and someone watching.
 
@@ -46,9 +46,16 @@ which already carries the wrist alignment), `approach_poses(tip, tilt, az, stand
 so the controller's vertical "flange floor" rule (table + 0.215 + 0.05) would wrongly refuse a tilted grasp: the path check's
 PAD rule (pads >= 5 cm above the table) is the one that applies, and `_move_to(..., min_flange_z=...)` must be lowered for it.
 
-## 4. Integration design (to do with the arm live)
+### Cartesian-line check (added later the same night)
+The study now also asks MoveIt's `/compute_cartesian_path` for the straight line from the pregrasp to the grasp (>= 98% followable). Result for fingertips
+3 cm above the table, tilts 0/10/20/30: **line failures 0 in every cell**; whenever both ends have an IK solution the straight approach exists.
+Reachable targets (of 20): 10 deg: 20/20 (az 0, 90, 270), 18/20 (az 180); 20 deg: 17 (az 0), 19 (az 90), 15 (az 180), 19 (az 270); 30 deg: 15, 19, 10, 12.
+Log: `docs/data/angled_study_2026-10-09_tip3cm_with_line_check.log`. **Recommended first live values: 10 deg, then 20 deg, leaning toward +-y.**
 
-Parameters (all default OFF): `approach_tilt_deg` (0), `retry_tilt_deg` (0), `tilt_azimuth` ('auto').
+## 4. Integration (done, parameters OFF) - the sequence the code runs (`_pick_once`, `_tilt_for`, `_tilted_pose`)
+
+Parameters (all default OFF): `approach_tilt_deg` (0), `retry_tilt_deg` (0, retries only), `tilt_azimuth_deg` (-1 = automatic). Capped at 30 deg; never for tall objects;
+falls back to the straight-down descent whenever IK fails or the pregrasp/grasp flange would leave the planner's x/y limits (nothing has moved yet at that point).
 
 Pick sequence with a tilt (replaces `descend` and the three lifts, everything before `centre` is unchanged):
 1. open, raise, hover, align, centre, fingers_clear: as today (vertical tool, over the object).
