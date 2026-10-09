@@ -15,6 +15,7 @@ from std_msgs.msg import String
 
 from thesis_robot import motion_utils as mu
 from thesis_robot import outcome_log as ol
+from thesis_robot import grasp_planner as gp
 from thesis_robot import safety_geometry as sg
 from thesis_robot import trajectory_smoothing as ts
 from thesis_robot import wrist_servo as ws
@@ -82,6 +83,10 @@ class ArmControllerNode(Node):
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
+        # Grasp-angle planning (grasp_planner.py): which direction the fingers close along.
+        self.declare_parameter('grasp_candidates', False)        # rank directions from the object's shape on EVERY attempt
+        self.declare_parameter('grasp_retry_new_angle', True)    # on a retry, close along a NEW direction, not the failed one
+        self.declare_parameter('use_shape_width', False)         # preshape from the measured width instead of the table
         self.declare_parameter('outcome_log', True)   # one JSON line per pick/place/command in ~/.ros/outcomes
         # Re-time every verified path along a minimum-jerk curve (zero speed AND acceleration at both ends, no
         # acceleration steps) instead of the planner's trapezoid. Settable at run time for A/B tests.
@@ -696,6 +701,7 @@ class ArmControllerNode(Node):
         fingers will not hit a neighbour, descend straight down, close, lift a little and check, lift. Any
         failed step fails the pick; if the wrist cannot see the object the arm does NOT descend. A grip that
         closes on air or loses the object on the lift is retried once (the object is looked up again)."""
+        self._tried_rho = []                          # closing directions tried so far, relative to the object
         for attempt in (1, 2):
             pos = self._lookup_object(object_id)
             if pos is None:
@@ -737,6 +743,8 @@ class ArmControllerNode(Node):
 
         centred = {'xy': (ox, oy)}
         tip_over_table = grasp_z - sg.TCP_REACH_M - geom['table_top_z']
+        self._pick_ctx = {'object_id': object_id, 'tip_over_table': tip_over_table}
+        self._shape_width_m = None
         try:
             self._log_begin(
                 'pick', object_id=object_id, label=label, xy=[round(ox, 3), round(oy, 3)], z=round(oz, 3),
@@ -768,7 +776,8 @@ class ArmControllerNode(Node):
             same = float(self.get_parameter('sweep_same_object_m').value)
             margin = float(self.get_parameter('sweep_margin_m').value)
             full_span = float(self.get_parameter('sweep_half_span_m').value)
-            narrow = ws.preshape_for(label)
+            measured = getattr(self, '_shape_width_m', None) if bool(self.get_parameter('use_shape_width').value) else None
+            narrow = ws.preshape_for(label, width_m=measured)
             for turned in (False, True):
                 axis = self._closing_axis_xy()
                 mid = self._pad_midpoint_xy(default=centred['xy'])
@@ -813,6 +822,7 @@ class ArmControllerNode(Node):
             ('turn the fingers away from any handle', lambda: self._align_for_handle(label, (ox, oy))),
             ('centre on the object (wrist camera)', center),
             ('check the open fingers are clear of its neighbours', fingers_clear),
+            ('record the grasp direction', lambda: self._record_grasp_axis(label, centred['xy'])),
             ('descend',      descend),
             ('close gripper', lambda: self._close_gripper()),
             ('check the grip', lambda: self._check_grip(object_id)),
@@ -961,6 +971,118 @@ class ArmControllerNode(Node):
         d = self._wrist_match(label, expected_xy, timeout)
         return None if d is None else (d['x1'], d['y1'], d['x2'], d['y2'])
 
+    # ── SHAPE-BASED GRASP DIRECTION ──────────────────────────────────
+    def _shape_now(self, label, expected_xy, timeout=2.0):
+        """(shape dict, camera distance to the object plane in m, fx) from a fresh wrist detection that carries
+        shape analysis, or None. The shape's lengths are pixels; distance and fx convert them."""
+        det = self._wrist_match(label, expected_xy, timeout=timeout)
+        if det is None or not det.get('shape') or self._wrist_K is None:
+            return None
+        geom, _ = sg.load_geometry()
+        if not geom:
+            return None
+        msg = self._wrist_dets[1] if self._wrist_dets else {}
+        try:
+            _, t_bc = self._tf_pose(BASE_LINK, msg['frame_id'], msg.get('stamp'))
+        except Exception:
+            return None
+        dist = float(t_bc[2]) - ws.center_plane_height(label, geom['table_top_z'])
+        if dist < 0.1:
+            return None
+        return det['shape'], dist, float(self._wrist_K[0][0])
+
+    def _record_grasp_axis(self, label, xy):
+        """Right before the descent: log the measured shape and remember which direction the fingers will close
+        along (relative to the object's long axis) so a retry can use another."""
+        if self.dry_run or self.moveit2 is None:
+            return True
+        try:
+            got = self._shape_now(label, xy)
+            if got is None:
+                return True
+            shape, dist, fx = got
+            prof, _ = gp.shape_to_metres(shape, dist, fx)
+            width = prof.get(0.0)
+            rho = gp.rho_of(0.0, shape['long_axis_deg'])
+            self._tried_rho.append(rho)
+            table_w = ws.GRIP_WIDTH_M.get(label)
+            self._log_event('shape', cls=shape['shape'], aspect=shape['aspect'], solidity=shape['solidity'],
+                            edge_support=shape['edge_support'], long_axis=shape['long_axis_deg'], rho=round(rho, 1),
+                            width_mm=None if width is None else round(1000 * width, 1),
+                            table_width_mm=None if table_w is None else round(1000 * table_w, 1),
+                            handle=(shape.get('handle') or {}).get('kind'))
+            self._shape_width_m = width
+        except Exception as e:
+            self.get_logger().warn(f'shape record failed: {e}')
+        return True
+
+    def _use_candidates(self):
+        retry = int(getattr(self, '_pick_attempt', 1)) >= 2 and bool(getattr(self, '_tried_rho', []))
+        return bool(self.get_parameter('grasp_candidates').value) or (
+            bool(self.get_parameter('grasp_retry_new_angle').value) and retry)
+
+    def _align_with_candidates(self, label, expected_xy, det):
+        """Choose the closing direction from the object's shape (flat contact, width, handle, neighbours) and, on
+        a retry, a direction that was NOT tried. Returns True/False when it handled the alignment, None to fall back
+        to the old short-side rule (no shape data, nothing fits, no turn needed is handled here as success)."""
+        shape = det.get('shape')
+        if not shape or self._wrist_K is None:
+            return None
+        got = self._shape_now(label, expected_xy)
+        if got is None:
+            return None
+        shape, dist, fx = got
+        prof, cont = gp.shape_to_metres(shape, dist, fx)
+        msg = self._wrist_dets[1]
+        try:
+            R_bc, _ = self._tf_pose(BASE_LINK, msg['frame_id'], msg.get('stamp'))
+        except Exception:
+            return None
+        ctx = getattr(self, '_pick_ctx', {}) or {}
+        obstacles = self._scene_obstacles(exclude_id=ctx.get('object_id'), min_height=max(0.0, ctx.get('tip_over_table', 0.0)))
+        full_span = float(self.get_parameter('sweep_half_span_m').value)
+        margin = float(self.get_parameter('sweep_margin_m').value)
+        same = float(self.get_parameter('sweep_same_object_m').value)
+
+        def blocked(phi):
+            v = R_bc @ [math.cos(math.radians(phi)), math.sin(math.radians(phi)), 0.0]
+            n = math.hypot(v[0], v[1])
+            if n < 1e-6:
+                return False
+            w = prof.get(float(phi))
+            span = full_span if w is None else min(full_span, (w + ws.PRESHAPE_CLEARANCE_M) / 2 + ws.FINGER_OUTER_EXTRA_M)
+            return ws.finger_sweep_blocker(expected_xy, (v[0] / n, v[1] / n), obstacles, same_object_m=same,
+                                           half_span=span, margin=margin) is not None
+        handle = shape.get('handle')
+        ranked = gp.rank_grasps(prof, cont, handle_bearing_deg=None if not handle else handle['bearing_deg'],
+                                tried_rho=list(getattr(self, '_tried_rho', [])), long_axis_deg=shape['long_axis_deg'],
+                                blocked=blocked)
+        if not ranked:
+            self.get_logger().info('align: no untried closing direction fits between the fingers - using the short-side rule')
+            self._log_event('grasp_candidates', n=0)
+            return None
+        best = ranked[0]
+        self._log_event('grasp_candidates', n=len(ranked), top=[{'phi': c['phi'], 'score': c['score'], 'w_mm': round(1000 * c['width_m'])} for c in ranked[:3]],
+                        tried=[round(t) for t in getattr(self, '_tried_rho', [])], chosen_delta=round(best['delta']))
+        self.get_logger().info(
+            f'align: closing direction {best["phi"]:.0f} deg in the image ({best["reason"]}, score {best["score"]:.2f}); '
+            f'turning the wrist {best["delta"]:+.0f} deg' + (f' (already tried: {[round(t) for t in self._tried_rho]})' if self._tried_rho else ''))
+        if abs(best['delta']) < ws.MIN_TURN_DEG:
+            return True
+        try:
+            q7 = self._current_joint_vector()[6]
+        except RuntimeError as e:
+            return self._refuse(str(e))
+        dq = getattr(self, '_yaw_sign', 1.0) * math.radians(best['delta'])
+        lim = mu.PLANNER_JOINT_LIMIT - 0.1
+        if abs(q7 + dq) > lim:
+            alt = dq - math.copysign(math.pi, dq)
+            if abs(q7 + alt) > lim:
+                self.get_logger().warn('align: that turn does not fit inside the joint-7 limit - using the short-side rule')
+                return None
+            dq = alt
+        return bool(self._rotate_wrist(dq))
+
     def _align_for_handle(self, label, expected_xy):
         """Turn the wrist so the object's SHORT side lies between the fingers (a mug's handle, a mouse's length,
         a phone). With the segmentation model the object's orientation is measured, so any angle works (a mouse
@@ -981,6 +1103,14 @@ class ArmControllerNode(Node):
             # flip three times (2026-10-06). The fingers straddle a round body at any angle.
             self.get_logger().info(f'align: the {label} is tall and round — no wrist turn')
             return True
+        if self._use_candidates():
+            try:
+                handled = self._align_with_candidates(label, expected_xy, det)
+            except Exception as e:
+                self.get_logger().warn(f'grasp candidates failed ({e}) - using the short-side rule')
+                handled = None
+            if handled is not None:
+                return handled
         if 'elong' not in det:
             return self._align_quarter_turn(label, (det['x1'], det['y1'], det['x2'], det['y2']))
         sign = getattr(self, '_yaw_sign', 1.0)

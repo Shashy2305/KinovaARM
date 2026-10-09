@@ -198,10 +198,11 @@ def gap_to_position(gap):
     return pts[-1][0]
 
 
-def preshape_for(label):
+def preshape_for(label, width_m=None):
     """(finger_joint position, outer half-span) to open the fingers to before coming down around `label`, or None
-    when its width is not known (those are approached fully open)."""
-    w = GRIP_WIDTH_M.get(label)
+    when its width is not known (those are approached fully open). width_m: a width MEASURED across the closing axis
+    (shape analysis); it replaces the table value."""
+    w = width_m if width_m is not None and 0.012 <= width_m <= 0.12 else GRIP_WIDTH_M.get(label)
     if w is None:
         return None
     gap = min(FINGER_GAP_TABLE[0][1], w + PRESHAPE_CLEARANCE_M)

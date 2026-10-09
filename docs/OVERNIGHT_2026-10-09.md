@@ -6,3 +6,4 @@ move-merging design, and a staged test plan. Everything that changes arm motion 
 
 Log (newest last):
 - 00:15 arm switched to Dry Run, work started.
+- 01:25 shape_analysis.py + grasp_planner.py done, tested (synthetic + real wrist frames), wrist_detection publishes det['shape'] (advisory). Pushed.
