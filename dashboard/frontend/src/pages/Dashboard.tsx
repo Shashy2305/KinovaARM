@@ -6,6 +6,7 @@ import { MultiCameraView } from '../components/MultiCameraView'
 import { NodeControlGrid } from '../components/NodeControlGrid'
 import { SceneView } from '../components/SceneView'
 import { SystemLog } from '../components/SystemLog'
+import { OutcomesPanel } from '../components/OutcomesPanel'
 import { TopStatusBar } from '../components/TopStatusBar'
 import { WorkspaceBoundary } from '../components/WorkspaceBoundary'
 import { TableRecorder } from '../components/TableRecorder'
@@ -72,8 +73,9 @@ export function Dashboard() {
               <MultiCameraView />
               <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
                 <CommandConsole events={events} scene={status?.ros.scene_snapshot ?? null} />
-                <SceneView scene={status?.ros.scene_snapshot ?? null} />
+                <SceneView scene={status?.ros.scene_snapshot ?? null} unknown={status?.ros.unknown_obstacles?.obstacles ?? null} />
               </div>
+              <OutcomesPanel />
               <NodeControlGrid processes={processes} onRefresh={noopRefresh} />
               <SystemLog processes={processes} />
             </>

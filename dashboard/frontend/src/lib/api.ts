@@ -5,7 +5,7 @@
 // machine other than the one it was written on (this dashboard is
 // explicitly meant to be reachable off the lab PC).
 import type {
-  ActionResult, CaptureResult, ProcessInfo, StatusPayload,
+  ActionResult, CaptureResult, OutcomeSummary, ProcessInfo, StatusPayload,
 } from './types'
 
 export interface ArmLandmark {
@@ -52,6 +52,7 @@ async function request<T = unknown>(path: string, init?: RequestInit): Promise<T
 
 export const api = {
   status: () => request<StatusPayload>('/status'),
+  outcomes: (liveOnly = true) => request<OutcomeSummary>(`/outcomes/summary?live_only=${liveOnly}`),
   nodes: () => request<Record<string, ProcessInfo>>('/nodes'),
   startNode: (id: string) => request<ActionResult>(`/nodes/${id}/start`, { method: 'POST' }),
   stopNode: (id: string) => request<ActionResult>(`/nodes/${id}/stop`, { method: 'POST' }),

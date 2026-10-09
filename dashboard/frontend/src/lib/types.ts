@@ -20,6 +20,31 @@ export interface RosStatus {
   audio_status: string | null
   voice_transcript: Transcript | null
   joint_state_publishers?: number | null
+  unknown_obstacles?: { stamp: number; obstacles: UnknownObstacle[] } | null
+}
+
+// Something standing on the table that the object detectors cannot name, seen in depth (obstacle_guard_node).
+export interface UnknownObstacle {
+  x: number; y: number; height: number; w: number; h: number
+  seen_by: string[]; confirmed?: boolean
+}
+
+export interface OutcomeSummary {
+  n_records: number
+  training_samples: number
+  recent_failures: { time: string; kind: string; label: string | null; step: string | null; reason: string | null }[]
+  summary: {
+    picks: { n: number; ok: number }
+    places: { n: number; ok: number }
+    commands: { n: number; ok: number }
+    by_label: Record<string, [number, number]>
+    by_strategy: Record<string, [number, number]>
+    by_neighbour: Record<string, [number, number]>
+    fail_steps: Record<string, Record<string, number>>
+    grip_median: Record<string, number>
+    lessons: string[]
+    grasp_lessons: string[]
+  }
 }
 
 export interface Transcript {

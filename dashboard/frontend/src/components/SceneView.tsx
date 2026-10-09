@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
-import type { RosStatus, SceneObject } from '../lib/types'
+import type { RosStatus, SceneObject, UnknownObstacle } from '../lib/types'
 
 // Fixed view window in metres (base_link frame) -- generous enough to show
 // both the reachable workspace and typical background-clutter outliers
@@ -16,7 +16,7 @@ function toPx(x: number, y: number): [number, number] {
   return [px, py]
 }
 
-export function SceneView({ scene }: { scene: RosStatus['scene_snapshot'] }) {
+export function SceneView({ scene, unknown }: { scene: RosStatus['scene_snapshot']; unknown?: UnknownObstacle[] | null }) {
   const [bounds, setBounds] = useState<{ x: [number, number]; y: [number, number] } | null>(null)
 
   useEffect(() => {
@@ -66,6 +66,22 @@ export function SceneView({ scene }: { scene: RosStatus['scene_snapshot'] }) {
             base_link
           </text>
 
+          {/* things on the table the detectors cannot name (from depth): solid = seen by 2 cameras, faint = one camera */}
+          {(unknown ?? []).map((o, i) => {
+            const [px, py] = toPx(o.x, o.y)
+            const wpx = Math.max(6, (Math.max(o.w, o.h) / (VIEW_X[1] - VIEW_X[0])) * W)
+            const solid = !!o.confirmed
+            return (
+              <g key={`unk${i}`} opacity={solid ? 1 : 0.4}>
+                <rect x={px - wpx / 2} y={py - wpx / 2} width={wpx} height={wpx} fill="rgba(251,146,60,0.25)"
+                      stroke="var(--color-amber)" strokeDasharray={solid ? undefined : '3 2'} />
+                <text x={px + wpx / 2 + 2} y={py + 3} fontSize="8" fill="var(--color-amber)" fontFamily="monospace">
+                  ? {Math.round(o.height * 100)} cm
+                </text>
+              </g>
+            )
+          })}
+
           {objects.map(([id, obj]: [string, SceneObject]) => {
             const [px, py] = toPx(obj.x, obj.y)
             const color = obj.reachable ? 'var(--color-green)' : 'var(--color-text-faint)'
@@ -83,6 +99,7 @@ export function SceneView({ scene }: { scene: RosStatus['scene_snapshot'] }) {
           <span><span className="inline-block w-2 h-2 rounded-full bg-(--color-green) mr-1" />reachable</span>
           <span><span className="inline-block w-2 h-2 rounded-full bg-(--color-text-faint) mr-1" />unreachable</span>
           <span><span className="inline-block w-2 h-2 rounded-full bg-(--color-amber) mr-1" />base_link</span>
+          <span><span className="inline-block w-2 h-2 border border-(--color-amber) mr-1" />unknown obstacle (depth)</span>
           <span className="ml-auto border border-(--color-cyan) border-dashed px-1">workspace bound</span>
         </div>
       </div>

@@ -64,7 +64,11 @@ class World:
             monkeypatch.setattr(node, name, fn)
         monkeypatch.setattr(acn.sg, 'load_geometry', lambda *a, **k: (TABLE, None))
         monkeypatch.setattr(acn.time, 'sleep', lambda s: None)
-        node.set_parameters([rclpy.parameter.Parameter('outcome_log', rclpy.Parameter.Type.BOOL, False)])
+        # The tests must never publish to a live system: with ROS_DOMAIN_ID=42 in the shell (scripts/preflight.py --tests) the node's
+        # /training_sample requests reached the REAL wrist detector and saved fake samples. Off here; the tests that need it re-enable
+        # it with the publisher patched.
+        node.set_parameters([rclpy.parameter.Parameter('outcome_log', rclpy.Parameter.Type.BOOL, False),
+                             rclpy.parameter.Parameter('collect_training_samples', rclpy.Parameter.Type.BOOL, False)])
 
     # fake hardware ------------------------------------------------------------------------------------------------
     def move_to(self, x, y, z, cartesian=False, min_flange_z=None, max_flange_z=None, **kw):
@@ -256,7 +260,10 @@ def test_training_requests_are_valid_json_with_the_pixel_and_the_label(node, wor
     monkeypatch.setattr(node.training_pub, 'publish', lambda m: sent.append(__import__('json').loads(m.data)))
     node.set_parameters([rclpy.parameter.Parameter('collect_training_samples', rclpy.Parameter.Type.BOOL, True)])
     world.mp.setattr(node, '_wrist_match', lambda label, xy, timeout=3.0, after=None: {**World.wrist_match(world, label, xy), 'u': 321, 'v': 222})
-    assert run_pick(node) is True
+    try:
+        assert run_pick(node) is True
+    finally:
+        node.set_parameters([rclpy.parameter.Parameter('collect_training_samples', rclpy.Parameter.Type.BOOL, False)])
     assert sent[0]['action'] == 'save' and sent[0]['label'] == 'mouse' and sent[0]['u'] == 321 and sent[0]['v'] == 222
     assert sent[-1]['action'] == 'commit' and sent[-1]['id'] == sent[0]['id']
 

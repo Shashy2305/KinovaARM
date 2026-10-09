@@ -67,6 +67,7 @@ class RosBridge(Node):
             'arm_status': None,
             'audio_status': None,
             'voice_transcript': None,
+            'unknown_obstacles': None,
         }
         self._audio_level = (0.0, 0.0)   # (rms, monotonic time received)
         # Every status message, in order. Status topics flip in milliseconds
@@ -90,6 +91,8 @@ class RosBridge(Node):
                                   self._mk_status_cb('pick_place_status'), 10)
         self.create_subscription(String, '/arm_status',
                                   self._mk_status_cb('arm_status'), 10)
+        self.create_subscription(String, '/unknown_obstacles',
+                                  self._mk_status_cb('unknown_obstacles'), 5)
         self.create_subscription(String, '/audio_status',
                                   self._mk_status_cb('audio_status'), 10)
         self.create_subscription(String, '/voice_transcript',
