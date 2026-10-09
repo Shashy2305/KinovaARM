@@ -30,6 +30,7 @@ from std_msgs.msg import String
 
 from thesis_robot import wrist_servo as ws
 from thesis_robot import shape_analysis as sa
+from thesis_robot import training_samples as tsm
 from cv_bridge import CvBridge
 import cv2, numpy as np
 
@@ -92,6 +93,11 @@ class WristDetection(Node):
         self.create_subscription(
             CameraInfo, self.get_parameter('info_topic').value, self._info_cb, 10)
 
+        # Self-labelled training data: the arm controller asks for the current frame to be saved before a descent
+        # (/training_sample {action: save|commit|discard, id, label, u, v}); only picks that succeed are kept.
+        self.declare_parameter('training_dir', tsm.DEFAULT_DIR)
+        self._last_frame = None
+        self.create_subscription(String, '/training_sample', self._on_training_sample, 10)
         self.det_pub = self.create_publisher(String, '/detections_wrist', 10)
         self.pix_pub = self.create_publisher(String, '/wrist_pixel_detections', 10)
         self.get_logger().info('Wrist camera detection node ready')
@@ -105,6 +111,27 @@ class WristDetection(Node):
             self.get_logger().info(
                 f'Wrist camera intrinsics: fx={self.fx:.1f} '
                 f'cx={self.cx:.1f} cy={self.cy:.1f}')
+
+    def _on_training_sample(self, msg):
+        try:
+            req = json.loads(msg.data)
+            d = self.get_parameter('training_dir').value
+            sid, action = str(req['id']), req.get('action')
+            if action == 'save':
+                if self._last_frame is None:
+                    return
+                stamp, bgr, dets, polys = self._last_frame
+                tsm.save_pending(d, sid, bgr, {
+                    'label': req.get('label'), 'u': req.get('u'), 'v': req.get('v'), 'stamp': stamp,
+                    'dist_m': req.get('dist_m'), 'detections': dets, 'polygons': polys})
+            elif action == 'commit':
+                if tsm.commit(d, sid):
+                    self.get_logger().info(f'training sample {sid} kept ({req.get("label")})')
+            elif action == 'discard':
+                tsm.discard(d, sid)
+            tsm.purge_old_pending(d)
+        except Exception as e:
+            self.get_logger().warn(f'training sample request failed: {e}')
 
     def _depth_cb(self, msg):
         with self._lock:
@@ -181,6 +208,7 @@ class WristDetection(Node):
 
         raw_detections = []
         pixel_dets = []
+        det_polys = []
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         shape_on = bool(self.get_parameter('shape_analysis').value)
         shape_left = int(self.get_parameter('shape_max_objects').value)
@@ -223,11 +251,16 @@ class WristDetection(Node):
                             except Exception as e:
                                 self.get_logger().warn(f'shape analysis failed: {e}')
                         pixel_dets.append(det)
+                        try:
+                            det_polys.append(r.masks.xy[bi].round(1).tolist() if r.masks is not None else None)
+                        except Exception:
+                            det_polys.append(None)
                         if conf < 0.30 or not in_scene_classes:
                             continue
                         raw_detections.append((cls_name, conf, u, v))
             except Exception as e:
                 self.get_logger().warn(f'YOLO error: {e}')
+        self._last_frame = (stamp, bgr, pixel_dets, det_polys)
         # always published (an empty list means "looked, saw nothing")
         self.pix_pub.publish(String(data=json.dumps({
             'frame_id': msg.header.frame_id, 'stamp': stamp,

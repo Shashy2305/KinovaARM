@@ -87,6 +87,7 @@ class ArmControllerNode(Node):
         # Grasp-angle planning (grasp_planner.py): which direction the fingers close along.
         self.declare_parameter('grasp_candidates', False)        # rank directions from the object's shape on EVERY attempt
         self.declare_parameter('grasp_retry_new_angle', True)    # on a retry, close along a NEW direction, not the failed one
+        self.declare_parameter('collect_training_samples', True)  # save a labelled wrist frame before each descent, keep it if the pick succeeds
         self.declare_parameter('grasp_policy', False)            # bias the ranking by what past outcomes say works (grasp_policy.py)
         self.declare_parameter('use_shape_width', False)         # preshape from the measured width instead of the table
         # Things on the table that the detectors cannot name, from depth (obstacle_guard_node, /unknown_obstacles).
@@ -141,6 +142,9 @@ class ArmControllerNode(Node):
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
         self.create_subscription(String, '/scene_snapshot', self._scene_callback, 10)
         self.create_subscription(String, '/unknown_obstacles', self._on_unknown_obstacles, 5)
+        self.training_pub = self.create_publisher(String, '/training_sample', 5)
+        self._training_id = None
+        self._last_wrist_det = None
         self._unknown = (0.0, [])
         self.create_subscription(JointState, '/joint_states', self._on_joint_state, 10)
         self.create_subscription(String, '/wrist_pixel_detections', self._on_wrist_dets, 5)
@@ -860,9 +864,11 @@ class ArmControllerNode(Node):
                 pass
             if not ok_step:
                 self.get_logger().error(f'pick {object_id} failed at: {name}')
+                self._training('discard')
                 self._log_end(False, name)
                 return False, name
         self._held = {'label': label, 'object_id': object_id, 'grasp_z': grasp_z}
+        self._training('commit', label=label)
         self._log_end(True)
         return True, None
 
@@ -993,6 +999,7 @@ class ArmControllerNode(Node):
         """(shape dict, camera distance to the object plane in m, fx) from a fresh wrist detection that carries
         shape analysis, or None. The shape's lengths are pixels; distance and fx convert them."""
         det = self._wrist_match(label, expected_xy, timeout=timeout)
+        self._last_wrist_det = det
         if det is None or not det.get('shape') or self._wrist_K is None:
             return None
         geom, _ = sg.load_geometry()
@@ -1007,6 +1014,22 @@ class ArmControllerNode(Node):
         if dist < 0.1:
             return None
         return det['shape'], dist, float(self._wrist_K[0][0])
+
+    def _training(self, action, **kw):
+        """Ask the wrist detector to save / keep / drop the labelled frame of this pick (never allowed to affect a move)."""
+        try:
+            if not bool(self.get_parameter('collect_training_samples').value):
+                return
+            sid = self._training_id
+            if action == 'save':
+                sid = self._training_id = f'{int(time.time())}_{kw.get("object_id", "obj")}_{getattr(self, "_pick_attempt", 1)}'
+            if not sid:
+                return
+            self.training_pub.publish(String(data=json.dumps({'action': action, 'id': sid, **{k: v for k, v in kw.items() if k != 'object_id'}})))
+            if action != 'save':
+                self._training_id = None
+        except Exception:
+            pass
 
     def _record_grasp_axis(self, label, xy):
         """Right before the descent: log the measured shape and remember which direction the fingers will close
@@ -1031,6 +1054,13 @@ class ArmControllerNode(Node):
             self._shape_width_m = width
         except Exception as e:
             self.get_logger().warn(f'shape record failed: {e}')
+        try:
+            d = self._last_wrist_det
+            if d is not None and d.get('u') is not None:
+                self._training('save', object_id=(getattr(self, '_pick_ctx', {}) or {}).get('object_id', 'obj'),
+                               label=label, u=d['u'], v=d['v'])
+        except Exception:
+            pass
         return True
 
     def _use_candidates(self):

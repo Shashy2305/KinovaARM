@@ -96,7 +96,7 @@ class World:
         draw_poly(img, poly)
         a = sa.analyse(img, box_of(poly), polygon=poly)
         orient = (ang + 90.0) % 180.0 - 90.0                       # (-90, 90]
-        return {'label': 'mouse', 'confidence': 0.9, 'x1': 100, 'y1': 60, 'x2': 380, 'y2': 300,
+        return {'label': 'mouse', 'confidence': 0.9, 'u': 240, 'v': 180, 'x1': 100, 'y1': 60, 'x2': 380, 'y2': 300,
                 'orient_deg': orient, 'elong': 2.3, 'shape': a}
 
 
@@ -240,3 +240,22 @@ def test_the_outcome_log_records_both_attempts_with_the_new_angle(node, world, t
     assert gp.angle_diff(shapes[0][0]['rho'], shapes[1][0]['rho']) >= gp.DEFAULT_MIN_SEP_DEG
     cands = [e for e in recs[1]['events'] if e['what'] == 'grasp_candidates']
     assert cands and cands[0]['tried'] and cands[0]['n'] > 0
+
+
+def test_training_samples_are_saved_before_the_descent_and_kept_only_for_a_successful_pick(node, world, monkeypatch):
+    calls = []
+    monkeypatch.setattr(node, '_training', lambda action, **kw: calls.append((action, kw.get('label'))))
+    world.grips = [False, True, True, True]
+    assert run_pick(node) is True
+    assert [c[0] for c in calls] == ['save', 'discard', 'save', 'commit']          # attempt 1 failed (dropped), attempt 2 held (kept)
+    assert calls[0][1] == 'mouse' and calls[3][1] == 'mouse'
+
+
+def test_training_requests_are_valid_json_with_the_pixel_and_the_label(node, world, monkeypatch):
+    sent = []
+    monkeypatch.setattr(node.training_pub, 'publish', lambda m: sent.append(__import__('json').loads(m.data)))
+    node.set_parameters([rclpy.parameter.Parameter('collect_training_samples', rclpy.Parameter.Type.BOOL, True)])
+    world.mp.setattr(node, '_wrist_match', lambda label, xy, timeout=3.0, after=None: {**World.wrist_match(world, label, xy), 'u': 321, 'v': 222})
+    assert run_pick(node) is True
+    assert sent[0]['action'] == 'save' and sent[0]['label'] == 'mouse' and sent[0]['u'] == 321 and sent[0]['v'] == 222
+    assert sent[-1]['action'] == 'commit' and sent[-1]['id'] == sent[0]['id']
