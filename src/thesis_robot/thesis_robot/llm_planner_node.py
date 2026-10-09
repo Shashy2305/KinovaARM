@@ -13,11 +13,13 @@ Publishes to:
 Your thesis contribution: LLM-based task decomposition grounded
 in a live scene graph, with pre-execution safety validation.
 """
-import rclpy, json, math, time, threading, ollama
+import rclpy, json, math, time, threading, ollama, copy
 from rclpy.node import Node
 from std_msgs.msg import String
 
 from thesis_robot import safety_geometry as sg
+from thesis_robot import command_grammar as cg
+from thesis_robot import planner_memory as pm
 
 # ── SYSTEM PROMPT ────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a task planner for a Kinova Gen3 7-DOF robotic arm.
@@ -479,10 +481,18 @@ class LLMPlannerNode(Node):
         self.declare_parameter('llm_timeout_s', 60.0)
         self.declare_parameter('llm_keep_alive', '6h')   # how long Ollama keeps the model loaded between commands
         self.declare_parameter('max_scene_age_s', 3.0)
+        # Check the model's plan against what the command means (command_grammar) and retry with a hint; after three
+        # wrong answers use the grammar's own plan (flagged 'repaired').
+        self.declare_parameter('plan_verification', True)
+        self.declare_parameter('grammar_repair', True)
+        # Add one worked example of a similar command, and one warning, to the prompt (planner_memory)
+        self.declare_parameter('planner_memory', True)
         self.model = self.get_parameter('model').value
         self.max_scene_age = float(self.get_parameter('max_scene_age_s').value)
         self.llm = ollama.Client(timeout=float(self.get_parameter('llm_timeout_s').value))
         self._scene_time = 0.0
+        self.memory = pm.PlannerMemory()
+        self._arm_live = None
 
         # ── state ────────────────────────────────────────────────────
         self.latest_scene    = {}
@@ -497,6 +507,7 @@ class LLMPlannerNode(Node):
         self.create_subscription(
             String, '/voice_command',
             self.command_callback, 10)
+        self.create_subscription(String, '/arm_status', self._on_arm_status, 10)
 
         # ── publishers ───────────────────────────────────────────────
         self.plan_pub   = self.create_publisher(String, '/action_plan',    10)
@@ -516,6 +527,16 @@ class LLMPlannerNode(Node):
             self._scene_time      = time.time()
         except json.JSONDecodeError:
             pass
+
+    def _on_arm_status(self, msg):
+        """Learn how the last published plan turned out (COMPLETE / FAILED) and whether the arm was live."""
+        t = msg.data or ''
+        if t.startswith('READY'):
+            self._arm_live = 'LIVE' in t
+        try:
+            self.memory.finish(t, live=self._arm_live)
+        except Exception as e:
+            self.get_logger().warn(f'planner memory: {e}')
 
     def command_callback(self, msg):
         """Trigger planning on voice command — run in separate thread."""
@@ -585,9 +606,16 @@ class LLMPlannerNode(Node):
                 self.get_logger().warn(
                     f'No reachable objects in scene ({len(self.latest_scene)} '
                     f'total, 0 reachable) — sending the LLM an empty world state.')
+            mem_block = ''
+            if bool(self.get_parameter('planner_memory').value):
+                try:
+                    mem_block = self.memory.prompt_block(command, prompt_scene)
+                except Exception as e:
+                    self.get_logger().warn(f'planner memory failed: {e}')
             user_msg = (
                 f"CURRENT WORLD STATE:\n"
                 f"{json.dumps(prompt_scene, indent=2)}\n\n"
+                + (f"{mem_block}\n\n" if mem_block else '') +
                 f"ENGINEER COMMAND: \"{command}\"\n\n"
                 f"Reason step by step, then output the JSON."
             )
@@ -596,12 +624,17 @@ class LLMPlannerNode(Node):
             # than abandon a command the operator already gave (2026-10-06: "JSON parse error", nothing happened).
             t0 = time.time()
             parsed = None
+            parsed_unverified = None
+            repaired, hint, last_why = False, '', ''
+            intent = cg.parse(command) if bool(self.get_parameter('plan_verification').value) else None
+            attempts_used = 0
             for attempt in (1, 2, 3):
+                attempts_used = attempt
                 response = self.llm.chat(
                     model=self.model,
                     messages=[
                         {'role': 'system', 'content': system_prompt},
-                        {'role': 'user',   'content': user_msg},
+                        {'role': 'user',   'content': user_msg + hint},
                     ],
                     format='json',
                     keep_alive=str(self.get_parameter('llm_keep_alive').value)   # a reload from the external disk took 78 s
@@ -609,25 +642,43 @@ class LLMPlannerNode(Node):
                 raw = (response['message']['content'] or '').strip()
                 why = 'an empty/invalid reply'
                 try:
-                    parsed = json.loads(raw)
-                    if isinstance(parsed, dict):
+                    cand = json.loads(raw)
+                    if isinstance(cand, dict):
                         try:
-                            steps = [json.loads(st) if isinstance(st, str) else st for st in parsed.get('plan', []) if st]
+                            steps = [json.loads(st) if isinstance(st, str) else st for st in cand.get('plan', []) if st]
                         except (json.JSONDecodeError, TypeError):
                             steps = None
                         if steps is None:
                             why = 'a plan with unreadable steps'
                         else:
-                            covered, why = plan_covers_command(steps, command)
+                            if intent is not None:
+                                covered, why = cg.check(intent, steps, prompt_scene)
+                            else:
+                                covered, why = plan_covers_command(steps, command)
                             if covered:
+                                parsed = cand
                                 break
+                            parsed_unverified = cand
                 except json.JSONDecodeError:
                     pass
+                last_why = why
                 self.get_logger().warn(f'LLM returned {why} (attempt {attempt}/3) — retrying')
-                parsed = None
+                hint = f'\n\nYOUR PREVIOUS ANSWER WAS WRONG ({why}).'
+                if intent is not None:
+                    good = cg.build_plan(intent, prompt_scene)
+                    if good:
+                        hint += ' The correct plan has this structure: ' + json.dumps({'plan': good}, separators=(',', ':'))
                 time.sleep(1.0)
+            if parsed is None and intent is not None and bool(self.get_parameter('grammar_repair').value):
+                fix = cg.build_plan(intent, prompt_scene)
+                if fix:
+                    parsed = {'reasoning': f'repaired by the command grammar after 3 wrong model answers ({last_why})', 'plan': fix}
+                    repaired = True
+                    self.get_logger().warn(f'plan repaired by the command grammar ({intent["kind"]}): {last_why}')
+                elif parsed_unverified is not None:
+                    parsed = parsed_unverified          # e.g. the object is not on the table: the model's empty plan + reasoning stands
             if parsed is None:
-                raise json.JSONDecodeError('the language model returned no valid JSON after 3 attempts', '', 0)
+                raise json.JSONDecodeError('the language model returned no valid plan after 3 attempts', '', 0)
             latency = time.time() - t0
             plan      = parsed.get('plan', [])
             # Sanitise — ensure each step is a dict not a string
@@ -637,6 +688,7 @@ class LLMPlannerNode(Node):
                 if s  # skip empty
             ]
             reasoning = parsed.get('reasoning', '')
+            raw_plan = copy.deepcopy(plan)                       # the model's own steps, for the planner memory
 
             self.get_logger().info(
                 f'LLM response in {latency:.1f}s — '
@@ -661,6 +713,10 @@ class LLMPlannerNode(Node):
             if not ok:
                 self.get_logger().warn(f'Plan REJECTED: {reason}')
                 self._publish_status(f'REJECTED: {reason}')
+                try:
+                    self.memory.record_rejected(command, raw_plan, prompt_scene, reason)
+                except Exception as e:
+                    self.get_logger().warn(f'planner memory: {e}')
                 return
 
             # Publish approved plan
@@ -674,7 +730,14 @@ class LLMPlannerNode(Node):
                 'plan':      plan,
                 'latency_s': round(latency, 2),
                 'model':     self.model,
+                'attempts':  attempts_used,
+                'repaired':  repaired,
+                'memory':    bool(mem_block),
             })
+            try:
+                self.memory.begin(command, raw_plan, prompt_scene)
+            except Exception as e:
+                self.get_logger().warn(f'planner memory: {e}')
             self.plan_pub.publish(out)
 
             # Log each step
