@@ -22,13 +22,14 @@ Unverified on hardware (flag before trusting positions from this node):
     backprojected z below will be wrong at object edges/occlusion boundaries.
 """
 import os
-import rclpy, threading, json
+import rclpy, threading, json, time
 from rclpy.node import Node
 from ament_index_python.packages import get_package_share_directory
 from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 
 from thesis_robot import wrist_servo as ws
+from thesis_robot import shape_analysis as sa
 from cv_bridge import CvBridge
 import cv2, numpy as np
 
@@ -73,6 +74,13 @@ class WristDetection(Node):
             'remote', 'book', 'scissors', 'vase', 'mouse'
         ]
 
+        # Classical shape analysis of the best few detections (contour, minAreaRect, widths per angle, contact patches,
+        # handle): published as det['shape'] on /wrist_pixel_detections. GrabCut refinement is too slow for the live
+        # stream (tens of ms per object); it is available for offline analysis.
+        self.declare_parameter('shape_analysis', True)
+        self.declare_parameter('shape_grabcut', False)
+        self.declare_parameter('shape_max_objects', 3)
+        self.declare_parameter('shape_min_conf', 0.25)
         self.declare_parameter('image_topic', '/camera/color/image_raw')
         self.declare_parameter('depth_topic', '/camera/depth/image_raw')
         self.declare_parameter('info_topic', '/camera/color/camera_info')
@@ -174,6 +182,9 @@ class WristDetection(Node):
         raw_detections = []
         pixel_dets = []
         stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        shape_on = bool(self.get_parameter('shape_analysis').value)
+        shape_left = int(self.get_parameter('shape_max_objects').value)
+        shape_min_conf = float(self.get_parameter('shape_min_conf').value)
 
         if self.model is not None:
             try:
@@ -198,6 +209,19 @@ class WristDetection(Node):
                                 det['elong'] = round(elong, 2)
                         except Exception:
                             pass
+                        if shape_on and shape_left > 0 and conf >= shape_min_conf and r.masks is not None:
+                            try:
+                                t_sh = time.monotonic()
+                                an = sa.analyse(bgr, (x1, y1, x2, y2), polygon=r.masks.xy[bi],
+                                                use_grabcut=bool(self.get_parameter('shape_grabcut').value))
+                                if an is not None:
+                                    det['shape'] = an
+                                    shape_left -= 1
+                                if time.monotonic() - t_sh > 0.08:
+                                    self.get_logger().warn(
+                                        f'shape analysis of a {cls_name} took {1000 * (time.monotonic() - t_sh):.0f} ms')
+                            except Exception as e:
+                                self.get_logger().warn(f'shape analysis failed: {e}')
                         pixel_dets.append(det)
                         if conf < 0.30 or not in_scene_classes:
                             continue
