@@ -258,6 +258,42 @@ def carry_path_blocker(start_xy, end_xy, obstacles, avoid=0.12, own_radius=0.08)
     return None
 
 
+def carry_detour(start_xy, end_xy, obstacles, avoid=0.12, own_radius=0.08, extra=0.03,
+                 x_range=(0.12, 0.58), y_range=(-0.34, 0.34)):
+    """One via-point that routes the carry AROUND the obstacles it would pass within `avoid` of, or None.
+    Candidates sit beside each blocking obstacle, perpendicular to the path, `avoid + extra` away from it; a
+    candidate is used only if both legs are clear of every obstacle and it is inside the reachable table area.
+    The shortest valid route wins. obstacles: [(label, x, y)]."""
+    sx, sy = start_xy
+    ex, ey = end_xy
+    dx, dy = ex - sx, ey - sy
+    L = math.hypot(dx, dy)
+    if L < 1e-6:
+        return None
+    nx, ny = -dy / L, dx / L
+    blockers = []
+    for label, ox, oy in obstacles:
+        d_start = math.hypot(ox - sx, oy - sy)
+        if d_start < own_radius:
+            continue
+        d_min = _dist_to_segment((ox, oy), start_xy, end_xy)
+        if d_min < avoid and d_min < d_start - 0.01:
+            blockers.append((ox, oy))
+    best = None
+    for ox, oy in blockers:
+        for sign in (1.0, -1.0):
+            vx, vy = ox + sign * nx * (avoid + extra), oy + sign * ny * (avoid + extra)
+            if not (x_range[0] <= vx <= x_range[1] and y_range[0] <= vy <= y_range[1]):
+                continue
+            if carry_path_blocker(start_xy, (vx, vy), obstacles, avoid, own_radius) \
+                    or carry_path_blocker((vx, vy), end_xy, obstacles, avoid, own_radius=0.0):
+                continue
+            length = math.hypot(vx - sx, vy - sy) + math.hypot(ex - vx, ey - vy)
+            if best is None or length < best[0]:
+                best = (length, (vx, vy))
+    return None if best is None else best[1]
+
+
 SAME_OBJECT_M = 0.06           # centre-to-centre distance below which two scene entries are one object
 MIN_ELONGATION = 1.2           # axis ratio above which an object has a "long side" worth aligning
 MIN_TURN_DEG = 12.0            # smaller corrections are not worth a (slow) wrist turn

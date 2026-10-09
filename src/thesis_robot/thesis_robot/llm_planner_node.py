@@ -461,6 +461,7 @@ class LLMPlannerNode(Node):
         # A hung Ollama must not leave is_planning stuck True (every later
         # command would be ignored as "already planning").
         self.declare_parameter('llm_timeout_s', 60.0)
+        self.declare_parameter('llm_keep_alive', '6h')   # how long Ollama keeps the model loaded between commands
         self.declare_parameter('max_scene_age_s', 3.0)
         self.model = self.get_parameter('model').value
         self.max_scene_age = float(self.get_parameter('max_scene_age_s').value)
@@ -586,7 +587,8 @@ class LLMPlannerNode(Node):
                         {'role': 'system', 'content': system_prompt},
                         {'role': 'user',   'content': user_msg},
                     ],
-                    format='json'
+                    format='json',
+                    keep_alive=str(self.get_parameter('llm_keep_alive').value)   # a reload from the external disk took 78 s
                 )
                 raw = (response['message']['content'] or '').strip()
                 try:

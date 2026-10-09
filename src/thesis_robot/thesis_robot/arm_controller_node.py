@@ -1262,14 +1262,18 @@ class ArmControllerNode(Node):
             pass
         carry_z = min(0.50, max(grasp_z + self.CARRY_CLEARANCE_M, floor + 0.02))
         far = math.hypot(fx - g[0], fy - g[1]) > 0.02
+        via = None
         if far:
             # The carried object's underside is (carry_z - grasp_z) over the table. Obstacles lower than that clear
-            # it; for a taller one raise the carry (up to the ceiling) before giving up.
+            # it; for a taller one raise the carry (up to the ceiling), and if that is not enough route AROUND it
+            # with a via-point, before giving up.
             blocked = None
+            avoid = float(self.get_parameter('carry_avoid_m').value)
             for cz in sorted({carry_z, max(carry_z, min(0.44, CARRY_CEILING_Z)), CARRY_CEILING_Z}):
                 if cz < carry_z:
                     continue
-                blocked = self._carry_path_blocked((g[0], g[1]), (fx, fy), min_height=cz - grasp_z - 0.03)
+                min_h = cz - grasp_z - 0.03
+                blocked = self._carry_path_blocked((g[0], g[1]), (fx, fy), min_height=min_h)
                 if not blocked:
                     if cz > carry_z + 0.005:
                         self.get_logger().info(
@@ -1277,7 +1281,13 @@ class ArmControllerNode(Node):
                     carry_z = cz
                     break
             if blocked:
-                return self._refuse(f'place: the carry path passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
+                obstacles = self._scene_obstacles(min_height=CARRY_CEILING_Z - grasp_z - 0.03)
+                via = ws.carry_detour((g[0], g[1]), (fx, fy), obstacles, avoid=avoid)
+                if via is None:
+                    return self._refuse(f'place: the carry path passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
+                carry_z = CARRY_CEILING_Z
+                self.get_logger().info(
+                    f'place: routing the carry around the {blocked} via ({via[0]:.3f},{via[1]:.3f}) at flange z={carry_z:.3f}')
         self.get_logger().info(
             f'place: object to ({tx:.3f},{ty:.3f}); flange carry z={carry_z:.3f}, set-down z={set_z:.3f}')
         try:
@@ -1290,6 +1300,8 @@ class ArmControllerNode(Node):
         if g[2] < carry_z - 0.005:
             steps.append(('lift', lambda: self._move_verified(g[0], g[1], carry_z, 'lift')))
         if far:
+            if via is not None:
+                steps.append(('carry (around an obstacle)', lambda: self._move_verified(via[0], via[1], carry_z, 'carry-via')))
             steps.append(('carry', lambda: self._move_verified(fx, fy, carry_z, 'carry')))
         held_xy = pad                                       # where the carried object is now (its stale scene entry is not an obstacle)
 
@@ -1297,9 +1309,12 @@ class ArmControllerNode(Node):
             """When the gripper opens to release, its fingers swing ~9.5 cm to each side of the object. If a
             neighbour of the target spot is in that sweep, turn the wrist 90 degrees (the object turns with it, in
             hand) and check again; if it still is, do not lower."""
+            held_label = (self._held or {}).get('label')
             obstacles = [o for o in self._scene_obstacles(min_height=0.0)
                          if math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) > ws.SAME_OBJECT_M
-                         and math.hypot(o[1] - tx, o[2] - ty) > ws.SAME_OBJECT_M]    # (the carried object is over the target)
+                         and math.hypot(o[1] - tx, o[2] - ty) > ws.SAME_OBJECT_M    # (the carried object is over the target)
+                         # the carried object's own scene entry (lifted, so it can sit 6-7 cm off the pad midpoint)
+                         and not (o[0] == held_label and math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) < 0.12)]
             for turned in (False, True):
                 axis = self._closing_axis_xy()
                 blocker = ws.finger_sweep_blocker(

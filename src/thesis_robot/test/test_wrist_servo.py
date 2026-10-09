@@ -250,3 +250,19 @@ def test_preshape_narrows_the_span_only_for_known_widths():
     q, span = ws.preshape_for('mouse')
     assert 0.1 < q < 0.3 and span < ws.FINGER_HALF_SPAN_M
     assert ws.preshape_for('bowl') is None
+
+
+def test_carry_detour_goes_around_a_blocking_obstacle():
+    start, end = (0.40, -0.32), (0.33, 0.14)
+    obstacles = [('bottle', 0.35, -0.10)]                       # right on the straight path
+    assert ws.carry_path_blocker(start, end, obstacles, avoid=0.12) == 'bottle'
+    via = ws.carry_detour(start, end, obstacles, avoid=0.12)
+    assert via is not None
+    assert ws.carry_path_blocker(start, via, obstacles, avoid=0.12) is None
+    assert ws.carry_path_blocker(via, end, obstacles, avoid=0.12, own_radius=0.0) is None
+
+
+def test_carry_detour_none_when_boxed_in_or_nothing_blocks():
+    assert ws.carry_detour((0.4, -0.3), (0.4, 0.3), [('cup', 0.1, 0.0)], avoid=0.12) is None   # nothing in the way
+    wall = [('bottle', 0.35, y / 10) for y in range(-3, 4)]                                    # a row spanning the table
+    assert ws.carry_detour((0.4, -0.32), (0.3, 0.32), wall, avoid=0.12) is None
