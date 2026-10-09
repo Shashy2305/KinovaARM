@@ -1,0 +1,10 @@
+tilt    0 deg  azimuth    0 deg : 20/20 targets reachable   {'no_ik': 1, 'swing': 0, 'low_pad': 0, 'limit': 0}
+tilt   15 deg  azimuth    0 deg : 20/20 targets reachable   {'no_ik': 0, 'swing': 3, 'low_pad': 0, 'limit': 1}
+tilt   15 deg  azimuth   90 deg : 19/20 targets reachable   {'no_ik': 4, 'swing': 0, 'low_pad': 0, 'limit': 0}
+tilt   15 deg  azimuth  180 deg : 15/20 targets reachable   {'no_ik': 19, 'swing': 2, 'low_pad': 0, 'limit': 2}
+tilt   15 deg  azimuth  270 deg : 19/20 targets reachable   {'no_ik': 4, 'swing': 2, 'low_pad': 0, 'limit': 0}
+tilt   30 deg  azimuth    0 deg : 16/20 targets reachable   {'no_ik': 8, 'swing': 7, 'low_pad': 0, 'limit': 2}
+tilt   30 deg  azimuth   90 deg : 18/20 targets reachable   {'no_ik': 8, 'swing': 0, 'low_pad': 0, 'limit': 0}
+tilt   30 deg  azimuth  180 deg :  9/20 targets reachable   {'no_ik': 35, 'swing': 2, 'low_pad': 0, 'limit': 7}
+tilt   30 deg  azimuth  270 deg : 18/20 targets reachable   {'no_ik': 7, 'swing': 3, 'low_pad': 0, 'limit': 3}
+saved /home/shash/.ros/angled_study/study_mid.json

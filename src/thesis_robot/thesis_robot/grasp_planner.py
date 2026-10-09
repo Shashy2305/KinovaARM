@@ -48,7 +48,8 @@ def phi_of(rho_deg, long_axis_deg):
 
 
 def rank_grasps(profile_m, contact_m, handle_bearing_deg=None, tried_rho=(), long_axis_deg=0.0,
-                blocked=None, min_sep_deg=DEFAULT_MIN_SEP_DEG, max_turn_deg=90.0, gripper_open_m=GRIPPER_OPEN_M):
+                blocked=None, min_sep_deg=DEFAULT_MIN_SEP_DEG, max_turn_deg=90.0, gripper_open_m=GRIPPER_OPEN_M,
+                prior=None):
     """Candidate closing directions, best first.
 
     profile_m   {phi_deg: width_m}   span needed per direction (keys may be str or int)
@@ -56,6 +57,8 @@ def rank_grasps(profile_m, contact_m, handle_bearing_deg=None, tried_rho=(), lon
     handle_bearing_deg  bearing of a handle/notch from the object centre (image degrees, y down) or None
     tried_rho   directions already tried, relative to the long axis (see rho_of)
     blocked     callable(phi_deg) -> bool: the open fingers would hit a neighbour along this direction
+    prior       callable(rho_deg) -> multiplier in [0, 1]: what past outcomes say about closing along this direction
+                (grasp_policy.GraspPolicy.prior); it scales the score, it never overrides a hard constraint
     Returns [{'phi', 'delta', 'width_m', 'contact_m', 'score', 'rho', 'reason'}]; directions that do not fit between
     the open fingers, that a neighbour blocks, or that repeat a tried one (within min_sep_deg) are left out."""
     out = []
@@ -81,6 +84,8 @@ def rank_grasps(profile_m, contact_m, handle_bearing_deg=None, tried_rho=(), lon
                 s_handle = 0.2
         s_turn = 1.0 - 0.25 * abs(delta) / 90.0
         score = 0.45 * s_contact + 0.25 * s_width + 0.20 * s_handle + 0.10 * s_turn
+        if prior is not None:
+            score *= float(prior(rho))
         out.append({'phi': phi, 'delta': delta, 'width_m': w, 'contact_m': contacts.get(phi, 0.0),
                     'score': round(score, 4), 'rho': round(rho, 1),
                     'reason': f'width {1000 * w:.0f} mm, contact {1000 * contacts.get(phi, 0.0):.0f} mm'})

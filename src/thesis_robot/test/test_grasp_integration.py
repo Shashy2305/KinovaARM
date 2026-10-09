@@ -30,7 +30,8 @@ class FakeLogger:
 
 def make_node(shape_det, obstacles=(), tried=(), params=None):
     p = {'grasp_candidates': True, 'grasp_retry_new_angle': True, 'use_shape_width': False,
-         'sweep_half_span_m': ws.FINGER_HALF_SPAN_M, 'sweep_margin_m': ws.SWEEP_MARGIN_M, 'sweep_same_object_m': 0.06}
+         'sweep_half_span_m': ws.FINGER_HALF_SPAN_M, 'sweep_margin_m': ws.SWEEP_MARGIN_M, 'sweep_same_object_m': 0.06,
+         'grasp_policy': False}
     p.update(params or {})
     n = types.SimpleNamespace()
     n.get_parameter = lambda k: Param(p[k])
@@ -153,3 +154,29 @@ def test_unknown_obstacles_join_the_checks_only_when_enabled_and_confirmed():
     near = acn.ArmControllerNode._unknown_near(types.SimpleNamespace(_unknown_list=lambda confirmed_only=False: [
         {'x': 0.4, 'y': 0.1, 'height': 0.12, 'confirmed': True}]), (0.35, 0.1), 0.3)
     assert near[0]['confirmed'] is True and near[0]['d'] == pytest.approx(0.05, abs=1e-3)
+
+
+def test_free_space_transits_use_the_free_scale_and_short_moves_do_not():
+    from builtin_interfaces.msg import Duration
+    from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+    params = {'smooth_trajectories': True, 'smooth_vel_scale': 0.30, 'smooth_free_vel_scale': 0.50, 'smooth_free_min_rad': 0.6,
+              'smooth_acc_scale': 0.20, 'smooth_min_duration_s': 0.6}
+    n = types.SimpleNamespace(get_parameter=lambda k: Param(params[k]), get_logger=lambda: FakeLogger())
+
+    def traj(delta):
+        jt = JointTrajectory()
+        jt.joint_names = list(acn.JOINT_NAMES)
+        for f in (0.0, 0.5, 1.0):
+            p = JointTrajectoryPoint()
+            p.positions = [delta * f] + [0.0] * 6
+            p.time_from_start = Duration(sec=int(f * 4), nanosec=0)
+            jt.points.append(p)
+        return jt
+
+    def duration(delta, free_scale):
+        params['smooth_free_vel_scale'] = free_scale
+        out = acn.ArmControllerNode._smoothed(n, traj(delta), 't')
+        d = out.points[-1].time_from_start
+        return d.sec + d.nanosec * 1e-9
+    assert duration(1.2, 0.50) < 0.75 * duration(1.2, 0.30)               # a long swing speeds up
+    assert duration(0.3, 0.50) == pytest.approx(duration(0.3, 0.30), rel=1e-6)   # a short precise move does not

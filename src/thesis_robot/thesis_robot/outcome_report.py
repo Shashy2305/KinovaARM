@@ -23,6 +23,14 @@ def _bucket(rec):
     return NEIGHBOUR_BUCKETS[-1][2]
 
 
+def _grasp_lessons(records, live_only):
+    try:
+        from thesis_robot.grasp_policy import GraspPolicy
+        return GraspPolicy(records, live_only).lessons()
+    except Exception:
+        return []
+
+
 def summarize(records, live_only=True):
     recs = [r for r in records if not live_only or r.get('live', True)]
     picks = [r for r in recs if r.get('kind') == 'pick']
@@ -69,6 +77,7 @@ def summarize(records, live_only=True):
         'place_failures': dict(place_fail),
         'grip_median': {k: round(statistics.median(v), 3) for k, v in grips.items()},
         'lessons': lessons,
+        'grasp_lessons': _grasp_lessons(records, live_only),
     }
 
 
@@ -92,7 +101,7 @@ def format_summary(s):
         for label, v in sorted(s['grip_median'].items()):
             lines.append(f'  {label:<12} {v}')
         lines.append('')
-    if s['lessons']:
+    if s['lessons'] or s.get('grasp_lessons'):
         lines.append('Lessons')
-        lines.extend(f'  - {t}' for t in s['lessons'])
+        lines.extend(f'  - {t}' for t in s['lessons'] + s.get('grasp_lessons', []))
     return '\n'.join(lines)

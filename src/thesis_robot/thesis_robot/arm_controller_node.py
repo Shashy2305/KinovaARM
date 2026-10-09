@@ -16,6 +16,7 @@ from std_msgs.msg import String
 from thesis_robot import motion_utils as mu
 from thesis_robot import outcome_log as ol
 from thesis_robot import grasp_planner as gp
+from thesis_robot import grasp_policy as gpol
 from thesis_robot import safety_geometry as sg
 from thesis_robot import trajectory_smoothing as ts
 from thesis_robot import wrist_servo as ws
@@ -86,6 +87,7 @@ class ArmControllerNode(Node):
         # Grasp-angle planning (grasp_planner.py): which direction the fingers close along.
         self.declare_parameter('grasp_candidates', False)        # rank directions from the object's shape on EVERY attempt
         self.declare_parameter('grasp_retry_new_angle', True)    # on a retry, close along a NEW direction, not the failed one
+        self.declare_parameter('grasp_policy', False)            # bias the ranking by what past outcomes say works (grasp_policy.py)
         self.declare_parameter('use_shape_width', False)         # preshape from the measured width instead of the table
         # Things on the table that the detectors cannot name, from depth (obstacle_guard_node, /unknown_obstacles).
         # OFF: they are only logged. ON: confirmed ones (seen by 2+ cameras) join the carry and finger-sweep checks.
@@ -96,6 +98,11 @@ class ArmControllerNode(Node):
         # acceleration steps) instead of the planner's trapezoid. Settable at run time for A/B tests.
         self.declare_parameter('smooth_trajectories', True)
         self.declare_parameter('smooth_vel_scale', 0.30)    # peak joint speed as a fraction of the joint limit
+        # Big free-space transits (a joint swing of more than `smooth_free_min_rad`: the hover, the carry, going home) may
+        # run faster than the precise short moves. Default = the same scale (no change); raise it to speed picks up
+        # (a pick took 24 s on average, 6 s of it the hover transit).
+        self.declare_parameter('smooth_free_vel_scale', 0.30)
+        self.declare_parameter('smooth_free_min_rad', 0.6)
         self.declare_parameter('smooth_acc_scale', 0.20)    # peak joint acceleration as a fraction of the limit
         self.declare_parameter('smooth_min_duration_s', 0.6)
 
@@ -649,8 +656,12 @@ class ArmControllerNode(Node):
             pos = [[p.positions[i] for i in idx] for p in traj.points]
             last = traj.points[-1].time_from_start
             old_t = last.sec + last.nanosec * 1e-9
+            swing = max(abs(pos[-1][j] - pos[0][j]) for j in range(len(JOINT_NAMES)))
+            vs = float(self.get_parameter('smooth_vel_scale').value)
+            if swing >= float(self.get_parameter('smooth_free_min_rad').value):
+                vs = max(vs, float(self.get_parameter('smooth_free_vel_scale').value))
             r = ts.smooth(pos, JOINT_VMAX, JOINT_AMAX,
-                          vel_scale=float(self.get_parameter('smooth_vel_scale').value),
+                          vel_scale=vs,
                           acc_scale=float(self.get_parameter('smooth_acc_scale').value),
                           min_duration=float(self.get_parameter('smooth_min_duration_s').value))
             if r is None:
@@ -1060,9 +1071,16 @@ class ArmControllerNode(Node):
             return ws.finger_sweep_blocker(expected_xy, (v[0] / n, v[1] / n), obstacles, same_object_m=same,
                                            half_span=span, margin=margin) is not None
         handle = shape.get('handle')
+        prior = None
+        if bool(self.get_parameter('grasp_policy').value):
+            try:
+                policy = gpol.GraspPolicy.from_log()
+                prior = lambda rho, _l=label, _p=policy: _p.prior(_l, rho)          # noqa: E731
+            except Exception as e:
+                self.get_logger().warn(f'grasp policy unavailable: {e}')
         ranked = gp.rank_grasps(prof, cont, handle_bearing_deg=None if not handle else handle['bearing_deg'],
                                 tried_rho=list(getattr(self, '_tried_rho', [])), long_axis_deg=shape['long_axis_deg'],
-                                blocked=blocked)
+                                blocked=blocked, prior=prior)
         if not ranked:
             self.get_logger().info('align: no untried closing direction fits between the fingers - using the short-side rule')
             self._log_event('grasp_candidates', n=0)

@@ -76,3 +76,11 @@ def test_cubic_path_interpolates_and_has_continuous_derivatives():
     for k in (0.2, 0.5, 0.7):
         for nu in (1, 2):
             assert np.allclose(c(k - eps, nu), c(k + eps, nu), atol=1e-3)
+
+
+def test_a_higher_speed_scale_shortens_a_long_transit_only_when_asked():
+    P = straight(1.4, n=6)
+    slow = ts.smooth(P, VMAX, AMAX, vel_scale=0.30)['duration']
+    fast = ts.smooth(P, VMAX, AMAX, vel_scale=0.45)['duration']
+    assert fast < 0.8 * slow
+    assert (np.abs(ts.smooth(P, VMAX, AMAX, vel_scale=0.45)['qd']) <= VMAX * 0.45 * 1.02).all()
