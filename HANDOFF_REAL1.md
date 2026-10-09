@@ -1,3 +1,30 @@
+# STATUS 2026-10-09 (newest; read this, then the 2026-10-06 status below)
+
+**Everything below this block was verified on the real arm on 2026-10-06..08; the overnight 2026-10-09 work was built and tested WITHOUT moving
+the arm (Dry Run, unit tests, stub nodes, real camera frames, MoveIt IK/FK). Start with `docs/TEST_PLAN_2026-10-09.md`** (staged, with switches and rollbacks).
+
+New since 2026-10-06 (all pushed; commits up to `e674ecd` and the docs commit after it):
+- Relational commands work live: "pick up the X and put it next to the Y" (3/3 on 2026-10-08/09, after fixing: carry height from the
+  held object's underside, carry detour around obstacles, set-down no lower than the closed pads allow, the lifted object's own scene
+  entry never blocks the release, planner must return a pick/place, wrist centring tracks the object it locked onto).
+- Minimum-jerk trajectory smoothing on every move (peak jerk 40.5 -> 7.4 rad/s^3 measured); `smooth_free_vel_scale` for faster big swings.
+- Outcome log (`~/.ros/outcomes`, `scripts/outcome_report.py`), grasp policy learned from it (`grasp_policy.py`).
+- Shape analysis (`shape_analysis.py`: contour, minAreaRect, approxPolyDP, hull/defects/holes, ellipse, Hough, width + contact profiles) on the wrist
+  detections; grasp-angle planner (`grasp_planner.py`) with retry from a NEW angle (ON for retries); measured-width preshape (off).
+- Planner: `command_grammar.py` verifies/repairs plans, `planner_memory.py` adds a worked example; `scripts/planner_benchmark.py` (84% -> 100%).
+- Unknown-obstacle guard from depth (`obstacle_guard*.py`, `/unknown_obstacles`); consumed behind `use_unknown_obstacles` (off).
+- Angled approach: feasibility study + geometry only (`docs/ANGLED_APPROACH.md`); not wired.
+
+**Shared-machine facts learned the hard way (2026-10-08/09)**
+- `/mnt/ros_workspace` is an ext4 image on an external exFAT USB drive; a USB-controller reset detached it (I/O errors everywhere). Recovery recipe and
+  the fix suggestion (copy the image to the internal disk) are in the memory notes / docs; the host `/` filled to 99% from other users' data.
+- Another account (`kinova`) runs its own RealSense/ArUco/wrist-camera sessions on the same cameras: agree on who uses the cameras before starting the stack;
+  never kill their processes. They also move cameras and the arm; re-check extrinsics (`calibration/check_extrinsics.py`) when anything looks off.
+- Restarting the dashboard backend (kill -9) stalls the camera publishers for a few seconds; the watchdog limit is now 15 s so it no longer flags both cameras.
+- Hand-guiding the arm while it is under ROS control faults it (`/fault_controller/internal_fault` true: trajectories are accepted and time out).
+  Clear it with `ros2 service call /fault_controller/reset_fault std_srvs/srv/Trigger` (the call may not return; read the flag again), with hands off.
+- Heavy CPU load (a stray `du`, a multi-threaded numpy node) can freeze `ros2_control_node`; restart `robot_bringup` from the dashboard (no motion).
+
 # STATUS 2026-10-06 (read this first; the sections below are from the migration and partly dated)
 
 **What works, verified on the real arm** (typed commands through the dashboard; voice pipeline is built but the mic is broken):

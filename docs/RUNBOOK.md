@@ -634,3 +634,19 @@ switch it off with `ros2 param set /arm_controller outcome_log false`.
 prints success by object, strategy and neighbour distance, where picks fail, typical grip readings and plain-language
 lessons (dry-run records are ignored unless `--all`). This is the data the planner prompt memory and per-object grasp
 tuning will read; nothing learns from it automatically yet.
+
+
+## 19. Overnight additions 2026-10-09 (not yet verified on the arm: see TEST_PLAN_2026-10-09.md)
+
+Modules (all pure Python with unit tests, under `src/thesis_robot/thesis_robot/`):
+`shape_analysis` (OpenCV shape descriptors), `grasp_planner` (closing-direction ranking, retry from a new angle), `grasp_policy`
+(learned from the outcome log), `command_grammar` + `planner_memory` (plan verification/repair, worked examples), `obstacle_guard` (+ `_node`),
+`angled_approach` (geometry only). Tools: `scripts/planner_benchmark.py`, `scripts/angled_approach_study.py`, `scripts/outcome_report.py`.
+
+Switches (`ros2 param set <node> <name> <value>`, no restart): see the table in TEST_PLAN_2026-10-09.md. New outcome-log events: `shape` (measured
+width vs table width, class, edge support, closing direction relative to the long axis), `grasp_candidates` (top 3 directions, tried ones, chosen turn),
+`unknown_near` (unknown obstacles within 30 cm of the pick/place target).
+
+Tests: ROS must be sourced BEFORE the venv is activated (`source /opt/ros/humble/setup.bash && source /mnt/ros_workspace/venv/bin/activate`), otherwise rclpy
+or the matching scipy/numpy is missing and 3 test files skip. The controller process itself runs on the SYSTEM Python, whose user-site scipy cannot import
+`scipy.interpolate` (the smoothing spline is numpy-only for that reason); the wrist detector and other nodes run on the venv.
