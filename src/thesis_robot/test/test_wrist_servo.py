@@ -266,3 +266,13 @@ def test_carry_detour_none_when_boxed_in_or_nothing_blocks():
     assert ws.carry_detour((0.4, -0.3), (0.4, 0.3), [('cup', 0.1, 0.0)], avoid=0.12) is None   # nothing in the way
     wall = [('bottle', 0.35, y / 10) for y in range(-3, 4)]                                    # a row spanning the table
     assert ws.carry_detour((0.4, -0.32), (0.3, 0.32), wall, avoid=0.12) is None
+
+
+def test_tracked_object_is_not_replaced_by_a_look_alike_nearby():
+    real = ({'label': 'bottle', 'confidence': 0.27}, (0.238, -0.232))
+    fake = ({'label': 'bottle', 'confidence': 0.12}, (0.319, -0.153))      # a mouse read as "bottle", 11 cm away
+    # loose tolerance around the old scene estimate: the fake is accepted when the real one is missing
+    assert ws.match_detection([fake], 'bottle', (0.244, -0.204)) is not None
+    # tracking the real one at 7 cm: the fake is ignored
+    assert ws.match_detection([fake], 'bottle', (0.238, -0.232), same_tol=0.07) is None
+    assert ws.match_detection([fake, real], 'bottle', (0.238, -0.232), same_tol=0.07) == real

@@ -146,11 +146,13 @@ SAME_LABEL_TOL_M = 0.15       # a detection of the expected class this close (m)
 OTHER_LABEL_TOL_M = 0.06      # a detection of ANY graspable class this close is accepted too
 
 
-def match_detection(cands, label, expected_xy):
+def match_detection(cands, label, expected_xy, same_tol=None):
     """Pick the wrist detection that is the target object. cands: [(detection, (x, y) on the table plane)].
     The detector's class is unreliable from straight above (a bottle seen from above is "cup", a bowl is
     "mouse"), so besides the expected class we also accept ANY class whose position is within
     OTHER_LABEL_TOL_M of where the scene says the object is. Nothing else sits that close to the target.
+    same_tol narrows the same-class tolerance once the object is being tracked (see arm_controller_node.center_over):
+    a faint look-alike 9-11 cm away (a mouse read as "bottle") must not take over from the object already locked on.
     Returns (detection, xy) or None."""
     if not cands:
         return None
@@ -164,7 +166,7 @@ def match_detection(cands, label, expected_xy):
     same = [c for c in cands if c[0].get('label') == label]
     if same:
         best = min(same, key=dist)
-        if dist(best) <= SAME_LABEL_TOL_M:
+        if dist(best) <= (SAME_LABEL_TOL_M if same_tol is None else same_tol):
             return best
     best = min(cands, key=dist)
     return best if dist(best) <= OTHER_LABEL_TOL_M else None

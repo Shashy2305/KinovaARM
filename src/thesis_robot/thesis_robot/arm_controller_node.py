@@ -889,7 +889,7 @@ class ArmControllerNode(Node):
                 out.append((d, xy))
         return out
 
-    def _wrist_target_xy(self, label, expected_xy, after, plane_z, timeout=3.0):
+    def _wrist_target_xy(self, label, expected_xy, after, plane_z, timeout=3.0, same_tol=None):
         """Where the wrist camera places `label` on the table plane: (x, y) in
         base_link, or None if it is not seen within `timeout`. Only frames received
         after `after` (monotonic) count, so we never act on a picture taken while moving."""
@@ -904,7 +904,7 @@ class ArmControllerNode(Node):
                     self.get_logger().warn(f'wrist TF not available: {e}')
                     time.sleep(0.1)
                     continue
-                got = ws.match_detection(self._wrist_xy_candidates(msg, R_bc, t_bc, plane_z), label, expected_xy)
+                got = ws.match_detection(self._wrist_xy_candidates(msg, R_bc, t_bc, plane_z), label, expected_xy, same_tol)
                 if got is not None:
                     d, xy = got
                     if d.get('label') != label:
@@ -1084,10 +1084,14 @@ class ArmControllerNode(Node):
             return False, None
 
         corrections, searches = 0, ws.search_offsets()
+        track = None
         search_origin = None
         while True:
             time.sleep(0.8)                                  # let the arm and the image settle
-            seen = self._wrist_target_xy(label, expected_xy, time.monotonic(), plane_z)
+            # once locked on, follow THAT object: later readings must be near its last position (7 cm), not just
+            # anywhere within 15 cm of the scene estimate (a mouse read as "bottle" took over, 2026-10-09)
+            seen = self._wrist_target_xy(label, track or expected_xy, time.monotonic(), plane_z,
+                                         same_tol=self.TRACK_TOL_M if track else None)
             try:
                 _, gpos = self._tf_pose(BASE_LINK, EE_LINK)
             except Exception as e:
@@ -1108,6 +1112,7 @@ class ArmControllerNode(Node):
                     return False, None
                 continue
             (tx, ty), conf = seen
+            track = (tx, ty)
             dx, dy, dist = ws.clipped_step((tx, ty), (cx_, cy_), self.center_max_step)
             self.get_logger().info(
                 f'center_over: {label} ({conf:.0%}) at ({tx:.3f},{ty:.3f}); fingers at '
@@ -1130,6 +1135,7 @@ class ArmControllerNode(Node):
     CARRY_CLEARANCE_M = 0.12      # object bottom this far above the table while it is carried
     SET_DOWN_GAP_M = 0.004        # released this far above where it stood when it was picked
     TALL_OBJECT_M = 0.09          # objects at least this tall block a carry path (the carried object is ~12 cm up)
+    TRACK_TOL_M = 0.07            # while centring, a same-class detection must be this close to the last accepted one
     CARRY_AVOID_M = 0.12          # keep the carry path this far (centre to centre) from tall objects
 
     def _check_grip(self, what):

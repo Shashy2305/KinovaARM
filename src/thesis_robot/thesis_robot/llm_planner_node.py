@@ -291,6 +291,22 @@ DESTINATION_WORDS = ('next to', 'beside', 'near', 'by the', 'left', 'right', 'fr
 PICK_WORDS = ('pick', 'grab', 'take', 'lift', 'fetch', 'get the', 'grasp')
 
 
+PLACE_WORDS = (' put ', ' place ', ' set it', ' next to', ' beside', ' aside', ' away', ' near ')
+
+
+def plan_covers_command(steps, command):
+    """(ok, why): does the model's plan contain what the command asks for? A "pick up the cup and put it next to
+    the bowl" that came back as a lone move_to (2026-10-09) was approved and ran, leaving the cup where it was."""
+    cmd = f' {(command or "").lower()} '
+    acts = [st.get('action') for st in steps if isinstance(st, dict)]
+    wants_pick = any(w in cmd for w in PICK_WORDS)
+    if wants_pick and 'pick' not in acts:
+        return False, 'the plan has no pick step'
+    if wants_pick and any(w in cmd for w in PLACE_WORDS) and 'place' not in acts:
+        return False, 'the plan has no place step'
+    return True, ''
+
+
 def normalize_place_here(plan, command):
     """"put it down" / "set it down" / "put it back" with no destination word means: where it was
     picked up. The model tends to invent coordinates for it (it once moved the mug 10 cm), so turn
@@ -591,13 +607,23 @@ class LLMPlannerNode(Node):
                     keep_alive=str(self.get_parameter('llm_keep_alive').value)   # a reload from the external disk took 78 s
                 )
                 raw = (response['message']['content'] or '').strip()
+                why = 'an empty/invalid reply'
                 try:
                     parsed = json.loads(raw)
                     if isinstance(parsed, dict):
-                        break
+                        try:
+                            steps = [json.loads(st) if isinstance(st, str) else st for st in parsed.get('plan', []) if st]
+                        except (json.JSONDecodeError, TypeError):
+                            steps = None
+                        if steps is None:
+                            why = 'a plan with unreadable steps'
+                        else:
+                            covered, why = plan_covers_command(steps, command)
+                            if covered:
+                                break
                 except json.JSONDecodeError:
                     pass
-                self.get_logger().warn(f'LLM returned an empty/invalid reply (attempt {attempt}/3) — retrying')
+                self.get_logger().warn(f'LLM returned {why} (attempt {attempt}/3) — retrying')
                 parsed = None
                 time.sleep(1.0)
             if parsed is None:

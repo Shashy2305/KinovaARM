@@ -238,3 +238,14 @@ def test_put_it_down_alone_drops_any_pick_the_model_added():
     assert out == [{'action': 'place', 'here': True}]
     kept = normalize_place_here([dict(s) for s in plan], 'pick up the cup and put it back')
     assert [s['action'] for s in kept] == ['pick', 'place']
+
+
+def test_plan_must_cover_pick_and_place_commands():
+    from thesis_robot.llm_planner_node import plan_covers_command
+    cmd = 'pick up the cup and put it next to the bowl'
+    assert plan_covers_command([{'action': 'move_to'}], cmd) == (False, 'the plan has no pick step')
+    assert plan_covers_command([{'action': 'pick'}], cmd) == (False, 'the plan has no place step')
+    assert plan_covers_command([{'action': 'pick'}, {'action': 'place'}], cmd)[0]
+    assert plan_covers_command([{'action': 'place', 'here': True}], 'put it down')[0]
+    assert plan_covers_command([{'action': 'pick'}], 'pick up the cup')[0]
+    assert plan_covers_command([{'action': 'go_home'}], 'go home')[0]
