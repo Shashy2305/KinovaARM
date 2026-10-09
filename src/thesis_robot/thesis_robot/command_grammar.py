@@ -21,8 +21,23 @@ OBJ = r'(?:the |a |an |that |this )?(?:[a-z]+ )??(?P<{g}>' + _NAMES + r')'
 PICK_VERB = r'(?:pick up|pick|grab|take|get|lift|fetch|grasp)'
 PUT_VERB = r'(?:put|place|set|move|bring|drop|shift)'
 NEXT_TO = r'(?:next to|beside|besides|by|near|close to|alongside|adjacent to)'
+SIDE = r'(?P<side>(?:to the |on the |at the )?(?:left|right)(?: side)?(?: of)?|in front of|in the front of|behind|in back of|at the back of|to the back of)'
 ASIDE = r'(?:aside|away|out of the way|to the side|somewhere else|off to the side|over there)'
 FILLER = re.compile(r'\b(please|can you|could you|would you|robot|now|kindly|just)\b')
+
+
+def _side_word(text):
+    """'to the left of' -> 'left', 'in front of' -> 'front', 'behind'/'in back of' -> 'behind', else None."""
+    t = text or ''
+    for key, word in (('left', 'left'), ('right', 'right'), ('front', 'front'), ('behind', 'behind'), ('back', 'behind')):
+        if key in t:
+            return word
+    return None
+
+
+# Which way each side points from the reference object, as (dx, dy) in base_link: "left" is -y (the operator's left, as the
+# scene graph's left_of), "front" +x (toward the operator), "behind" -x (toward the robot base). Same as the planner's SIDE_DIRECTION_DEG.
+SIDE_VECTOR = {'left': (0.0, -1.0), 'right': (0.0, 1.0), 'front': (1.0, 0.0), 'behind': (-1.0, 0.0)}
 
 
 def _clean(command):
@@ -39,6 +54,8 @@ def _o(group):
 PATTERNS = [
     ('go_home', re.compile(r'^(?:(?:go|return|come|move|send it|bring it|get|take it)(?: it| the arm| back)*(?: to)?(?: the)? )?home(?: position)?$')),
     ('put_down', re.compile(r"^(?:put|set|place)(?: it| that| this| the object)? (?:down|back)$|^(?:release|let go of)(?: it| that)?$|^drop it$")),
+    ('pick_place_side', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + SIDE + r' ' + _o('b') + r'$')),
+    ('pick_place_side', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + SIDE + r' ' + _o('b') + r'$')),
     ('pick_place_near', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEXT_TO + r' ' + _o('b') + r'$')),
     ('pick_place_near', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + NEXT_TO + r' ' + _o('b') + r'$')),
     ('pick_aside', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + ASIDE + r'$')),
@@ -57,7 +74,8 @@ def parse(command):
         if m:
             g = m.groupdict()
             return {'kind': kind, 'a': SYNONYMS.get(g.get('a')) if g.get('a') else None,
-                    'b': SYNONYMS.get(g.get('b')) if g.get('b') else None}
+                    'b': SYNONYMS.get(g.get('b')) if g.get('b') else None,
+                    'side': _side_word(g.get('side'))}
     return None
 
 
@@ -83,6 +101,18 @@ def _near(step, scene, label, tol=0.30):
     if 'x' in step and 'y' in step:
         return any(math.hypot(o['x'] - step['x'], o['y'] - step['y']) <= tol
                    for oid, o in _objects(scene, label) if o.get('x') is not None)
+    return False
+
+
+def _on_side(step, scene, label, side, reach=0.35):
+    """A place with x/y lies on `side` of some object of `label` (within `reach`): its offset from that object points
+    that way (within 55 degrees) and is not tiny."""
+    vx, vy = SIDE_VECTOR[side]
+    for oid, o in _objects(scene, label):
+        dx, dy = step['x'] - o['x'], step['y'] - o['y']
+        d = math.hypot(dx, dy)
+        if 0.05 <= d <= reach and (dx * vx + dy * vy) / d >= math.cos(math.radians(55)):
+            return True
     return False
 
 
@@ -116,6 +146,13 @@ def check(intent, steps, scene):
         return False, f'expected one place step, got {len(places)}'
     if k == 'pick_place_near':
         return res(_near(places[0], scene, intent['b']), f'the place is not next to the {intent["b"]}')
+    if k == 'pick_place_side':
+        st = places[0]
+        if st.get('near'):
+            ok = _label(scene, st['near']) == intent['b'] and str(st.get('side', '')).lower() == intent['side']
+        else:
+            ok = 'x' in st and _on_side(st, scene, intent['b'], intent['side'])
+        return res(ok, f'the place must be on the {intent["side"]} of the {intent["b"]} (near that object, with side "{intent["side"]}")')
     return True, ''
 
 
@@ -133,11 +170,14 @@ def build_plan(intent, scene):
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}]
     if k == 'pick_aside':
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'x': 0.45, 'y': 0.0}]
-    if k == 'pick_place_near':
+    if k in ('pick_place_near', 'pick_place_side'):
         b = best_object(scene, intent['b'], exclude=a)
         if b is None:
             return None
-        return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'near': b}]
+        place = {'action': 'place', 'near': b}
+        if k == 'pick_place_side':
+            place['side'] = intent['side']
+        return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, place]
     if k == 'go_near':
         o = scene[a]
         return [{'action': 'move_to', 'x': o['x'], 'y': o['y'], 'z': 0.4, 'speed': 0.2}]

@@ -37,6 +37,7 @@ AVAILABLE ACTIONS — use only these, no others:
   {"action":"move_to",      "x":float, "y":float, "z":float, "speed":0.2}
   {"action":"pick",         "object_id":"str", "approach_z":float}
   {"action":"place",        "near":"object_id"}     (put the held object down next to that object)
+  {"action":"place",        "near":"object_id", "side":"left|right|front|behind"}   (on that side of it)
   {"action":"place",        "x":float, "y":float}   (put the held object down at that table position)
   {"action":"place",        "here":true}            (put the held object down where the arm is now)
   {"action":"open_gripper"}
@@ -205,10 +206,21 @@ def _scene_points(scene, skip=()):
     return out
 
 
-def find_free_spot(target_xy, scene, prefer_xy, skip=(), rings=PLACE_RINGS_M, min_clear=PLACE_MIN_CLEAR_M):
+# Which way each spatial word points in base_link (degrees, counter-clockwise from +x). The same convention as the
+# scene graph's left_of/right_of: "left" is -y, "right" is +y as seen from the RealSense 1 camera / the operator; "front"
+# is +x (toward the operator, away from the robot), "behind" is -x (toward the robot's base).
+SIDE_DIRECTION_DEG = {'left': -90.0, 'right': 90.0, 'front': 0.0, 'behind': 180.0}
+SIDE_SPREAD_DEG = 45.0
+SIDE_PHRASE = {'left': 'to the left of', 'right': 'to the right of', 'front': 'in front of', 'behind': 'behind'}
+
+
+def find_free_spot(target_xy, scene, prefer_xy, skip=(), rings=PLACE_RINGS_M, min_clear=PLACE_MIN_CLEAR_M,
+                   direction_deg=None, spread_deg=SIDE_SPREAD_DEG):
     """A table spot a little way from the target object that is inside the workspace, clear of
     every other known object and not under the robot's base column. Among the candidates the one
     closest to prefer_xy (where the held object is now) wins, so the carry is short.
+    direction_deg: prefer spots on that side of the target (SIDE_DIRECTION_DEG): only directions within spread_deg of it
+    are used, the one closest to the exact direction wins (then the shortest carry). None = any direction.
     Returns (x, y) or None."""
     others = _scene_points(scene, skip)
     xlo, xhi = sg.PLAN_X_RANGE[0] + PLACE_EDGE_MARGIN_M, sg.PLAN_X_RANGE[1] - PLACE_EDGE_MARGIN_M
@@ -216,15 +228,23 @@ def find_free_spot(target_xy, scene, prefer_xy, skip=(), rings=PLACE_RINGS_M, mi
     best = None
     for r in rings:
         for k in range(24):
-            a = math.radians(15 * k)
+            deg = 15 * k
+            if direction_deg is not None:
+                off = abs((deg - direction_deg + 180.0) % 360.0 - 180.0)
+                if off > spread_deg + 1e-6:
+                    continue
+            else:
+                off = 0.0
+            a = math.radians(deg)
             x, y = target_xy[0] + r * math.cos(a), target_xy[1] + r * math.sin(a)
             if not (xlo <= x <= xhi and ylo <= y <= yhi) or math.hypot(x, y) < PLACE_MIN_RADIUS_M:
                 continue
             if any(math.hypot(x - ox, y - oy) < min_clear for _, ox, oy in others):
                 continue
             d = math.hypot(x - prefer_xy[0], y - prefer_xy[1])
-            if best is None or d < best[0]:
-                best = (d, x, y)
+            key = (round(off, 3), d) if direction_deg is not None else (d,)
+            if best is None or key < best[0]:
+                best = (key, x, y)
         if best is not None:
             break                                    # the closest ring that has any free spot
     return None if best is None else (round(best[1], 4), round(best[2], 4))
@@ -261,12 +281,19 @@ def fix_place_targets(plan, scene, current_xy=None):
             prefer = (pobj['x'], pobj['y'])
         prefer = prefer or (0.4, 0.0)
         near = step.pop('near', None)
+        side = str(step.pop('side', '') or '').lower() or None
+        if side not in SIDE_DIRECTION_DEG:
+            side = None
         if near:
             tid = _resolve_object(near, scene)
             if tid is None:
                 step['unplaceable'] = f"object '{near}' is not in the scene"
                 continue
-            spot = find_free_spot((scene[tid]['x'], scene[tid]['y']), scene, prefer, skip=(picked, tid))
+            spot = find_free_spot((scene[tid]['x'], scene[tid]['y']), scene, prefer, skip=(picked, tid),
+                                  direction_deg=SIDE_DIRECTION_DEG.get(side))
+            if spot is None and side is not None:
+                step['unplaceable'] = f"no free spot {SIDE_PHRASE[side]} '{tid}'"
+                continue
             if spot is None:
                 step['unplaceable'] = f"no free spot next to '{tid}'"
                 continue

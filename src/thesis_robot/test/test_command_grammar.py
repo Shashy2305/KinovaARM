@@ -86,3 +86,28 @@ def test_build_plan_picks_the_most_confident_fresh_object_and_a_different_refere
     assert plan[0]['object_id'] == 'cup_01' and plan[1]['near'] == 'cup_02'      # the other cup, never itself
     assert cg.build_plan(cg.parse('pick up the bowl'), SCENE)[0]['object_id'] == 'bowl_00'   # the stale one is ignored
     assert cg.build_plan(cg.parse('pick up the scissors'), SCENE) is None                     # not in the scene
+
+
+@pytest.mark.parametrize('text,side', [
+    ('pick up the cup and put it to the left of the bowl', 'left'),
+    ('grab the mouse and place it on the right side of the bottle', 'right'),
+    ('pick up the bottle and put it in front of the bowl', 'front'),
+    ('pick up the cup and set it behind the mouse', 'behind'),
+    ('move the mouse to the left of the cup', 'left'),
+    ('put the bowl in back of the bottle', 'behind'),
+])
+def test_side_relations_parse(text, side):
+    i = cg.parse(text)
+    assert i is not None and i['kind'] == 'pick_place_side' and i['side'] == side, text
+
+
+def test_side_check_and_build():
+    i = cg.parse('pick up the cup and put it to the left of the bowl')
+    plan = cg.build_plan(i, SCENE)
+    assert plan[1] == {'action': 'place', 'near': 'bowl_00', 'side': 'left'}
+    assert cg.check(i, plan, SCENE)[0]
+    assert not cg.check(i, [plan[0], {'action': 'place', 'near': 'bowl_00'}], SCENE)[0]            # missing side
+    assert not cg.check(i, [plan[0], {'action': 'place', 'near': 'bowl_00', 'side': 'right'}], SCENE)[0]
+    # coordinates are accepted when they really lie on that side: the bowl is at (0.32, 0.28), left is -y
+    assert cg.check(i, [plan[0], {'action': 'place', 'x': 0.32, 'y': 0.12}], SCENE)[0]
+    assert not cg.check(i, [plan[0], {'action': 'place', 'x': 0.32, 'y': 0.44}], SCENE)[0]

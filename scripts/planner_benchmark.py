@@ -25,6 +25,9 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'thesis_robot'))
+from thesis_robot import command_grammar as cg  # noqa: E402
+
 
 def pick_ids(plan):
     return [s.get('object_id') for s in plan if isinstance(s, dict) and s.get('action') == 'pick']
@@ -81,6 +84,17 @@ def suite(a, b):
         return (any(math.hypot(o['x'] - s['x'], o['y'] - s['y']) < 0.08 for o in scene.values()
                     if isinstance(o, dict) and o.get('label') == a and o.get('x') is not None), f'not over the {a}')
 
+    def on_side(side):
+        def check(plan, scene):
+            ok, why = one_pick(plan, scene)
+            if not ok:
+                return ok, why
+            places = [s for s in plan if s.get('action') == 'place']
+            if len(places) != 1 or 'x' not in places[0]:
+                return False, 'no single place with coordinates'
+            return (cg._on_side(places[0], scene, b, side), f'the place is not on the {side} of the {b}: {places[0].get("x")}, {places[0].get("y")}')
+        return check
+
     def pick_next_home(plan, scene):
         acts = [s.get('action') for s in plan]
         if acts != ['pick', 'place', 'go_home']:
@@ -97,6 +111,10 @@ def suite(a, b):
         ('go_home', 'go home', go_home),
         ('go_near', f'go near the {a}', go_near),
         ('polite', f'could you please pick up the {a} and place it near the {b}', pick_place_next),
+        ('side_left', f'pick up the {a} and put it to the left of the {b}', on_side('left')),
+        ('side_right', f'pick up the {a} and put it to the right of the {b}', on_side('right')),
+        ('side_front', f'pick up the {a} and put it in front of the {b}', on_side('front')),
+        ('side_behind', f'move the {a} behind the {b}', on_side('behind')),
         ('compound', f'pick up the {a}, put it next to the {b} and then go home', pick_next_home),
     ]
 
@@ -159,7 +177,10 @@ def main():
     args = ap.parse_args()
     rclpy.init()
     b = Bench()
-    b.spin_for(3.0)
+    t_wait = time.time()
+    while (not b.scene or not b.arm) and time.time() - t_wait < 25:       # DDS discovery of a new node can take several seconds
+        b.spin_for(0.5)
+    b.spin_for(1.0)
     if 'LIVE' in b.arm:
         print(f'REFUSING TO RUN: the arm status is "{b.arm}". Put the arm in Dry Run first.')
         sys.exit(2)
@@ -178,7 +199,9 @@ def main():
             plan, secs, status = b.ask(command)
             meta = dict(b.last_meta)
             scene = dict(b.scene)
-            if plan is None:
+            if plan is None and 'no free spot' in status:
+                ok, why = True, ''          # the workspace really has no room there: refusing is the right answer
+            elif plan is None:
                 ok, why = False, status
             else:
                 try:

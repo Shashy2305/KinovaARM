@@ -249,3 +249,33 @@ def test_plan_must_cover_pick_and_place_commands():
     assert plan_covers_command([{'action': 'place', 'here': True}], 'put it down')[0]
     assert plan_covers_command([{'action': 'pick'}], 'pick up the cup')[0]
     assert plan_covers_command([{'action': 'go_home'}], 'go home')[0]
+
+
+def _scene_for_sides():
+    return {
+        'bowl_00': {'label': 'bowl', 'x': 0.40, 'y': 0.0, 'z': 0.03, 'reachable': True, 'stale': False, 'confidence': 0.9},
+        'cup_01': {'label': 'cup', 'x': 0.30, 'y': 0.25, 'z': 0.05, 'reachable': True, 'stale': False, 'confidence': 0.9},
+    }
+
+
+def test_free_spot_prefers_the_requested_side():
+    from thesis_robot.llm_planner_node import find_free_spot, SIDE_DIRECTION_DEG
+    scene = _scene_for_sides()
+    for side, test in (('left', lambda x, y: y < -0.08), ('right', lambda x, y: y > 0.08),
+                       ('front', lambda x, y: x > 0.48), ('behind', lambda x, y: x < 0.32)):
+        spot = find_free_spot((0.40, 0.0), scene, (0.3, 0.25), skip=('cup_01', 'bowl_00'), direction_deg=SIDE_DIRECTION_DEG[side])
+        assert spot is not None and test(*spot), (side, spot)
+
+
+def test_place_with_a_side_becomes_a_spot_on_that_side_and_unsatisfiable_sides_are_reported():
+    from thesis_robot.llm_planner_node import fix_place_targets
+    scene = _scene_for_sides()
+    plan = fix_place_targets([{'action': 'pick', 'object_id': 'cup_01'},
+                              {'action': 'place', 'near': 'bowl_00', 'side': 'left'}], scene)
+    assert plan[1]['y'] < -0.08 and 'side' not in plan[1] and 'near' not in plan[1]
+    # a bowl at the right-hand workspace edge has no free spot on its right
+    edge = {'bowl_00': {'label': 'bowl', 'x': 0.40, 'y': 0.33, 'z': 0.03, 'reachable': True, 'stale': False, 'confidence': 0.9},
+            'cup_01': scene['cup_01']}
+    plan = fix_place_targets([{'action': 'pick', 'object_id': 'cup_01'},
+                              {'action': 'place', 'near': 'bowl_00', 'side': 'right'}], edge)
+    assert 'unplaceable' in plan[1] and 'to the right of' in plan[1]['unplaceable']

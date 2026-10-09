@@ -92,7 +92,10 @@ def skeletonize(plan, scene, labels):
                 lab = _label_of(st.get('near'), scene)
                 if lab not in slot_of:
                     return None
-                out.append({'action': 'place', 'near': slot_of[lab]})
+                sk = {'action': 'place', 'near': slot_of[lab]}
+                if st.get('side') in ('left', 'right', 'front', 'behind'):
+                    sk['side'] = st['side']
+                out.append(sk)
             else:
                 out.append({'action': 'place', 'aside': True})        # coordinates are never remembered
         elif act in ('go_home', 'open_gripper', 'close_gripper'):
@@ -133,7 +136,10 @@ def instantiate(skeleton, labels, scene):
             elif st.get('near'):
                 if st['near'] not in ids:
                     return None
-                out.append({'action': 'place', 'near': ids[st['near']]})
+                step = {'action': 'place', 'near': ids[st['near']]}
+                if st.get('side'):
+                    step['side'] = st['side']
+                out.append(step)
             else:
                 return None            # "aside" positions come from the planner's free-spot search, not from the model
         else:
