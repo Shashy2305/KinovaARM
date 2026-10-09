@@ -137,3 +137,15 @@ def test_no_object_returns_none():
 
 def test_px_to_m_scale():
     assert sa.px_to_m(130, 0.26, 1300.0) == pytest.approx(0.026)
+
+
+def test_small_notches_in_the_outline_are_not_reported_as_handles():
+    img = background()
+    poly = capsule(240, 180, 140, 60, 30)
+    # a few pixels of outline noise: bite 5 px notches out of the polygon
+    noisy = poly.copy()
+    noisy[10] += (-5, 5)
+    noisy[30] += (5, -5)
+    draw_poly(img, poly)
+    a = sa.analyse(img, box_of(poly), polygon=noisy)
+    assert a is not None and a['handle'] is None

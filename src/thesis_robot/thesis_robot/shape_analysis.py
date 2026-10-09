@@ -282,7 +282,7 @@ def analyse(bgr, box, polygon=None, use_grabcut=True):
     if len(cnt) >= 5:
         (ex, ey), (ea, eb), eang = cv2.fitEllipse(cnt.reshape(-1, 1, 2))
         ellipse = {'major': float(max(ea, eb)), 'minor': float(min(ea, eb)), 'angle': float(eang % 180.0)}
-    defects = convexity_defects(cnt, min_depth_px=0.10 * max(rw, 1.0))
+    defects = convexity_defects(cnt, min_depth_px=max(8.0, 0.18 * max(rw, 1.0)))     # a handle is ~1/3 of the body width; 4-8 px notches are outline noise
     handle = None
     holes = enclosed_holes(mask) if mask is not None else []
     if holes:                                              # a closed loop (handle) beside the body
