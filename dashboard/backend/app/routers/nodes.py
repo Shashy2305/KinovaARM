@@ -75,8 +75,8 @@ def arm_controller_go_live(req: GoLiveRequest):
     process_manager.manager.stop('arm_controller')
     time.sleep(1.0)
     cmd = (
-        f'{config.ROS_ENV_CMD} ros2 run thesis_robot arm_controller '
-        f'--ros-args -p dry_run:=false -p speed:=0.10'
+        f'{config.ROS_ENV_CMD} ros2 run thesis_robot arm_controller'
+        f'{config.ros_args("arm_controller", "-p dry_run:=false -p speed:=0.10")}'
     )
     log_f = open(os.path.join(config.LOG_DIR, 'arm_controller.log'), 'w')
     popen = subprocess.Popen(

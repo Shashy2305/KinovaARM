@@ -43,6 +43,19 @@ CAMERA_TOPICS = {
 # category groups the Node Control grid in the UI; hardware_affecting drives
 # the "are you sure" styling (not a hard block) for anything that moves the
 # arm or talks to a physical device.
+def params_file_arg(node_name):
+    """'--params-file <repo>/config/<node_name>_params.yaml ' if that file exists, else ''. The dashboard restarts the arm controller
+    (Go Live, Go Dry Run), which resets every `ros2 param set`; a parameters file makes a choice survive the restart."""
+    path = os.path.join(REPO_ROOT, 'config', f'{node_name}_params.yaml')
+    return f'--params-file {path} ' if os.path.exists(path) else ''
+
+
+def ros_args(node_name, *extra):
+    """' --ros-args <params file> <extra...>' for `ros2 run`, or '' when there is nothing to pass."""
+    parts = (params_file_arg(node_name) + ' '.join(extra)).strip()
+    return f' --ros-args {parts}' if parts else ''
+
+
 PROCESSES = {
     'robot_bringup': {
         'label': 'Robot bringup (robot.launch.py)',
@@ -176,7 +189,7 @@ PROCESSES = {
         'label': 'LLM planner',
         'category': 'planning',
         'hardware_affecting': False,
-        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot llm_planner_node',
+        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot llm_planner_node{ros_args("llm_planner")}',
         'signature': 'thesis_robot/lib/thesis_robot/llm_planner_node',
     },
     'audio_node': {
@@ -194,7 +207,7 @@ PROCESSES = {
         'hardware_affecting': True,
         # dry_run always true on start regardless of how it's later toggled
         # in the UI -- see routers/nodes.py's go-live endpoint.
-        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot arm_controller --ros-args -p dry_run:=true',
+        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot arm_controller{ros_args("arm_controller", "-p dry_run:=true")}',
         'signature': 'thesis_robot/lib/thesis_robot/arm_controller',
     },
 }

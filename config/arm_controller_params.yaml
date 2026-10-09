@@ -1,0 +1,26 @@
+# Parameters of /arm_controller, loaded at EVERY start (also by the dashboard's Go Live, which restarts the node: a plain
+# `ros2 param set` is lost then). Edit a value here to make a switch permanent; the values below are the code's defaults.
+# Types matter: write floats with a decimal point (0.0), booleans as true/false. See docs/TEST_PLAN_2026-10-09.md for what each does.
+arm_controller:
+  ros__parameters:
+    # grasp direction (grasp_planner.py)
+    grasp_retry_new_angle: true      # a retry closes along a NEW direction
+    grasp_candidates: false          # rank directions from the shape on EVERY attempt
+    grasp_policy: false              # bias that ranking by past outcomes (grasp_policy.py)
+    use_shape_width: false           # preshape from the measured width
+    # angled approach (docs/ANGLED_APPROACH.md)
+    approach_tilt_deg: 0.0
+    retry_tilt_deg: 0.0
+    tilt_azimuth_deg: -1.0           # -1 = automatic
+    # unknown obstacles from depth
+    use_unknown_obstacles: false
+    unknown_obstacles_min_cameras: 2
+    # motion
+    smooth_trajectories: true
+    smooth_vel_scale: 0.30
+    smooth_acc_scale: 0.20
+    smooth_free_vel_scale: 0.30      # raise (0.38-0.45) to speed up big free-space swings
+    smooth_free_min_rad: 0.6
+    # data
+    outcome_log: true
+    collect_training_samples: true
