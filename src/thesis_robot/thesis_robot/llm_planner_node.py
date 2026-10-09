@@ -506,6 +506,9 @@ class LLMPlannerNode(Node):
         # A hung Ollama must not leave is_planning stuck True (every later
         # command would be ignored as "already planning").
         self.declare_parameter('llm_timeout_s', 60.0)
+        # Ollama's default context is 4096 tokens: the system prompt + scene + memory block can approach it and an overflow
+        # makes the model answer with an empty plan (seen once with a 40 KB scene). 8192 costs ~1 GB of GPU memory.
+        self.declare_parameter('llm_num_ctx', 8192)
         self.declare_parameter('llm_keep_alive', '6h')   # how long Ollama keeps the model loaded between commands
         self.declare_parameter('max_scene_age_s', 3.0)
         # Check the model's plan against what the command means (command_grammar) and retry with a hint; after three
@@ -664,8 +667,17 @@ class LLMPlannerNode(Node):
                         {'role': 'user',   'content': user_msg + hint},
                     ],
                     format='json',
-                    keep_alive=str(self.get_parameter('llm_keep_alive').value)   # a reload from the external disk took 78 s
+                    keep_alive=str(self.get_parameter('llm_keep_alive').value),   # a reload from the external disk took 78 s
+                    options={'num_ctx': int(self.get_parameter('llm_num_ctx').value)}
                 )
+                try:
+                    used = int(response.get('prompt_eval_count') or 0)
+                    if used:
+                        self.get_logger().info(f'prompt: {used} tokens of {int(self.get_parameter("llm_num_ctx").value)}')
+                        if used > 0.85 * int(self.get_parameter('llm_num_ctx').value):
+                            self.get_logger().warn('the prompt nearly fills the context window: shrink the scene or raise llm_num_ctx')
+                except Exception:
+                    pass
                 raw = (response['message']['content'] or '').strip()
                 why = 'an empty/invalid reply'
                 try:
