@@ -52,9 +52,9 @@ WHICH ACTION FOR WHICH COMMAND:
     clear of its top, don't descend onto it).
     Do NOT use pick for these — pick closes the gripper on the object,
     which is not what "go near" means.
-  - "pick up X", "grab X", "get X" -> a pick step (approach_z>=0.15),
-    optionally followed by place/open_gripper if the command also says
-    where to put it down.
+  - "pick up X", "grab X", "get X" -> ONE pick step (approach_z>=0.15) and NOTHING else.
+    Add a place step ONLY if the command also says where to put it
+    down ("... and put it next to Y", "... aside", "... down").
   - "put/place it next to X", "pick up A and put it beside B" -> pick A, then
     {"action":"place","near":"<B's object_id>"}. Do not compute coordinates for a place
     next to an object, give the object_id. "put it down" -> {"action":"place","here":true}.
