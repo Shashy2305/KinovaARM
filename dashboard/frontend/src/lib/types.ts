@@ -19,6 +19,7 @@ export interface RosStatus {
   arm_status: string | null
   audio_status: string | null
   voice_transcript: Transcript | null
+  joint_state_publishers?: number | null
 }
 
 export interface Transcript {

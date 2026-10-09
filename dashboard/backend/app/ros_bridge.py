@@ -192,7 +192,13 @@ class RosBridge(Node):
                     out[key] = json.loads(raw)
                 except json.JSONDecodeError:
                     out[key] = raw
-            return out
+        # Is anything publishing the arm's joint states? A cheap graph query (no 900 Hz subscription). On 2026-10-09 the
+        # robot driver froze with the process alive, the dashboard said "bringup up" and every arm command timed out.
+        try:
+            out['joint_state_publishers'] = int(self.count_publishers('/joint_states'))
+        except Exception:
+            out['joint_state_publishers'] = None
+        return out
 
     def get_image_meta(self, camera_name):
         with self._lock:

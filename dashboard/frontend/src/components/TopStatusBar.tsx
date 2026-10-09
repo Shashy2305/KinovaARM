@@ -27,6 +27,7 @@ export function TopStatusBar({ status, connected }: { status: StatusPayload | nu
   const isLive = armStatus.toLowerCase().includes('live')
   const robot = status?.processes.robot_bringup?.status
   const robotUp = !!robot && robot !== 'stopped'
+  const noJoints = robotUp && status?.ros.joint_state_publishers === 0     // driver process alive but nothing publishes the arm's joint states
 
   const cams = ['oakd', 'realsense', 'realsense2', 'wrist']
   const camOff = cams.filter((c) => calib?.[c] === 'disabled')     // switched off on purpose: neither ok nor a fault
@@ -53,7 +54,7 @@ export function TopStatusBar({ status, connected }: { status: StatusPayload | nu
       {isLive && <div className="hazard h-1.5" />}
       <div className="flex flex-wrap items-stretch border-l border-(--color-border)">
         <Cell label="Link" value={connected ? 'connected' : 'reconnecting'} tone={connected ? 'ok' : 'warn'} blink={!connected} />
-        <Cell label="Robot" value={robotUp ? 'bringup up' : 'bringup off'} tone={robotUp ? 'ok' : 'neutral'} />
+        <Cell label="Robot" value={noJoints ? 'NO JOINT STATES - restart bringup' : robotUp ? 'bringup up' : 'bringup off'} tone={noJoints ? 'bad' : robotUp ? 'ok' : 'neutral'} wide={noJoints} blink={noJoints} />
         <Cell label="Arm" value={isLive ? 'LIVE — MOVES' : 'dry run'} tone={isLive ? 'bad' : 'warn'} blink={isLive} />
         <Cell label="Table" value={tableCell.v} tone={tableCell.t} wide />
         <Cell label="Cameras" value={camDown.length ? `no signal: ${camDown.join(', ')}` : `${camOk}/${cams.length - camOff.length} ok${camOff.length ? ` · ${camOff.join(', ')} off` : ''}${camBad ? ' · recal' : ''}`} tone={camBad || camDown.length ? 'bad' : camOk === cams.length - camOff.length ? 'ok' : 'warn'} wide={camDown.length > 0 || camOff.length > 0} />
