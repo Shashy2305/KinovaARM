@@ -787,6 +787,11 @@ class ArmControllerNode(Node):
             return False, 'position'
         geom, _ = sg.load_geometry()
         label = (self.latest_scene.get(object_id) or {}).get('label', 'object')
+        wide = ws.too_wide_for_gripper(label)
+        if wide:
+            self._refuse(f'pick: the {label} is about {wide[0] * 100:.0f} cm across and the open gripper spans {wide[1] * 100:.1f} cm, '
+                         f'so the fingers cannot straddle it (they would close on air). Move it by hand, or pick something narrower')
+            return False, 'too wide'
         # z is the FLANGE height: the fingertips hang TCP_REACH_M below it. Grasp with the
         # fingertips at the object's centre height, but never below the table floor.
         tip_clear = float(self.get_parameter('low_pick_tip_clearance_m').value)

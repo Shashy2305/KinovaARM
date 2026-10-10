@@ -184,6 +184,10 @@ SWEEP_MARGIN_M = 0.015
 FINGER_GAP_TABLE = ((0.0, 0.135), (0.2, 0.1035), (0.3, 0.0857), (0.4, 0.0665))
 FINGER_OUTER_EXTRA_M = 0.0275  # the outer edge of a finger sits this far beyond its pad: half-span = gap/2 + this
 GRIP_WIDTH_M = {'mouse': 0.062, 'bottle': 0.07}   # object width across the preferred closing axis
+# Objects whose narrowest width is close to or beyond the fully open gripper (13.5 cm between the pads). The fingers cannot straddle
+# them: a live pick of the bowl (about 14 cm across) came down on the rim and closed on air (finger reading 0.68) at 2026-10-09 20:57.
+UNGRIPPABLE_WIDTH_M = {'bowl': 0.14}
+GRIPPER_MARGIN_M = 0.01           # the open gripper must clear the object by at least this much in total
 PRESHAPE_CLEARANCE_M = 0.05    # total slack added to that width (about 2.5 cm a side: the centring accepts 2 cm)
 LONG_AXIS_UNRELIABLE = {'mouse'}  # a 90-degree turn puts these low, tapered objects between the fingers by their ends
 
@@ -197,6 +201,16 @@ def gap_to_position(gap):
         if gap >= g1:
             return q0 + (q1 - q0) * (g0 - gap) / (g0 - g1)
     return pts[-1][0]
+
+
+def too_wide_for_gripper(label, width_m=None):
+    """(object width, open gripper span) in metres when the fingers cannot straddle `label` even fully open, else None.
+    width_m: a width MEASURED across the narrowest axis (shape analysis); it replaces the table value."""
+    w = width_m if width_m is not None and width_m > 0.0 else UNGRIPPABLE_WIDTH_M.get(label)
+    span = FINGER_GAP_TABLE[0][1]
+    if w is not None and w + GRIPPER_MARGIN_M > span:
+        return w, span
+    return None
 
 
 def preshape_for(label, width_m=None):

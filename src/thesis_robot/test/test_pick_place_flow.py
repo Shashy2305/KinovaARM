@@ -365,3 +365,11 @@ def test_retry_tilt_applies_to_the_second_attempt_only(node, tilt_world):
     assert run_pick(node) is True
     assert tilt_world.guarded == ['tilt in']                                      # once: attempt 2
     assert len(tilt_world.ik_calls) == 1
+
+
+def test_a_bowl_wider_than_the_open_gripper_is_refused_before_any_motion():
+    from thesis_robot import wrist_servo as ws
+    assert ws.too_wide_for_gripper('bowl') is not None
+    assert ws.too_wide_for_gripper('cup') is None and ws.too_wide_for_gripper('mouse') is None and ws.too_wide_for_gripper('bottle') is None
+    assert ws.too_wide_for_gripper('cup', width_m=0.15) is not None          # a measured width overrides the table
+    assert ws.too_wide_for_gripper('bowl', width_m=0.10) is None
