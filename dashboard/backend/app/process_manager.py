@@ -132,7 +132,7 @@ class ProcessManager:
         out, seen = [], set()
         for pid, cmd in cmdlines.items():
             user = self._foreign(pid)
-            if not user or self._is_shell(cmd) or self._is_api_client(cmd):
+            if not user or self._is_shell(cmd) or self._is_api_client(cmd) or self._is_multiplexer(cmd):
                 continue
             for needle, what in self._HARDWARE_PATTERNS:
                 if needle in cmd:
@@ -218,6 +218,12 @@ class ProcessManager:
         (it made Start report 'already running' and let Stop kill its own caller)."""
         first = cmdline.split(None, 1)[0] if cmdline else ''
         return os.path.basename(first) in cls._API_CLIENTS or '/api/nodes/' in cmdline
+
+    @classmethod
+    def _is_multiplexer(cls, cmdline):
+        """A tmux/screen server carries the command it was started with on its own command line; it is not a hardware user."""
+        first = cmdline.split(None, 1)[0] if cmdline else ''
+        return os.path.basename(first) in ('tmux', 'screen')
 
     @classmethod
     def _is_shell(cls, cmdline):

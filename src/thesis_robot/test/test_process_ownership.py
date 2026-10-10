@@ -48,12 +48,13 @@ def test_start_refuses_with_a_name_and_stop_does_not_touch_it(monkeypatch):
 
 def test_hardware_holders_name_the_camera_and_skip_shells():
     m, c = manager({
-        1: ('kinova', "tmux new -d -s front_cam bash -c 'ros2 launch realsense2_camera rs_launch.py serial_no:=_938422070760'"),
+        1: ('kinova', '/usr/bin/python3 /opt/ros/humble/bin/ros2 launch realsense2_camera rs_launch.py camera_name:=front_cam serial_no:=_938422070760'),
         2: ('kinova', 'bash -c ros2 launch realsense2_camera rs_launch.py serial_no:=_938422070760'),
         3: ('kinova', '/home/kinova/x/kinova_vision_node --ros-args -r __node:=kinova_vision_color'),
         4: ('kinova', '/home/kinova/x/ros2_control_node --params-file p.yaml'),
         5: ('shash', '/x/ros2_control_node --params-file ours.yaml'),
         6: ('kinova', '/opt/ros/humble/lib/realsense2_camera/realsense2_camera_node --ros-args -r __node:=front_cam'),
+        7: ('kinova', "tmux new -d -s other bash -c 'ros2 launch realsense2_camera rs_launch.py serial_no:=_215322071290'"),
     })
     out = m.hardware_holders(c)
     whats = sorted(h['what'] for h in out)
@@ -61,4 +62,5 @@ def test_hardware_holders_name_the_camera_and_skip_shells():
     assert any('wrist camera' in w for w in whats)
     assert any('arm driver' in w for w in whats)
     assert all(h['user'] == 'kinova' for h in out)               # our own ros2_control_node is not listed
+    assert not any('RS2' in w for w in whats)                    # a tmux server's command line is not a camera user
     assert not any(w == 'a RealSense camera' for w in whats)     # the generic row is dropped when a serial names the camera
