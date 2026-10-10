@@ -650,3 +650,10 @@ width vs table width, class, edge support, closing direction relative to the lon
 Tests: ROS must be sourced BEFORE the venv is activated (`source /opt/ros/humble/setup.bash && source /mnt/ros_workspace/venv/bin/activate`), otherwise rclpy
 or the matching scipy/numpy is missing and 3 test files skip. The controller process itself runs on the SYSTEM Python, whose user-site scipy cannot import
 `scipy.interpolate` (the smoothing spline is numpy-only for that reason); the wrist detector and other nodes run on the venv.
+
+## 20. "No signal" / Restart does nothing: another user holds the hardware (2026-10-09 evening)
+The `kinova` account on this machine runs its own stack on **ROS domain 0** (ours is 42): `ros2_control_node` (the arm driver; one program per arm),
+`kinova_vision_node` (the wrist camera: the arm's RTSP server answers `503` to a second client) and a RealSense `front_cam` on serial 938422070760 (our RS1).
+Symptoms on our side: cameras `realsense` and `wrist` = no signal (`Device or resource busy`, `Failed to start stream`), Robot chip "driven by kinova", no `/joint_states` on domain 42.
+The dashboard now says who holds what (amber banner, `hardware_holders` in `/api/status`, node chip "run by kinova"), and Start/Stop on a node another user runs is refused with their name.
+It never stops other users' processes; ask them. Check by hand: `ros2 node list` with `ROS_DOMAIN_ID=0`, `ps -eo user,args | grep -E "ros2_control_node|kinova_vision_node|serial_no"`.

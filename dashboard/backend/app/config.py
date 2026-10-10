@@ -56,6 +56,9 @@ def ros_args(node_name, *extra):
     return f' --ros-args {parts}' if parts else ''
 
 
+# RealSense serials, to name which camera another user's launch command occupies (hardware_holders)
+CAMERA_SERIALS = {'RS1': '938422070760', 'RS2': '215322071290'}
+
 PROCESSES = {
     'robot_bringup': {
         'label': 'Robot bringup (robot.launch.py)',

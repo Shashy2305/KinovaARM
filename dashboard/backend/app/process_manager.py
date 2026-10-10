@@ -7,7 +7,9 @@ exact failure mode (two OAK-D drivers fighting over one USB device, an
 old RealSense TF publisher left running alongside a new one) is what cost
 the most debugging time during development.
 """
+import getpass
 import os
+import re
 import signal
 import subprocess
 import time
@@ -29,6 +31,8 @@ class ManagedProcess:
 class ProcessManager:
     def __init__(self):
         self._procs = {pid: ManagedProcess(pid) for pid in config.PROCESSES}
+        self._me = getpass.getuser()
+        self._owners = {}           # {pid: username} of the last _snapshot_cmdlines() scan
 
     # ── inspection ───────────────────────────────────────────────────
     def _snapshot_cmdlines(self):
@@ -40,13 +44,21 @@ class ProcessManager:
         work landing straight on the asyncio event loop thread (nothing
         here awaited it), which is what was stalling/hanging the backend:
         see routers/status.py's ws_status for the other half of the fix."""
-        snapshot = {}
-        for p in psutil.process_iter(['pid', 'cmdline']):
+        snapshot, owners = {}, {}
+        for p in psutil.process_iter(['pid', 'cmdline', 'username']):
             try:
                 snapshot[p.info['pid']] = ' '.join(p.info['cmdline'] or [])
+                owners[p.info['pid']] = p.info['username']
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
+        self._owners = owners
         return snapshot
+
+    def _foreign(self, pid):
+        """Username of another account that owns this pid (None: it is ours, or unknown). On this shared lab machine a
+        matching process owned by another user is NOT ours to start, stop or count as 'already running for us'."""
+        owner = self._owners.get(pid)
+        return owner if owner and owner != self._me else None
 
     def _matching_pids(self, signature, cmdlines):
         """PIDs (from a pre-fetched {pid: cmdline} snapshot) whose command
@@ -67,10 +79,12 @@ class ProcessManager:
         mp = self._procs[proc_id]
 
         owned_alive = mp.popen is not None and mp.popen.poll() is None
-        external_pids = [
+        matching = [
             pid for pid in self._matching_pids(cfg['signature'], cmdlines)
             if not (owned_alive and pid == mp.popen.pid)
         ]
+        external_pids = [pid for pid in matching if not self._foreign(pid)]
+        foreign_pids = [pid for pid in matching if self._foreign(pid)]
 
         for other_sig in cfg.get('conflict_signatures', []):
             if other_sig == cfg['signature']:
@@ -93,7 +107,50 @@ class ProcessManager:
             return 'running'
         if external_pids:
             return 'running_external'
+        if foreign_pids:
+            return 'running_other_user'
         return 'stopped'
+
+    def other_users(self, proc_id, cmdlines):
+        """Sorted usernames of OTHER accounts running something that matches this process's signature."""
+        sig = config.PROCESSES[proc_id]['signature']
+        return sorted({self._foreign(pid) for pid in self._matching_pids(sig, cmdlines)} - {None})
+
+    # Hardware another account may be holding: what to look for in their command lines, and what it means for us.
+    _HARDWARE_PATTERNS = (
+        ('ros2_control_node', 'the arm driver (only one program can drive the arm)'),
+        ('kinova_vision_node', 'the wrist camera stream (the arm serves one RTSP client)'),
+        ('realsense2_camera_node', 'a RealSense camera'),
+    )
+
+    def hardware_holders(self, cmdlines=None):
+        """Processes of OTHER users that occupy robot hardware we need: [{user, pid, what, detail}]. A RealSense node is
+        matched to its camera through the serial in its launch command when that is visible."""
+        if cmdlines is None:
+            cmdlines = self._snapshot_cmdlines()
+        serial_of = {v: k for k, v in config.CAMERA_SERIALS.items()}
+        out, seen = [], set()
+        for pid, cmd in cmdlines.items():
+            user = self._foreign(pid)
+            if not user or self._is_shell(cmd) or self._is_api_client(cmd):
+                continue
+            for needle, what in self._HARDWARE_PATTERNS:
+                if needle in cmd:
+                    key = (user, needle)
+                    if key in seen:
+                        break
+                    seen.add(key)
+                    out.append({'user': user, 'pid': pid, 'what': what, 'detail': needle})
+                    break
+            else:
+                m = re.search(r'serial_no:=_?(\d{9,})', cmd)
+                if m and 'realsense' in cmd and (user, m.group(1)) not in seen:
+                    seen.add((user, m.group(1)))
+                    out.append({'user': user, 'pid': pid, 'what': f'RealSense {serial_of.get(m.group(1), m.group(1))}',
+                                'detail': f'serial {m.group(1)}'})
+        # one RealSense node per launch is enough: drop the generic row when a serial row names the same user
+        named = {h['user'] for h in out if h['what'].startswith('RealSense ') and h['what'] != 'a RealSense camera'}
+        return [h for h in out if not (h['what'] == 'a RealSense camera' and h['user'] in named)]
 
     def all_status(self):
         """Full info (label/category/etc, not just the bare status string)
@@ -105,9 +162,20 @@ class ProcessManager:
         silently rendered nothing, needing a full page inspection to find)."""
         cmdlines = self._snapshot_cmdlines()
         return {
-            pid: {**{k: v for k, v in cfg.items() if k != 'cmd'}, 'status': self.status(pid, cmdlines)}
+            pid: {**{k: v for k, v in cfg.items() if k != 'cmd'}, 'status': self.status(pid, cmdlines),
+                  'other_users': self.other_users(pid, cmdlines)}
             for pid, cfg in config.PROCESSES.items()
         }
+
+    def status_bundle(self):
+        """(all_status, hardware_holders) from ONE process scan; the 0.5 s WebSocket tick must not walk /proc twice."""
+        cmdlines = self._snapshot_cmdlines()
+        procs = {
+            pid: {**{k: v for k, v in cfg.items() if k != 'cmd'}, 'status': self.status(pid, cmdlines),
+                  'other_users': self.other_users(pid, cmdlines)}
+            for pid, cfg in config.PROCESSES.items()
+        }
+        return procs, self.hardware_holders(cmdlines)
 
     # ── control ──────────────────────────────────────────────────────
     def start(self, proc_id):
@@ -118,6 +186,11 @@ class ProcessManager:
                 f'{cfg["label"]} is already running'
                 f'{" (started outside the dashboard)" if current == "running_external" else ""}'
                 f' — not starting a second copy.')
+        if current == 'running_other_user':
+            who = ', '.join(self.other_users(proc_id, self._snapshot_cmdlines()))
+            return False, (
+                f'{cfg["label"]} is being run by the user {who}, not by you. Starting a second copy would fight over the '
+                f'same hardware. Ask {who} to stop it, then start yours.')
         if current == 'conflict':
             return False, (
                 f'{cfg["label"]} has a conflicting process already running '
@@ -195,8 +268,13 @@ class ProcessManager:
             mp.popen = None
 
         protected = self._protected_pids()
+        not_ours = set()
         for pid, cmdline in self._snapshot_cmdlines().items():
             if cfg['signature'] and cfg['signature'] in cmdline and not self._is_api_client(cmdline):
+                if self._foreign(pid):
+                    if not self._is_shell(cmdline):
+                        not_ours.add(self._foreign(pid))
+                    continue
                 # Never stop a shell (an operator's `bash -c "... grep <name> ..."`
                 # contains the signature as plain text) or this backend or
                 # anything that launched it. The real process still matches.
@@ -206,6 +284,10 @@ class ProcessManager:
                     stopped_any = True
 
         if not stopped_any:
+            if not_ours:
+                who = ', '.join(sorted(not_ours))
+                return False, (f'{cfg["label"]} is being run by the user {who}, so this dashboard may not stop it. '
+                               f'Ask {who} to stop it (nothing of yours was running).')
             return False, f'{cfg["label"]} was not running.'
         return True, f'Stopped {cfg["label"]}.'
 
@@ -251,6 +333,8 @@ class ProcessManager:
         cmdlines = self._snapshot_cmdlines()
         killed_oak = 0
         for pid in self._matching_pids('oak_camera_node.py', cmdlines):
+            if self._foreign(pid):
+                continue                      # another user's driver: not ours to kill
             try:
                 os.kill(pid, signal.SIGTERM)
                 killed_oak += 1

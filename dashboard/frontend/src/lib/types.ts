@@ -1,4 +1,4 @@
-export type CalibrationStatus = 'ok' | 'needs_recalibration' | 'no_signal'
+export type CalibrationStatus = 'ok' | 'needs_recalibration' | 'no_signal' | 'disabled'
 
 export interface SceneObject {
   label: string
@@ -61,7 +61,7 @@ export interface AudioState {
   transcript: Transcript | null
 }
 
-export type ProcessStatus = 'stopped' | 'running' | 'running_external' | 'conflict'
+export type ProcessStatus = 'stopped' | 'running' | 'running_external' | 'running_other_user' | 'conflict'
 
 export interface ProcessInfo {
   label: string
@@ -70,11 +70,20 @@ export interface ProcessInfo {
   signature: string
   conflict_signatures?: string[]
   status: ProcessStatus
+  other_users?: string[]       // other accounts on this shared machine running a process that matches
+}
+
+export interface HardwareHolder {
+  user: string
+  pid: number
+  what: string
+  detail: string
 }
 
 export interface StatusPayload {
   ros: RosStatus
   processes: Record<string, ProcessInfo>
+  hardware_holders?: HardwareHolder[]
   events?: import('./pipeline').StatusEvent[]
 }
 

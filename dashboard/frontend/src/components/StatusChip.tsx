@@ -18,6 +18,7 @@ export function StatusChip({ label, tone, pulse = false }: { label: string; tone
 
 export function toneForProcessStatus(status: string): Tone {
   if (status === 'running' || status === 'running_external') return 'ok'
+  if (status === 'running_other_user') return 'warn'
   if (status === 'conflict') return 'bad'
   return 'neutral'
 }

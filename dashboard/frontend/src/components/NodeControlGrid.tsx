@@ -131,7 +131,7 @@ export function NodeControlGrid({
                     )}
                   </div>
                   <div className="flex items-center justify-between gap-2">
-                    <StatusChip label={p.status.replace('_', ' ')} tone={toneForProcessStatus(p.status)} />
+                    <StatusChip label={p.status === 'running_other_user' ? `run by ${(p.other_users ?? []).join(', ') || 'another user'}` : p.status.replace('_', ' ')} tone={toneForProcessStatus(p.status)} />
                     <div className="flex gap-1.5">
                       {id === 'arm_controller' ? (
                         <>

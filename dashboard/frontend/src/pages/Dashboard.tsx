@@ -8,6 +8,7 @@ import { SceneView } from '../components/SceneView'
 import { SystemLog } from '../components/SystemLog'
 import { OutcomesPanel } from '../components/OutcomesPanel'
 import { TopStatusBar } from '../components/TopStatusBar'
+import { HardwareBanner } from '../components/HardwareBanner'
 import { WorkspaceBoundary } from '../components/WorkspaceBoundary'
 import { TableRecorder } from '../components/TableRecorder'
 import { ArmCalibration } from '../components/ArmCalibration'
@@ -66,6 +67,7 @@ export function Dashboard() {
 
       <div className="flex-1 min-w-0 flex flex-col">
         <TopStatusBar status={status} connected={connected} />
+        <HardwareBanner holders={status?.hardware_holders} />
 
         <main className="flex-1 p-5 space-y-4">
           {tab === 'overview' && (
