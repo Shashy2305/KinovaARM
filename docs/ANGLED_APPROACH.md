@@ -85,3 +85,6 @@ Live on the real arm (E-stop in hand, defaults otherwise): 10 deg on the mouse 4
 symmetric, same lean direction, other joint configuration). It is skipped if a neighbour whose top reaches the pregrasp fingertip height stands within the swing circle of the open fingers (`_flip_swing_blocker`: half-span + its radius + margin), because the
 wrist turn sweeps the fingers around the object. Parameter `tilt_try_wrist_flip` (default true; it only acts when the plain lean has no solution, so nothing changes for leans that already work). The log says `... - with the wrist turned 180 deg` and the outcome log's
 `tilt` event has `flipped: true`. 5 flow tests. Unknown until tried: the later `stand the tool upright` PTP after a flipped lean (its yaw candidates are +-90 deg around the vertical grasp orientation, so it may turn the wrist back by up to 90 deg while holding the object).
+
+**Update, same night:** with the flip code loaded the lean went 15, 20, 25 and 30 deg on the cup (azimuth 0), every grip held on the first attempt, `flipped: False` each time - the earlier 20 deg failures were the arm's parked joint configuration, solved by `go home`.
+So the practical rules: lean flat objects (mouse) up to ~10 deg, cups up to the 30 deg cap; start from home; the lean never applies to tall objects.
