@@ -83,6 +83,9 @@ class ArmControllerNode(Node):
         self.declare_parameter('sweep_half_span_m', ws.FINGER_HALF_SPAN_M)
         self.declare_parameter('sweep_margin_m', ws.SWEEP_MARGIN_M)
         self.declare_parameter('carry_avoid_m', 0.12)
+        # The wrist centring must end within this distance of where the scene put the object; further away it has locked onto a look-alike
+        # (live 2026-10-09 22:32: the bowl, which the wrist detector reads as a "mouse" from above, was centred on 18 cm from the mouse and lifted by its rim)
+        self.declare_parameter('max_centre_shift_m', 0.10)
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
@@ -821,6 +824,12 @@ class ArmControllerNode(Node):
         def center():
             ok, xy = self._center_over(label, (ox, oy))
             if ok:
+                limit = float(self.get_parameter('max_centre_shift_m').value)
+                shift = math.hypot(xy[0] - ox, xy[1] - oy)
+                if limit > 0 and shift > limit:
+                    return self._refuse(
+                        f'pick: the wrist found the {label} {shift * 100:.0f} cm from where the scene put it (limit {limit * 100:.0f} cm): it has '
+                        f'locked onto something else that looks like it. Nothing was grasped; check the table and try again')
                 centred['xy'] = xy
                 return True
             if not self.require_wrist_center:

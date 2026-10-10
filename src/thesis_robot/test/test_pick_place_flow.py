@@ -373,3 +373,17 @@ def test_a_bowl_wider_than_the_open_gripper_is_refused_before_any_motion():
     assert ws.too_wide_for_gripper('cup') is None and ws.too_wide_for_gripper('mouse') is None and ws.too_wide_for_gripper('bottle') is None
     assert ws.too_wide_for_gripper('cup', width_m=0.15) is not None          # a measured width overrides the table
     assert ws.too_wide_for_gripper('bowl', width_m=0.10) is None
+
+
+def test_a_centring_that_ends_far_from_the_scene_position_refuses_before_anything_closes(node, world, monkeypatch):
+    # live 2026-10-09: the wrist locked onto the bowl (read as a "mouse") 18 cm from the mouse and lifted it by the rim
+    monkeypatch.setattr(node, '_center_over', lambda label, xy: (True, (xy[0] + 0.15, xy[1] + 0.05)))
+    assert run_pick(node) is False
+    names = [g[1] for g in world.grippers]
+    assert 'close_gripper' not in names
+    assert node._blocked and 'looks like it' in node._block_reason
+
+
+def test_a_small_centring_shift_is_fine(node, world, monkeypatch):
+    monkeypatch.setattr(node, '_center_over', lambda label, xy: (True, (xy[0] + 0.04, xy[1] - 0.03)))
+    assert run_pick(node) is True

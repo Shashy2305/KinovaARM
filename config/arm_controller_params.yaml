@@ -15,6 +15,8 @@ arm_controller:
     # unknown obstacles from depth
     use_unknown_obstacles: false
     unknown_obstacles_min_cameras: 2
+    # safety
+    max_centre_shift_m: 0.10         # refuse when the wrist centring ends this far from the scene position (a look-alike)
     # motion
     smooth_trajectories: true
     smooth_vel_scale: 0.30
