@@ -210,6 +210,11 @@ ARM_CHAIN_FRAMES = ['shoulder_link', 'half_arm_1_link', 'half_arm_2_link', 'fore
                     'spherical_wrist_1_link', 'spherical_wrist_2_link', 'bracelet_link', 'end_effector_link']
 FINGER_PAD_FRAMES = ['left_inner_finger_pad', 'right_inner_finger_pad']
 ARM_BODY_RADIUS_M = 0.10        # a detection this close to the arm's links is the arm, not an object
+GRIPPER_BODY_RADIUS_M = 0.125   # the open fingers reach ~12 cm either side of the flange: the cameras read the gripper and its fingers as "bottle", "cup",
+                                # "vase", "cell phone" at 8-12 cm from the flange axis (live, 2026-10-09). Only applied while the pads are well above the table
+GRIPPER_ABOVE_M = 0.03          # ... from just under the pads to a little above the flange
+GRIPPER_BELOW_M = 0.03
+GRIPPER_HOVER_MIN_PAD_Z = 0.12  # base_link z of the lowest pad above which the whole-gripper cylinder applies (hover and carry, not the grasp)
 FINGER_BODY_RADIUS_M = 0.045    # ... and this close to a finger. Smaller: an object held or grasped sits
                                 # ~6 cm from each pad and must stay visible.
 
@@ -232,6 +237,13 @@ def point_on_robot(point, chain, fingers):
             return True
     for a, b in fingers:
         if _dist_point_segment3(point, a, b) < FINGER_BODY_RADIUS_M:
+            return True
+    if fingers:
+        flange = fingers[0][0]
+        low_pad = min(b[2] for _a, b in fingers)
+        if (low_pad >= GRIPPER_HOVER_MIN_PAD_Z
+                and math.hypot(point[0] - flange[0], point[1] - flange[1]) < GRIPPER_BODY_RADIUS_M
+                and low_pad - GRIPPER_BELOW_M <= point[2] <= flange[2] + GRIPPER_ABOVE_M):
             return True
     return False
 

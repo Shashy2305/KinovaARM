@@ -141,3 +141,19 @@ def test_detections_in_the_carried_objects_volume_are_recognised():
     assert sg.in_held_volume((0.37, 0.18, -0.02), pad_mid)          # a bottle hanging below the pads
     assert not sg.in_held_volume((0.30, 0.31, 0.10), pad_mid)       # the real bottle, 14 cm away
     assert not sg.in_held_volume((0.37, 0.18, 0.4), pad_mid)        # high above
+
+
+def test_the_whole_gripper_body_is_the_robot_not_only_its_finger_axis():
+    # live 2026-10-09: hovering over a mouse at (0.356, 0.20) the gripper and its open fingers were read as a "bottle" (0.39, 0.158, 0.25),
+    # a "cell phone" (0.467, 0.203, 0.28), a "cup" (0.255, 0.199, 0.15) and a "vase": all within 12 cm of the flange axis, above the pads
+    flange = (0.356, 0.20, 0.345)
+    chain = [(0, 0, 0), (0, 0, 0.16), (0.0, 0.1, 0.5), (0.3, 0.2, 0.55), flange]
+    fingers = [(flange, (0.29, 0.20, 0.165)), (flange, (0.42, 0.20, 0.165))]
+    for ghost in ((0.39, 0.158, 0.25), (0.467, 0.203, 0.28), (0.255, 0.199, 0.15), (0.252, 0.181, 0.20)):
+        assert sg.point_on_robot(ghost, chain, fingers), ghost
+    assert not sg.point_on_robot((0.36, 0.20, 0.03), chain, fingers)          # the mouse on the table below
+    assert not sg.point_on_robot((0.16, 0.23, 0.10), chain, fingers)          # the bottle 20 cm away
+    assert not sg.point_on_robot((0.356, 0.34, 0.25), chain, fingers)         # 14 cm beside the gripper: not on it
+    # grasping (pads at object height): a neighbour 13 cm from the axis, beside the pad, is NOT hidden
+    low_fingers = [(flange, (0.29, 0.20, 0.05)), (flange, (0.42, 0.20, 0.05))]
+    assert not sg.point_on_robot((0.49, 0.20, 0.04), chain, low_fingers)
