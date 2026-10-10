@@ -43,6 +43,14 @@ except:
 PIXEL_CONF_FLOOR = 0.10   # for /wrist_pixel_detections only; /detections_wrist keeps 0.30
 
 
+
+def unrotate_cw90(points_xy, height):
+    """Map points found in an image that was rotated 90 deg clockwise (cv2.ROTATE_90_CLOCKWISE) back to the original image,
+    whose height is `height`. The rotation sends (x, y) to (height - 1 - y, x), so the inverse is (x', y') -> (y', height - 1 - x')."""
+    pts = np.asarray(points_xy, dtype=float).reshape(-1, 2)
+    return np.stack([pts[:, 1], (height - 1) - pts[:, 0]], axis=1)
+
+
 class WristDetection(Node):
     def __init__(self):
         super().__init__('wrist_detection')
@@ -82,6 +90,7 @@ class WristDetection(Node):
         self.declare_parameter('shape_grabcut', False)
         self.declare_parameter('shape_max_objects', 3)
         self.declare_parameter('shape_min_conf', 0.25)
+        self.declare_parameter('rotated_fallback', True)     # look again with the image turned 90 deg when nothing confident is found
         self.declare_parameter('image_topic', '/camera/color/image_raw')
         self.declare_parameter('depth_topic', '/camera/depth/image_raw')
         self.declare_parameter('info_topic', '/camera/color/camera_info')
@@ -216,48 +225,65 @@ class WristDetection(Node):
 
         if self.model is not None:
             try:
-                results = self.model(bgr, verbose=False, conf=PIXEL_CONF_FLOOR)
-                for r in results:
-                    for bi, box in enumerate(r.boxes):
-                        cls_name = self.model.names[int(box.cls)]
-                        conf = float(box.conf)
-                        # /wrist_pixel_detections carries EVERY class: from straight above the detectors call a
-                        # water bottle a "sports ball" or a "bowl", a mouse a "cup". The arm matches by position.
-                        in_scene_classes = cls_name in self.target_classes
-                        x1,y1,x2,y2 = map(int, box.xyxy[0])
-                        u = (x1+x2)//2
-                        v = (y1+y2)//2
-                        det = {
-                            'label': cls_name, 'confidence': round(conf, 3),
-                            'u': u, 'v': v, 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
-                        try:
-                            if r.masks is not None:
-                                ang, elong = ws.polygon_orientation(r.masks.xy[bi])
-                                det['orient_deg'] = round(ang, 1)
-                                det['elong'] = round(elong, 2)
-                        except Exception:
-                            pass
-                        if shape_on and shape_left > 0 and conf >= shape_min_conf and r.masks is not None:
+                H = bgr.shape[0]
+                rotated = False
+                while True:
+                    src = cv2.rotate(bgr, cv2.ROTATE_90_CLOCKWISE) if rotated else bgr
+                    results = self.model(src, verbose=False, conf=PIXEL_CONF_FLOOR)
+                    for r in results:
+                        for bi, box in enumerate(r.boxes):
+                            cls_name = self.model.names[int(box.cls)]
+                            conf = float(box.conf)
+                            # /wrist_pixel_detections carries EVERY class: from straight above the detectors call a
+                            # water bottle a "sports ball" or a "bowl", a mouse a "cup". The arm matches by position.
+                            in_scene_classes = cls_name in self.target_classes
+                            x1,y1,x2,y2 = map(int, box.xyxy[0])
+                            poly = r.masks.xy[bi] if r.masks is not None else None
+                            if rotated:       # the model saw the image turned 90 deg: bring the box and the mask back
+                                q = unrotate_cw90([(x1, y1), (x2, y2)], H)
+                                x1, y1, x2, y2 = (int(q[:, 0].min()), int(q[:, 1].min()), int(q[:, 0].max()), int(q[:, 1].max()))
+                                poly = unrotate_cw90(poly, H) if poly is not None else None
+                            u = (x1+x2)//2
+                            v = (y1+y2)//2
+                            det = {
+                                'label': cls_name, 'confidence': round(conf, 3),
+                                'u': u, 'v': v, 'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
+                            if rotated:
+                                det['via_rotation'] = True
                             try:
-                                t_sh = time.monotonic()
-                                an = sa.analyse(bgr, (x1, y1, x2, y2), polygon=r.masks.xy[bi],
-                                                use_grabcut=bool(self.get_parameter('shape_grabcut').value))
-                                if an is not None:
-                                    det['shape'] = an
-                                    shape_left -= 1
-                                if time.monotonic() - t_sh > 0.08:
-                                    self.get_logger().warn(
-                                        f'shape analysis of a {cls_name} took {1000 * (time.monotonic() - t_sh):.0f} ms')
-                            except Exception as e:
-                                self.get_logger().warn(f'shape analysis failed: {e}')
-                        pixel_dets.append(det)
-                        try:
-                            det_polys.append(r.masks.xy[bi].round(1).tolist() if r.masks is not None else None)
-                        except Exception:
-                            det_polys.append(None)
-                        if conf < 0.30 or not in_scene_classes:
-                            continue
-                        raw_detections.append((cls_name, conf, u, v))
+                                if poly is not None:
+                                    ang, elong = ws.polygon_orientation(poly)
+                                    det['orient_deg'] = round(ang, 1)
+                                    det['elong'] = round(elong, 2)
+                            except Exception:
+                                pass
+                            if shape_on and shape_left > 0 and conf >= shape_min_conf and poly is not None:
+                                try:
+                                    t_sh = time.monotonic()
+                                    an = sa.analyse(bgr, (x1, y1, x2, y2), polygon=poly,
+                                                    use_grabcut=bool(self.get_parameter('shape_grabcut').value))
+                                    if an is not None:
+                                        det['shape'] = an
+                                        shape_left -= 1
+                                    if time.monotonic() - t_sh > 0.08:
+                                        self.get_logger().warn(
+                                            f'shape analysis of a {cls_name} took {1000 * (time.monotonic() - t_sh):.0f} ms')
+                                except Exception as e:
+                                    self.get_logger().warn(f'shape analysis failed: {e}')
+                            pixel_dets.append(det)
+                            try:
+                                det_polys.append(poly.round(1).tolist() if poly is not None else None)
+                            except Exception:
+                                det_polys.append(None)
+                            if conf < 0.30 or not in_scene_classes:
+                                continue
+                            raw_detections.append((cls_name, conf, u, v))
+                    # The detector is orientation-sensitive: a mouse lying across the image (0 deg) was not found at all
+                    # (best guess "traffic light" 0.08) but read "mouse" 0.94 with the image turned 90 deg (2026-10-09).
+                    # When nothing confident was found, look once more with the image turned.
+                    if rotated or raw_detections or not bool(self.get_parameter('rotated_fallback').value):
+                        break
+                    rotated = True
             except Exception as e:
                 self.get_logger().warn(f'YOLO error: {e}')
         self._last_frame = (stamp, bgr, pixel_dets, det_polys)
