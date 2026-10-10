@@ -77,3 +77,11 @@ a vertical tool; the finger-sweep check assumes the fingers span +-9.5 cm horizo
 
 Tilt 10 deg on the retry only, flat object (mouse), az +-y, in the open -> 15 deg -> 25 deg -> side grasp of the bottle at 30 deg.
 Stop at the first unexpected motion; the rollback is `ros2 param set /arm_controller approach_tilt_deg 0.0` (and `retry_tilt_deg 0.0`).
+
+## 6. First live results and the wrist flip (2026-10-09 evening)
+Live on the real arm (E-stop in hand, defaults otherwise): 10 deg on the mouse 4/4 held (3 x azimuth 270, 1 x azimuth 90), 15 deg on the cup 1/1 (azimuth 0); 15 deg on the mouse is refused by the pad-height rule (lower pad 1 mm under table + 5 cm);
+20 deg found no tilted approach twice (`no collision-free IK solution`, then `needs a 5.1 rad single-joint reconfiguration`) and fell back to straight down. Details in TEST_PLAN_2026-10-09.md.
+**Wrist flip (code, not yet run live):** the live tilt solve is locked to the one wrist yaw chosen for the grip, while the study tried four. When it fails, `descend` now retries once with the goal orientation turned 180 deg about the tool axis (same grip because the gripper is
+symmetric, same lean direction, other joint configuration). It is skipped if a neighbour whose top reaches the pregrasp fingertip height stands within the swing circle of the open fingers (`_flip_swing_blocker`: half-span + its radius + margin), because the
+wrist turn sweeps the fingers around the object. Parameter `tilt_try_wrist_flip` (default true; it only acts when the plain lean has no solution, so nothing changes for leans that already work). The log says `... - with the wrist turned 180 deg` and the outcome log's
+`tilt` event has `flipped: true`. 5 flow tests. Unknown until tried: the later `stand the tool upright` PTP after a flipped lean (its yaw candidates are +-90 deg around the vertical grasp orientation, so it may turn the wrist back by up to 90 deg while holding the object).

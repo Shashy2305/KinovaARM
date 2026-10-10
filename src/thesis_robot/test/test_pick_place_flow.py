@@ -387,3 +387,64 @@ def test_a_centring_that_ends_far_from_the_scene_position_refuses_before_anythin
 def test_a_small_centring_shift_is_fine(node, world, monkeypatch):
     monkeypatch.setattr(node, '_center_over', lambda label, xy: (True, (xy[0] + 0.04, xy[1] - 0.03)))
     assert run_pick(node) is True
+
+
+# ── the 180-degree wrist flip when the lean has no IK solution with the wrist yaw chosen for the grip ──────────────────────
+def ik_that_fails_unless_flipped(world):
+    base = {}
+
+    def fake_ik(position, quat, allow_yaw):
+        world.ik_calls.append((tuple(round(float(v), 4) for v in position), [round(v, 4) for v in quat], allow_yaw))
+        base.setdefault('first', list(quat))
+        if len(world.ik_calls) == 1:
+            raise RuntimeError('that pose needs a 5.1 rad single-joint reconfiguration (limit 2.6)')
+        return [0.0] * 7, quat
+    return fake_ik
+
+
+def test_a_lean_without_an_ik_solution_is_retried_with_the_wrist_turned_180_degrees(node, tilt_world, monkeypatch):
+    monkeypatch.setattr(node, '_solve_goal_joints', ik_that_fails_unless_flipped(tilt_world))
+    set_params(node, approach_tilt_deg=15.0, tilt_azimuth_deg=90.0)
+    assert run_pick(node) is True
+    assert tilt_world.guarded == ['tilt in']                                       # it leaned, with the flipped wrist
+    assert len(tilt_world.ik_calls) == 2
+    first, second = tilt_world.ik_calls[0][1], tilt_world.ik_calls[1][1]
+    from thesis_robot import motion_utils as mu
+    assert np.allclose(second, mu.rotate_about_tool_z(first, 180.0), atol=1e-3) or np.allclose(second, -np.array(mu.rotate_about_tool_z(first, 180.0)), atol=1e-3)
+    assert tilt_world.ik_calls[0][0] == tilt_world.ik_calls[1][0]                  # same pregrasp position: only the wrist differs
+
+
+def test_the_flip_is_not_tried_when_a_tall_neighbour_stands_in_the_swing_of_the_fingers(node, tilt_world, monkeypatch):
+    node.latest_scene['bottle_09'] = {'label': 'bottle', 'x': 0.40, 'y': 0.135, 'z': 0.12, 'confidence': 0.9, 'reachable': True, 'stale': False}
+    monkeypatch.setattr(node, '_solve_goal_joints', ik_that_fails_unless_flipped(tilt_world))
+    set_params(node, approach_tilt_deg=15.0, tilt_azimuth_deg=90.0)
+    assert run_pick(node) is True                                                  # not refused earlier: it came straight down
+    assert len(tilt_world.ik_calls) == 1 and tilt_world.guarded == []              # never leaned, never tried the flip that swings the fingers at the bottle
+
+
+def test_a_flat_neighbour_does_not_stop_the_flip(node, tilt_world, monkeypatch):
+    node.latest_scene['mouse_09'] = {'label': 'mouse', 'x': 0.40, 'y': 0.135, 'z': 0.02, 'confidence': 0.9, 'reachable': True, 'stale': False}
+    monkeypatch.setattr(node, '_solve_goal_joints', ik_that_fails_unless_flipped(tilt_world))
+    set_params(node, approach_tilt_deg=15.0, tilt_azimuth_deg=90.0)
+    assert run_pick(node) is True
+    assert len(tilt_world.ik_calls) == 2 and tilt_world.guarded == ['tilt in']
+
+
+def test_the_flip_can_be_switched_off(node, tilt_world, monkeypatch):
+    from rclpy.parameter import Parameter
+    node.set_parameters([Parameter('tilt_try_wrist_flip', Parameter.Type.BOOL, False)])
+    monkeypatch.setattr(node, '_solve_goal_joints', ik_that_fails_unless_flipped(tilt_world))
+    set_params(node, approach_tilt_deg=15.0, tilt_azimuth_deg=90.0)
+    assert run_pick(node) is True
+    assert len(tilt_world.ik_calls) == 1 and tilt_world.guarded == []              # straight down, as before
+    node.set_parameters([Parameter('tilt_try_wrist_flip', Parameter.Type.BOOL, True)])
+
+
+def test_when_the_flip_has_no_solution_either_it_falls_back_to_straight_down(node, tilt_world, monkeypatch):
+    def never(position, quat, allow_yaw):
+        tilt_world.ik_calls.append(1)
+        raise RuntimeError('no collision-free IK solution for that pose')
+    monkeypatch.setattr(node, '_solve_goal_joints', never)
+    set_params(node, approach_tilt_deg=15.0, tilt_azimuth_deg=90.0)
+    assert run_pick(node) is True
+    assert len(tilt_world.ik_calls) == 2 and tilt_world.guarded == []

@@ -86,6 +86,7 @@ class ArmControllerNode(Node):
         # The wrist centring must end within this distance of where the scene put the object; further away it has locked onto a look-alike
         # (live 2026-10-09 22:32: the bowl, which the wrist detector reads as a "mouse" from above, was centred on 18 cm from the mouse and lifted by its rim)
         self.declare_parameter('max_centre_shift_m', 0.10)
+        self.declare_parameter('tilt_try_wrist_flip', True)    # a lean with no IK solution is retried with the wrist turned 180 deg (same grip)
         self.declare_parameter('require_wrist_center', True)   # pick refuses to descend if the wrist cannot see the object
         # try several tool yaws and keep the IK solution that moves the joints least
         self.declare_parameter('yaw_flex', True)
@@ -774,6 +775,18 @@ class ArmControllerNode(Node):
                 az = min((0.0, 90.0, 270.0), key=lambda c: abs((c - bearing + 180.0) % 360.0 - 180.0))
         return t, az % 360.0
 
+    def _flip_swing_blocker(self, object_id, centre_xy, pre_tip_z, geom):
+        """Label of a neighbour the open fingers would hit while the wrist turns 180 deg at the pregrasp (they sweep a circle of half-span
+        radius around the object, tips at pre_tip_z), or None. Only objects whose top reaches the tips count."""
+        span = float(self.get_parameter('sweep_half_span_m').value)
+        margin = float(self.get_parameter('sweep_margin_m').value)
+        for lab, x, y in self._scene_obstacles(exclude_id=object_id):
+            top = geom['table_top_z'] + ws.OBJECT_HEIGHT_M.get(lab, ws.DEFAULT_HEIGHT_M)
+            d = math.hypot(x - centre_xy[0], y - centre_xy[1])
+            if top >= pre_tip_z - 0.02 and d < span + ws.OBJECT_RADIUS_M.get(lab, ws.DEFAULT_RADIUS_M) + margin:
+                return lab
+        return None
+
     def _tilted_pose(self, tip_xyz, tilt, az):
         """(pregrasp flange, grasp flange, axis) for a tilted approach whose fingertips end at tip_xyz."""
         return aa.approach_poses(tip_xyz, tilt, az, standoff=self.TILT_STANDOFF_M)
@@ -900,14 +913,31 @@ class ArmControllerNode(Node):
             if not inside:
                 self.get_logger().info(f'pick: a {tilt:.0f} deg approach from azimuth {az:.0f} would leave the planner limits - straight down instead')
                 return descend_vertical()
+            quat = aa.tilted_from(self._actual_tool_quat(), tilt, az)
+            goal, flipped, why = None, False, None
             try:
-                quat = aa.tilted_from(self._actual_tool_quat(), tilt, az)
                 goal, _q = self._solve_goal_joints([float(v) for v in pre], quat, False)
             except Exception as e:
-                self.get_logger().info(f'pick: no tilted approach ({e}) - straight down instead')
+                why = e
+                # The gripper is symmetric: turning the wrist 180 deg about the tool axis gives the same grip and the same lean, in a
+                # different joint configuration. The live solve is locked to the one wrist yaw chosen for the grip, so that is the one
+                # alternative worth trying (the reachability study tried four yaws; live 2026-10-09 the 20 deg lean found no solution without it).
+                if bool(self.get_parameter('tilt_try_wrist_flip').value):
+                    blocker = self._flip_swing_blocker(object_id, centred['xy'], tip[2] + self.TILT_STANDOFF_M * math.cos(math.radians(tilt)), geom)
+                    if blocker:
+                        self.get_logger().info(f'pick: not trying the 180 deg wrist flip: the swinging fingers would pass the {blocker}')
+                    else:
+                        try:
+                            goal, _q = self._solve_goal_joints([float(v) for v in pre], mu.rotate_about_tool_z(quat, 180.0), False)
+                            flipped = True
+                        except Exception as e2:
+                            why = f'{e}; with the 180 deg wrist flip: {e2}'
+            if goal is None:
+                self.get_logger().info(f'pick: no tilted approach ({why}) - straight down instead')
                 return descend_vertical()
-            self.get_logger().info(f'pick: coming in at {tilt:.0f} deg leaning toward azimuth {az:.0f} (fingertips lead, the gripper body stays behind)')
-            self._log_event('tilt', tilt=round(tilt, 1), az=round(az, 1))
+            self.get_logger().info(f'pick: coming in at {tilt:.0f} deg leaning toward azimuth {az:.0f} (fingertips lead, the gripper body stays behind)'
+                                   + (' - with the wrist turned 180 deg (same grip, other joint configuration)' if flipped else ''))
+            self._log_event('tilt', tilt=round(tilt, 1), az=round(az, 1), flipped=flipped)
             if not self._guarded_move(geom, 'tilt in', joint_positions=goal):
                 return False
             tilt_state['on'] = {'tilt': tilt, 'az': az, 'pre': pre, 'grasp': grasp_fl}
