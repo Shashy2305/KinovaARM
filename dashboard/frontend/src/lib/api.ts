@@ -18,6 +18,7 @@ export interface ArmCalibState {
   camera: string; frame_id: string; image: [number, number]
   arm_ok: boolean; k_ok: boolean; current_extrinsic_ok: boolean
   landmarks: ArmLandmark[]
+  pool?: { n: number; rms_px: number; time: string }[]
 }
 export interface ArmCalibResult {
   ok?: boolean; error?: string
@@ -25,6 +26,8 @@ export interface ArmCalibResult {
   landmarks_used?: string[]; reproj_px?: Record<string, number>; suspect?: string | null
   solved_projection?: Record<string, [number, number]>
   vs_current?: { rotation_deg: number; translation_m: number } | null
+  pooled?: boolean; points?: number; worst_px?: number
+  poses?: { n: number; rms_px: number; single_pose_rms_px: number; time: string }[]
 }
 
 export interface TableStatus {
@@ -91,8 +94,12 @@ export const api = {
     request<{ ok: boolean }>('/arm_calib/click', { method: 'POST', body: JSON.stringify({ camera, landmark, u, v }) }),
   armCalibReset: (camera: string) => request<{ ok: boolean }>(`/arm_calib/reset?camera=${camera}`, { method: 'POST' }),
   armCalibSolve: (camera: string) => request<ArmCalibResult>(`/arm_calib/solve?camera=${camera}`, { method: 'POST' }),
-  armCalibSave: (camera: string) =>
-    request<{ ok: boolean; message: string; path: string | null }>(`/arm_calib/save_candidate?camera=${camera}`, { method: 'POST' }),
+  armCalibSave: (camera: string, pooled = false) =>
+    request<{ ok: boolean; message: string; path: string | null }>(`/arm_calib/save_candidate?camera=${camera}${pooled ? '&pooled=true' : ''}`, { method: 'POST' }),
+  armCalibCommit: (camera: string) =>
+    request<{ ok: boolean; message: string; poses: number }>(`/arm_calib/commit_pose?camera=${camera}`, { method: 'POST' }),
+  armCalibClearPool: (camera: string) => request<{ ok: boolean }>(`/arm_calib/clear_pool?camera=${camera}`, { method: 'POST' }),
+  armCalibSolvePool: (camera: string) => request<ArmCalibResult>(`/arm_calib/solve_pool?camera=${camera}`, { method: 'POST' }),
   tableStatus: () => request<TableStatus>('/table_geometry/status'),
   tableRecord: () => request<{ ok: boolean; message: string }>('/table_geometry/record', { method: 'POST' }),
   tableReset: () => request<{ ok: boolean }>('/table_geometry/reset', { method: 'POST' }),

@@ -49,7 +49,25 @@ def solve(camera: Camera):
     return ros_bridge.get_or_create_arm_calib().solve(camera, frame_id)
 
 
+@router.post('/arm_calib/commit_pose')
+def commit_pose(camera: Camera):
+    ok, msg, n = ros_bridge.get_or_create_arm_calib().commit_pose(camera)
+    return {'ok': ok, 'message': msg, 'poses': n}
+
+
+@router.post('/arm_calib/clear_pool')
+def clear_pool(camera: Camera):
+    ros_bridge.get_or_create_arm_calib().clear_pool(camera)
+    return {'ok': True}
+
+
+@router.post('/arm_calib/solve_pool')
+def solve_pool(camera: Camera):
+    frame_id, _ = _meta(camera)
+    return ros_bridge.get_or_create_arm_calib().solve_pool(camera, frame_id)
+
+
 @router.post('/arm_calib/save_candidate')
-def save_candidate(camera: Camera):
-    ok, msg, path = ros_bridge.get_or_create_arm_calib().save_candidate(camera)
+def save_candidate(camera: Camera, pooled: bool = False):
+    ok, msg, path = ros_bridge.get_or_create_arm_calib().save_candidate(camera, pooled)
     return {'ok': ok, 'message': msg, 'path': path}

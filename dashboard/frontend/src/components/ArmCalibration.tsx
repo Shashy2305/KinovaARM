@@ -45,6 +45,7 @@ export function ArmCalibration() {
   }, [ready, load])
 
   const clickedCount = state?.landmarks.filter((l) => l.clicked).length ?? 0
+  const poolCount = state?.pool?.length ?? 0
   const [W, H] = state?.image ?? [1280, 720]
 
   async function onImageClick(e: React.MouseEvent<HTMLImageElement>) {
@@ -77,6 +78,17 @@ export function ArmCalibration() {
             onClick={() => run(async () => setResult(await api.armCalibSolve(camera)))}>
             {`Solve (${clickedCount}/5+)`}
           </button>
+          <button className="btn" disabled={busy || !result?.ok || result.pooled}
+            title="Keep this pose's points, then move the arm to another pose and click again. Several poses solved together fix a far camera much better than one."
+            onClick={() => run(async () => { const r = await api.armCalibCommit(camera); setMsg(r.message); setResult(null); setActive(null); await load() })}>
+            Add this pose
+          </button>
+          <button className="btn btn-primary" disabled={busy || poolCount < 1}
+            onClick={() => run(async () => setResult(await api.armCalibSolvePool(camera)))}>
+            {`Solve all poses (${poolCount})`}
+          </button>
+          <button className="btn" disabled={busy || poolCount < 1}
+            onClick={() => run(async () => { await api.armCalibClearPool(camera); setResult(null); await load() })}>Clear poses</button>
         </div>
       </div>
       <div className="p-4 space-y-4">
@@ -91,6 +103,7 @@ export function ArmCalibration() {
         </div>
 
         <p className="text-xs text-(--color-text-dim) leading-relaxed">
+          Do <b>not move the arm</b> while clicking one pose. For a far camera use <b>3 or more poses</b>: click, Solve, <b>Add this pose</b>, move the arm to a clearly different pose, repeat, then <b>Solve all poses</b>.
           Do <b>not move the arm</b> while clicking. Choose a pose where the arm is <b>extended</b> and the gripper is visible
           (a straight-up arm gives collinear points and a poor result). Select a landmark on the right, click it on the image,
           and repeat for at least 5. Skip any that are hidden. <span className="text-(--color-red)">Red</span> circles are where the
@@ -157,7 +170,10 @@ export function ArmCalibration() {
             {result?.ok && (
               <div className="border border-(--color-border) p-3 space-y-1.5">
                 <div className="label">Result (cyan circles on the image)</div>
-                <div className="font-mono">reprojection RMS {result.rms_px?.toFixed(1)} px</div>
+                <div className="font-mono">reprojection RMS {result.rms_px?.toFixed(1)} px{result.pooled ? ` over ${result.points} points from ${result.poses?.length} poses (worst ${result.worst_px?.toFixed(0)} px)` : ''}</div>
+                {result.poses?.map((p, i) => (
+                  <div key={i} className="font-mono text-(--color-text-dim)">pose {i + 1} ({p.time}): {p.rms_px.toFixed(1)} px together, {p.single_pose_rms_px.toFixed(1)} px alone</div>
+                ))}
                 {result.vs_current && (
                   <div className="font-mono">
                     vs current calibration: rotated {result.vs_current.rotation_deg.toFixed(1)}°, moved {(result.vs_current.translation_m * 100).toFixed(0)} cm
@@ -165,7 +181,7 @@ export function ArmCalibration() {
                 )}
                 {result.warnings?.map((w, i) => <div key={i} className="text-(--color-amber)">{w}</div>)}
                 <button className="btn btn-primary w-full mt-1" disabled={busy}
-                  onClick={() => run(async () => { const r = await api.armCalibSave(camera); setMsg(r.message) })}>
+                  onClick={() => run(async () => { const r = await api.armCalibSave(camera, !!result.pooled); setMsg(r.message) })}>
                   Save as candidate (does not change the live calibration)
                 </button>
               </div>
