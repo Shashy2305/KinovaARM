@@ -52,8 +52,32 @@ def test_the_backend_keeps_only_solved_poses_and_pools_them(monkeypatch):
     obj.joint_snapshot = {cam: np.zeros(7)}
     obj.last = {cam: None}
     obj.pool = {cam: []}
+    obj._save_pool = lambda c: None
     ok, msg, n = ac.ArmCalib.commit_pose(obj, cam)
     assert not ok and n == 0 and 'Solve this pose first' in msg           # nothing solved yet: nothing kept
     obj.last[cam] = {'sol': {'rms_px': 5.0}, 'pts': [[0, 0, 0]], 'pix': [[1, 1]], 'used': ['base_center']}
     ok, msg, n = ac.ArmCalib.commit_pose(obj, cam)
     assert ok and n == 1 and obj.clicks[cam] == {} and obj.last[cam] is None and obj.pool[cam][0]['used'] == ['base_center']
+
+
+def test_solve_pool_modes_end_to_end_with_synthetic_poses(monkeypatch):
+    import threading
+    import types
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'dashboard', 'backend'))
+    from app import arm_calib as ac
+    import test_pooled_extrinsics as tp
+    rng = np.random.default_rng(21)
+    P, uv, ids, rots = tp.make_data(rng, n_poses=6)
+    cam = 'realsense3'
+    pool = []
+    for k in range(6):
+        sl = slice(7 * k, 7 * k + 7)
+        pool.append({'pts': P[sl].tolist(), 'pix': uv[sl].tolist(), 'used': ids[sl], 'rots': [r.tolist() if r is not None else None for r in rots[sl]], 'rms': 4.0, 'time': f'12:0{k}'})
+    obj = types.SimpleNamespace(_lock=threading.RLock(), pool={cam: pool}, K={cam: (tp.K, (1280, 720))}, pooled={cam: None},
+                                landmark_positions=lambda: None, current_extrinsic=lambda frame: None)
+    res = {m: ac.ArmCalib.solve_pool(obj, cam, 'frame', m) for m in ('all', 'sharp', 'offsets')}
+    assert all(r['ok'] and r['pooled'] for r in res.values())
+    assert res['all']['rms_px'] > 2 * res['sharp']['rms_px']              # the live symptom: hub landmarks make the plain pooled fit bad
+    assert res['offsets']['rms_px'] < 6 and res['offsets']['offsets']['joint2']
+    assert 'sharp' == obj.pooled[cam]['mode'] or obj.pooled[cam]['mode'] == 'offsets'
+    assert len(res['sharp']['poses']) == 6 and set(res['all']['per_landmark_px']) >= {'joint2', 'elbow', 'joint6', 'flange'}

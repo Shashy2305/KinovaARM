@@ -20,6 +20,7 @@ export function ArmCalibration() {
   const [msg, setMsg] = useState<string | null>(null)
   const [frame, setFrame] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
+  const [poolMode, setPoolMode] = useState<'all' | 'sharp' | 'offsets'>('all')
   const imgRef = useRef<HTMLImageElement>(null)
 
   const load = useCallback(async () => {
@@ -83,8 +84,14 @@ export function ArmCalibration() {
             onClick={() => run(async () => { const r = await api.armCalibCommit(camera); setMsg(r.message); setResult(null); setActive(null); await load() })}>
             Add this pose
           </button>
+          <select className="btn" value={poolMode} onChange={(e) => setPoolMode(e.target.value as 'all' | 'sharp' | 'offsets')}
+            title="all: every clicked landmark. sharp: only base centre, flange and fingertips (the hub caps are not where the joint is). offsets: all landmarks, and the hub offsets are estimated too.">
+            <option value="all">All landmarks</option>
+            <option value="sharp">Sharp only (base, flange, fingertips)</option>
+            <option value="offsets">All + estimated hub offsets</option>
+          </select>
           <button className="btn btn-primary" disabled={busy || poolCount < 1}
-            onClick={() => run(async () => setResult(await api.armCalibSolvePool(camera)))}>
+            onClick={() => run(async () => setResult(await api.armCalibSolvePool(camera, poolMode)))}>
             {`Solve all poses (${poolCount})`}
           </button>
           <button className="btn" disabled={busy || poolCount < 1}
@@ -172,8 +179,14 @@ export function ArmCalibration() {
                 <div className="label">Result (cyan circles on the image)</div>
                 <div className="font-mono">reprojection RMS {result.rms_px?.toFixed(1)} px{result.pooled ? ` over ${result.points} points from ${result.poses?.length} poses (worst ${result.worst_px?.toFixed(0)} px)` : ''}</div>
                 {result.poses?.map((p, i) => (
-                  <div key={i} className="font-mono text-(--color-text-dim)">pose {i + 1} ({p.time}): {p.rms_px.toFixed(1)} px together, {p.single_pose_rms_px.toFixed(1)} px alone</div>
+                  <div key={i} className="font-mono text-(--color-text-dim)">pose {i + 1} ({p.time}): {p.rms_px === null ? 'no sharp points' : `${p.rms_px.toFixed(1)} px together`}, {p.single_pose_rms_px.toFixed(1)} px alone</div>
                 ))}
+                {result.per_landmark_px && (
+                  <div className="font-mono text-(--color-text-dim)">per landmark: {Object.entries(result.per_landmark_px).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(' · ')} px</div>
+                )}
+                {result.offsets && Object.keys(result.offsets).length > 0 && (
+                  <div className="font-mono text-(--color-text-dim)">estimated hub offsets (cm, in the link frame): {Object.entries(result.offsets).map(([k, v]) => `${k} (${v.map((x) => (100 * x).toFixed(1)).join(', ')})`).join(' · ')}</div>
+                )}
                 {result.vs_current && (
                   <div className="font-mono">
                     vs current calibration: rotated {result.vs_current.rotation_deg.toFixed(1)}°, moved {(result.vs_current.translation_m * 100).toFixed(0)} cm

@@ -62,9 +62,9 @@ def clear_pool(camera: Camera):
 
 
 @router.post('/arm_calib/solve_pool')
-def solve_pool(camera: Camera):
+def solve_pool(camera: Camera, mode: Literal['all', 'sharp', 'offsets'] = 'all'):
     frame_id, _ = _meta(camera)
-    return ros_bridge.get_or_create_arm_calib().solve_pool(camera, frame_id)
+    return ros_bridge.get_or_create_arm_calib().solve_pool(camera, frame_id, mode)
 
 
 @router.post('/arm_calib/save_candidate')

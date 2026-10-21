@@ -7,6 +7,7 @@ fingertips) in a still camera frame; their base_link positions come from the arm
 forward kinematics (TF). The solve produces a CANDIDATE calibration file only; it never
 touches the live ~/.ros/<camera>_calibration.yaml.
 """
+import json
 import os
 import sys
 import threading
@@ -24,6 +25,7 @@ from . import config
 
 sys.path.insert(0, os.path.join(config.REPO_ROOT, 'calibration'))
 import pnp_extrinsics as pe  # noqa: E402
+import pooled_extrinsics as pxe  # noqa: E402
 
 CAMERA_INFO = {
     'oakd': '/global_camera/color/camera_info',
@@ -32,6 +34,7 @@ CAMERA_INFO = {
     'realsense3': '/global_camera_3/global_camera_3/color/camera_info',
 }
 CANDIDATE_DIR = os.path.expanduser('~/.ros/calibration_candidates')
+HUB_FRAMES = {'joint2': 'half_arm_1_link', 'elbow': 'forearm_link', 'joint6': 'spherical_wrist_2_link'}     # the link frames the hub offsets are expressed in
 PAD_FRAMES = ('left_inner_finger_pad', 'right_inner_finger_pad')
 PAD_TIP_OFFSET_M = 0.035          # pad frame origin -> end of the pad along the tool axis
 MAX_ARM_DRIFT_RAD = 0.01          # the arm must not move between the first click and the solve
@@ -77,6 +80,7 @@ class ArmCalib(Node):
         # at 5.5 and 9.7 px RMS disagreed by 17.7 deg), so the matched (arm position, pixel) pairs of several poses are solved TOGETHER.
         self.pool = {c: [] for c in CAMERA_INFO}
         self.pooled = {c: None for c in CAMERA_INFO}    # last pooled solve
+        self._load_pools()
         self._js = None
         for cam, topic in CAMERA_INFO.items():
             self.create_subscription(CameraInfo, topic, lambda m, c=cam: self._on_info(c, m), 1)
@@ -217,31 +221,64 @@ class ArmCalib(Node):
             'vs_current': {'rotation_deg': diff[0], 'translation_m': diff[1]} if diff else None,
         }
         with self._lock:
+            rot = self.landmark_rotations()
             self.last[cam] = {'sol': sol, 'frame_id': frame_id, 'pts': [list(map(float, p)) for p in P],
-                              'pix': [list(map(float, u)) for u in uv], 'used': list(used)}
+                              'pix': [list(map(float, u)) for u in uv], 'used': list(used),
+                              'rots': [rot[i].tolist() if i in rot else None for i in used]}
         return result
 
     # ── several poses solved together ───────────────────────────────────────────────────────────────────────────────
+    def _pool_path(self, cam):
+        return os.path.join(CANDIDATE_DIR, f'{cam}_pool.json')
+
+    def _save_pool(self, cam):
+        """The pool survives a backend restart: seven arm poses are twenty minutes of clicking (lost once, 2026-10-21)."""
+        os.makedirs(CANDIDATE_DIR, exist_ok=True)
+        with open(self._pool_path(cam), 'w') as f:
+            json.dump(self.pool[cam], f)
+
+    def _load_pools(self):
+        for cam in CAMERA_INFO:
+            try:
+                with open(self._pool_path(cam)) as f:
+                    self.pool[cam] = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+
+    def landmark_rotations(self):
+        """{hub id: 3x3 rotation of its link frame in base_link} (the hub offsets are estimated in these frames)."""
+        out = {}
+        for hid, frame in HUB_FRAMES.items():
+            try:
+                out[hid] = self._pos(frame)[1].as_matrix()
+            except Exception:
+                pass
+        return out
+
     def commit_pose(self, cam):
         """Keep the points of the pose just solved, then clear the clicks so the next arm pose can be clicked."""
         with self._lock:
             last = self.last.get(cam)
             if not last or 'pts' not in last:
                 return False, 'Solve this pose first: its points are only kept after a successful solve', len(self.pool[cam])
-            self.pool[cam].append({'pts': last['pts'], 'pix': last['pix'], 'used': last['used'],
+            self.pool[cam].append({'pts': last['pts'], 'pix': last['pix'], 'used': last['used'], 'rots': last.get('rots', [None] * len(last['used'])),
                                    'rms': float(last['sol']['rms_px']), 'time': time.strftime('%H:%M:%S')})
             self.clicks[cam] = {}
             self.joint_snapshot[cam] = None
             self.last[cam] = None
             n = len(self.pool[cam])
-        return True, f'pose {n} added to the pool; move the arm to a different pose and click again', n
+            self._save_pool(cam)
+        return True, f'pose {n} added to the pool (saved to disk); move the arm to a different pose and click again', n
 
     def clear_pool(self, cam):
         with self._lock:
             self.pool[cam] = []
             self.pooled[cam] = None
+            self._save_pool(cam)
 
-    def solve_pool(self, cam, frame_id):
+    def solve_pool(self, cam, frame_id, mode='all'):
+        """All pooled poses in one solve. mode 'all' (every landmark), 'sharp' (base, flange, fingertips only) or 'offsets' (all landmarks plus an estimated
+        offset of each hub landmark in its link frame): see calibration/pooled_extrinsics.py for why."""
         with self._lock:
             pool = list(self.pool[cam])
             K = self.K.get(cam)
@@ -251,15 +288,18 @@ class ArmCalib(Node):
             return {'error': 'the pool is empty: solve a pose, then press Add this pose'}
         P = np.array([p for e in pool for p in e['pts']])
         uv = np.array([u for e in pool for u in e['pix']])
-        sol = pe.solve(P, uv, K[0])
+        ids = [k for e in pool for k in e['used']]
+        rots = [np.array(r) if r is not None else None for e in pool for r in e.get('rots', [None] * len(e['used']))]
+        sol = pxe.solve_pooled(P, uv, ids, rots, K[0], mode)
         if 'error' in sol:
             return sol
-        proj, _ = pe.project(P, sol['R_bc'], sol['t_bc'], K[0])
-        err = np.linalg.norm(proj - uv, axis=1)
+        err = np.array(sol['per_point_px'])
+        kept = set(sol['kept'])
         poses, k = [], 0
         for e in pool:
             n = len(e['pts'])
-            poses.append({'n': n, 'rms_px': float(np.sqrt(np.mean(err[k:k + n] ** 2))), 'single_pose_rms_px': e['rms'], 'time': e['time']})
+            idx = [t for t in range(k, k + n) if t in kept]
+            poses.append({'n': len(idx), 'rms_px': float(np.sqrt(np.mean(err[idx] ** 2))) if idx else None, 'single_pose_rms_px': e['rms'], 'time': e['time']})
             k += n
         cur_pos = self.landmark_positions()
         solved_projection = {}
@@ -268,14 +308,18 @@ class ArmCalib(Node):
             solved_projection = {lm['id']: [float(pa[i, 0]), float(pa[i, 1])] for i, lm in enumerate(LANDMARKS)}
         cur = self.current_extrinsic(frame_id) if frame_id else None
         diff = pe.pose_difference(cur[0], cur[1], sol['R_bc'], sol['t_bc']) if cur else None
+        warnings = []
+        if sol['rms_px'] > 8:
+            warnings.append(f'reprojection RMS {sol["rms_px"]:.1f}px is high' + (': try the other modes ("sharp" or "offsets"): the hub landmarks are the usual cause' if mode == 'all' else ''))
         result = {
-            'ok': True, 'pooled': True, 'rms_px': sol['rms_px'], 'points': int(len(P)), 'poses': poses,
-            'worst_px': float(err.max()), 'warnings': sol['warnings'], 'solved_projection': solved_projection,
+            'ok': True, 'pooled': True, 'mode': mode, 'rms_px': sol['rms_px'], 'points': int(sol['n']), 'poses': poses, 'worst_px': sol['worst_px'],
+            'per_landmark_px': sol['per_landmark_px'], 'offsets': sol['offsets'], 'warnings': warnings, 'solved_projection': solved_projection,
             'translation': [float(v) for v in sol['t_bc']], 'quat_xyzw': sol['quat_xyzw'],
             'vs_current': {'rotation_deg': diff[0], 'translation_m': diff[1]} if diff else None,
         }
         with self._lock:
-            self.pooled[cam] = {'sol': sol, 'frame_id': frame_id, 'poses': len(pool), 'points': int(len(P))}
+            self.pooled[cam] = {'sol': {'R_bc': sol['R_bc'], 't_bc': sol['t_bc'], 'quat_xyzw': sol['quat_xyzw'], 'rms_px': sol['rms_px']}, 'frame_id': frame_id,
+                                'poses': len(pool), 'points': int(sol['n']), 'mode': mode, 'offsets': sol['offsets']}
         return result
 
     def save_candidate(self, cam, pooled=False):
@@ -286,7 +330,7 @@ class ArmCalib(Node):
         os.makedirs(CANDIDATE_DIR, exist_ok=True)
         path = os.path.join(CANDIDATE_DIR, f'{cam}_calibration.candidate.yaml')
         d = pe.to_yaml_dict(last['sol'], 'base_link', last['frame_id'])
-        d['note'] = (f'Candidate from clicked arm landmarks (calibration/pnp_extrinsics.py)' + (f', {last["poses"]} arm poses solved together ({last["points"]} points)' if pooled else '') + ', '
+        d['note'] = (f'Candidate from clicked arm landmarks (calibration/pnp_extrinsics.py)' + (f', {last["poses"]} arm poses solved together ({last["points"]} points, mode {last.get("mode", "all")})' + (f', hub offsets in the link frames (m) {last["offsets"]}' if last.get('offsets') else '') if pooled else '') + ', '
                      f'{time.strftime("%Y-%m-%d %H:%M")}, RMS {last["sol"]["rms_px"]:.1f}px. '
                      f'NOT active: copy it over ~/.ros/{cam}_calibration.yaml after checking it.')
         with open(path, 'w') as f:

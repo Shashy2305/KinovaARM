@@ -26,8 +26,9 @@ export interface ArmCalibResult {
   landmarks_used?: string[]; reproj_px?: Record<string, number>; suspect?: string | null
   solved_projection?: Record<string, [number, number]>
   vs_current?: { rotation_deg: number; translation_m: number } | null
-  pooled?: boolean; points?: number; worst_px?: number
-  poses?: { n: number; rms_px: number; single_pose_rms_px: number; time: string }[]
+  pooled?: boolean; points?: number; worst_px?: number; mode?: string
+  per_landmark_px?: Record<string, number>; offsets?: Record<string, number[]>
+  poses?: { n: number; rms_px: number | null; single_pose_rms_px: number; time: string }[]
 }
 
 export interface TableStatus {
@@ -99,7 +100,7 @@ export const api = {
   armCalibCommit: (camera: string) =>
     request<{ ok: boolean; message: string; poses: number }>(`/arm_calib/commit_pose?camera=${camera}`, { method: 'POST' }),
   armCalibClearPool: (camera: string) => request<{ ok: boolean }>(`/arm_calib/clear_pool?camera=${camera}`, { method: 'POST' }),
-  armCalibSolvePool: (camera: string) => request<ArmCalibResult>(`/arm_calib/solve_pool?camera=${camera}`, { method: 'POST' }),
+  armCalibSolvePool: (camera: string, mode = 'all') => request<ArmCalibResult>(`/arm_calib/solve_pool?camera=${camera}&mode=${mode}`, { method: 'POST' }),
   tableStatus: () => request<TableStatus>('/table_geometry/status'),
   tableRecord: () => request<{ ok: boolean; message: string }>('/table_geometry/record', { method: 'POST' }),
   tableReset: () => request<{ ok: boolean }>('/table_geometry/reset', { method: 'POST' }),
