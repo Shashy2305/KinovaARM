@@ -24,11 +24,11 @@ import tf2_ros
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation
-from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Float32, String
 
-from . import config
+from . import config, fusion_cloud
 
 # camera name -> (point cloud topic, has_rgb, fixed display color if no rgb)
 POINTCLOUD_TOPICS = {
@@ -38,7 +38,14 @@ POINTCLOUD_TOPICS = {
     'realsense3': {'topic': '/global_camera_3/global_camera_3/depth/color/points', 'rgb': True},
     'wrist':      {'topic': '/camera/depth/color/points', 'rgb': False, 'tint': (0.55, 0.75, 1.0)},
 }
-MAX_POINTS_PER_CAMERA = 3000
+MAX_POINTS_PER_CAMERA = 3000          # the wrist cloud only (a fixed stride, not random); the RealSense clouds are built from their depth images
+# camera -> (aligned depth image topic, its camera_info); the fused cloud is built from these, not from the drivers' PointCloud2 (see fusion_cloud.py)
+DEPTH_TOPICS = {
+    'realsense':  ('/global_camera/global_camera/aligned_depth_to_color/image_raw', '/global_camera/global_camera/aligned_depth_to_color/camera_info'),
+    'realsense2': ('/global_camera_2/global_camera_2/aligned_depth_to_color/image_raw', '/global_camera_2/global_camera_2/aligned_depth_to_color/camera_info'),
+    'realsense3': ('/global_camera_3/global_camera_3/aligned_depth_to_color/image_raw', '/global_camera_3/global_camera_3/aligned_depth_to_color/camera_info'),
+}
+JPEG_MIN_PERIOD_S = 0.08              # the MJPEG stream sends 10 fps: encoding every frame of four cameras at full size was a major CPU cost
 BASE_FRAME = 'base_link'
 
 REPO_ROOT = config.REPO_ROOT
@@ -114,6 +121,14 @@ class RosBridge(Node):
         # whoever calls it (the fusion WS loop), not by camera framerate.
         self._pc_lock = threading.Lock()
         self._latest_pc = {name: None for name in POINTCLOUD_TOPICS}
+        self._raw_color = {}
+        self._depth_hist = {n: collections.deque(maxlen=3) for n in DEPTH_TOPICS}      # (monotonic time, Image) of the last depth frames
+        self._depth_K = {}
+        self._fusion_stats = {}
+        self._pair_cache = (0.0, {})
+        for n, (dtopic, itopic) in DEPTH_TOPICS.items():
+            self.create_subscription(Image, dtopic, lambda m, n=n: self._depth_hist[n].append((time.monotonic(), m)), 1)
+            self.create_subscription(CameraInfo, itopic, lambda m, n=n: self._depth_K.__setitem__(n, np.array(m.k).reshape(3, 3)), 1)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
         for name, cfg in POINTCLOUD_TOPICS.items():
@@ -171,6 +186,12 @@ class RosBridge(Node):
             return [e for e in self._events if e['seq'] > seq]
 
     def _on_image(self, name, msg):
+        now = time.monotonic()
+        with self._lock:
+            self._raw_color[name] = msg                                     # the fused cloud takes its colours from this
+            self._frame_ts[name] = now if self._jpeg.get(name) is None else self._frame_ts[name]
+            if self._jpeg.get(name) is not None and now - self._frame_ts[name] < JPEG_MIN_PERIOD_S:
+                return
         try:
             bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception:
@@ -218,63 +239,88 @@ class RosBridge(Node):
     def publish_voice_command(self, text):
         self.voice_pub.publish(String(data=text))
 
-    def get_fused_points(self):
-        """Decode, TF-transform into base_link, and downsample each
-        camera's latest point cloud, returning one interleaved
-        [x,y,z,r,g,b, x,y,z,r,g,b, ...] float32 array (colors in 0-1) --
-        this IS the actual sensor fusion (positions registered into one
-        common frame via the same calibration the rest of the pipeline
-        uses), not just three images shown side by side like the
-        MultiCameraView tiles are."""
-        with self._pc_lock:
-            snapshot = dict(self._latest_pc)
+    def _tf_matrix(self, frame_id):
+        tf = self.tf_buffer.lookup_transform(BASE_FRAME, frame_id, rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=0.2))
+        q, t = tf.transform.rotation, tf.transform.translation
+        T = np.eye(4)
+        T[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+        T[:3, 3] = [t.x, t.y, t.z]
+        return T
 
-        chunks = []
-        for name, cfg in POINTCLOUD_TOPICS.items():
-            msg = snapshot.get(name)
-            if msg is None:
+    def get_fused_points(self, mode='rgb'):
+        """One interleaved float32 [x,y,z,r,g,b, ...] array in base_link (colours 0-1) of ALL cameras merged: see fusion_cloud.py. Deterministic (a fixed
+        pixel grid, a temporal median of the last depth frames, flying-pixel removal, a workspace crop and a voxel merge), so the picture is stable.
+        mode: 'rgb' the camera colours, 'camera' one colour per camera (white where several agree), 'overlap' by number of cameras.
+        Per-camera status and pair statistics are left in self._fusion_stats (get_fusion_stats())."""
+        t0 = time.monotonic()
+        clouds, cams = {}, {}
+        for name in DEPTH_TOPICS:
+            with self._lock:
+                hist = list(self._depth_hist[name])
+                color_msg = self._raw_color.get(name)
+                K = self._depth_K.get(name)
+            if not hist or color_msg is None or K is None:
+                cams[name] = {'status': 'no data', 'points': 0}
+                continue
+            age = time.monotonic() - hist[-1][0]
+            if age > 3.0:
+                cams[name] = {'status': 'stale', 'points': 0, 'age_s': round(age, 1)}
                 continue
             try:
-                field_names = ['x', 'y', 'z', 'rgb'] if cfg['rgb'] else ['x', 'y', 'z']
-                pts = point_cloud2.read_points(msg, field_names=field_names, skip_nans=True)
-                if len(pts) == 0:
-                    continue
-                xyz = np.column_stack([pts['x'], pts['y'], pts['z']]).astype(np.float32)
-
-                if len(xyz) > MAX_POINTS_PER_CAMERA:
-                    idx = np.random.choice(len(xyz), MAX_POINTS_PER_CAMERA, replace=False)
-                    xyz = xyz[idx]
-                    pts = pts[idx]
-
-                try:
-                    tf = self.tf_buffer.lookup_transform(
-                        BASE_FRAME, msg.header.frame_id, rclpy.time.Time(),
-                        timeout=rclpy.duration.Duration(seconds=0.2))
-                except Exception:
-                    continue  # no TF yet for this camera -- skip this round, not fatal
-                q = tf.transform.rotation
-                t = tf.transform.translation
-                R = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
-                xyz_base = (R @ xyz.T).T + np.array([t.x, t.y, t.z], dtype=np.float32)
-
-                if cfg['rgb']:
-                    rgb_u32 = pts['rgb'].view(np.uint32)
-                    r = ((rgb_u32 >> 16) & 0xFF).astype(np.float32) / 255.0
-                    g = ((rgb_u32 >> 8) & 0xFF).astype(np.float32) / 255.0
-                    b = (rgb_u32 & 0xFF).astype(np.float32) / 255.0
-                    rgb = np.column_stack([r, g, b])
-                else:
-                    rgb = np.tile(np.array(cfg['tint'], dtype=np.float32), (len(xyz_base), 1))
-
-                interleaved = np.hstack([xyz_base, rgb]).astype(np.float32)
-                chunks.append(interleaved)
+                T = self._tf_matrix(hist[-1][1].header.frame_id)
+            except Exception:
+                cams[name] = {'status': 'no calibration (TF)', 'points': 0}
+                continue
+            try:
+                frames = [self.bridge.imgmsg_to_cv2(m, '16UC1') for _, m in hist if (m.width, m.height) == (hist[-1][1].width, hist[-1][1].height)]
+                rgb = self.bridge.imgmsg_to_cv2(color_msg, 'rgb8')
+                pts, col = fusion_cloud.camera_points(frames, rgb, K, T)
             except Exception as e:
                 self.get_logger().warn(f'get_fused_points: {name} failed: {e}', throttle_duration_sec=5.0)
+                cams[name] = {'status': 'error', 'points': 0}
                 continue
+            clouds[name] = (pts, col)
+            cams[name] = {'status': 'ok', 'points': int(len(pts)), 'frames': len(frames), 'age_s': round(age, 2), 'size': [hist[-1][1].width, hist[-1][1].height]}
 
-        if not chunks:
+        # the wrist camera: its native depth cloud (no colour), a fixed stride instead of a random sample
+        with self._pc_lock:
+            wmsg = self._latest_pc.get('wrist')
+        if wmsg is not None:
+            try:
+                pts = point_cloud2.read_points(wmsg, field_names=['x', 'y', 'z'], skip_nans=True)
+                xyz = np.column_stack([pts['x'], pts['y'], pts['z']]).astype(np.float32) if len(pts) else np.zeros((0, 3), np.float32)
+                if len(xyz) > MAX_POINTS_PER_CAMERA:
+                    xyz = xyz[:: len(xyz) // MAX_POINTS_PER_CAMERA + 1]
+                T = self._tf_matrix(wmsg.header.frame_id)
+                xb = xyz @ T[:3, :3].T.astype(np.float32) + T[:3, 3].astype(np.float32)
+                keep = np.all((xb >= fusion_cloud.CROP_MIN) & (xb <= fusion_cloud.CROP_MAX), axis=1)
+                tint = np.tile(np.array(POINTCLOUD_TOPICS['wrist']['tint'], dtype=np.float32), (int(keep.sum()), 1))
+                clouds['wrist'] = (xb[keep], tint)
+                cams['wrist'] = {'status': 'ok', 'points': int(keep.sum())}
+            except Exception:
+                cams['wrist'] = {'status': 'no calibration (TF)', 'points': 0}
+
+        if not clouds:
+            with self._lock:
+                self._fusion_stats = {'time': time.time(), 'cameras': cams, 'pairs': {}, 'merged': 0, 'ms': 0}
             return np.zeros((0, 6), dtype=np.float32)
-        return np.vstack(chunks)
+        p, c, mask = fusion_cloud.voxel_merge(clouds)
+        out = np.hstack([p, fusion_cloud.colorize(c, mask, mode)]).astype(np.float32)
+        # pair statistics are a few ms of KD-tree each: refresh them every 2 s, not every frame
+        now = time.monotonic()
+        if now - self._pair_cache[0] > 2.0:
+            try:
+                self._pair_cache = (now, fusion_cloud.pair_stats({k: v for k, v in clouds.items() if k != 'wrist'}))
+            except Exception:
+                self._pair_cache = (now, {})
+        with self._lock:
+            self._fusion_stats = {'time': time.time(), 'cameras': cams, 'pairs': self._pair_cache[1], 'merged': int(len(p)),
+                                  'ms': round(1000 * (time.monotonic() - t0), 1), 'mode': mode}
+        return out
+
+    def get_fusion_stats(self):
+        with self._lock:
+            return dict(self._fusion_stats)
 
 
 _bridge = None

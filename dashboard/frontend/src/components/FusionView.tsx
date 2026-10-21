@@ -11,8 +11,39 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
  * into one consistent frame via the same calibration the rest of the
  * pipeline uses.
  */
+type FusionMode = 'rgb' | 'camera' | 'overlap'
+interface FusionStats {
+  cameras: Record<string, { status: string; points: number; size?: [number, number] }>
+  pairs: Record<string, { median_nn_cm: number | null; overlap_pct: number; shared_points: number }>
+  merged: number
+  ms: number
+}
+const CAM_LABEL: Record<string, string> = { realsense: 'RS1', realsense2: 'RS2', realsense3: 'RS3', wrist: 'Wrist' }
+const CAM_DOT: Record<string, string> = { realsense: '#ff594d', realsense2: '#4de666', realsense3: '#598cff', wrist: '#ffd94d' }
+const MODES: { id: FusionMode; label: string; hint: string }[] = [
+  { id: 'rgb', label: 'Colour', hint: 'the cameras\' own colours' },
+  { id: 'camera', label: 'By camera', hint: 'one colour per camera, WHITE where two or more agree: a mis-calibrated camera shows up as a separate coloured layer' },
+  { id: 'overlap', label: 'Overlap', hint: 'grey = one camera, yellow = two, green = three or more' },
+]
+
 export function FusionView() {
+  const [mode, setMode] = useState<FusionMode>('rgb')
+  const [stats, setStats] = useState<FusionStats | null>(null)
   const mountRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let alive = true
+    const load = async () => {
+      try {
+        const r = await fetch('/api/fusion/stats')
+        if (alive && r.ok) setStats(await r.json())
+      } catch { /* backend restarting */ }
+    }
+    load()
+    const id = setInterval(load, 2000)
+    return () => { alive = false; clearInterval(id) }
+  }, [])
+
   const [pointCount, setPointCount] = useState(0)
   const [connected, setConnected] = useState(false)
   const [lastUpdate, setLastUpdate] = useState<number | null>(null)
@@ -75,7 +106,7 @@ export function FusionView() {
 
     function connect() {
       const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-      ws = new WebSocket(`${proto}://${window.location.host}/api/ws/fusion`)
+      ws = new WebSocket(`${proto}://${window.location.host}/api/ws/fusion?mode=${mode}`)
       ws.binaryType = 'arraybuffer'
 
       ws.onopen = () => { setConnected(true); retry = 0 }
@@ -120,8 +151,9 @@ export function FusionView() {
       material.dispose()
       mount.removeChild(renderer.domElement)
     }
-  }, [])
+  }, [mode])
 
+  const pairVerdict = (cm: number | null) => (cm === null ? 'text-(--color-text-faint)' : cm <= 1.5 ? 'text-(--color-green)' : cm <= 3 ? 'text-(--color-amber)' : 'text-(--color-red)')
   const stale = !lastUpdate || Date.now() - lastUpdate > 3000
 
   return (
@@ -130,18 +162,50 @@ export function FusionView() {
         <div>
           <h2 className="font-semibold text-sm tracking-tight">3D Fusion</h2>
           <p className="text-xs text-(--color-text-dim) mt-0.5">
-            All three cameras merged into one point cloud, registered in base_link
+            Every camera merged into one stable point cloud in base_link (fixed pixel grid, 3-frame depth median, flying pixels removed, 1 cm voxels, workspace crop)
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {MODES.map((m) => (
+            <button key={m.id} title={m.hint} onClick={() => setMode(m.id)}
+              className={`px-2.5 py-1 text-[0.72rem] font-medium border transition-colors ${
+                mode === m.id ? 'border-(--color-amber) text-(--color-amber)' : 'border-(--color-border-bright) text-(--color-text-dim) hover:text-(--color-text)'}`}>
+              {m.label}
+            </button>
+          ))}
           <span className="text-xs font-mono text-(--color-text-dim)">{pointCount.toLocaleString()} pts</span>
           <span className={`live-dot ${connected && !stale ? 'text-(--color-green)' : 'text-(--color-red)'}`} style={{ background: 'currentColor' }} />
         </div>
       </div>
       <div ref={mountRef} className="w-full" style={{ height: '560px' }} />
+      {stats && (
+        <div className="px-4 py-2.5 border-t border-(--color-border) text-xs space-y-1.5">
+          <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono">
+            {Object.entries(stats.cameras).map(([name, c]) => (
+              <span key={name} className={c.status === 'ok' ? 'text-(--color-text-dim)' : 'text-(--color-amber)'}>
+                <span style={{ color: CAM_DOT[name] }}>●</span> {CAM_LABEL[name] ?? name}: {c.status === 'ok' ? `${c.points.toLocaleString()} pts${c.size ? ` (${c.size[0]}x${c.size[1]})` : ''}` : c.status}
+              </span>
+            ))}
+            <span className="text-(--color-text-faint)">merged {stats.merged.toLocaleString()} voxels in {stats.ms} ms</span>
+          </div>
+          {Object.keys(stats.pairs).length > 0 && (
+            <div className="flex flex-wrap gap-x-5 gap-y-1 font-mono">
+              <span className="text-(--color-text-faint)">Do the cameras agree? median distance to the other camera's surface:</span>
+              {Object.entries(stats.pairs).map(([k, v]) => {
+                const [a, b] = k.split('|')
+                return (
+                  <span key={k} className={pairVerdict(v.median_nn_cm)}>
+                    {CAM_LABEL[a] ?? a} / {CAM_LABEL[b] ?? b}: {v.median_nn_cm === null ? 'no shared view' : `${v.median_nn_cm} cm, ${v.overlap_pct}% within 3 cm`}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
       <div className="px-4 py-2.5 text-xs text-(--color-text-faint) border-t border-(--color-border)">
         Drag to orbit, scroll to zoom. Violet grid is the table plane through base_link; axes mark
-        the origin (red=x, green=y, blue=z).
+        the origin (red=x, green=y, blue=z). Green numbers (1.5 cm or less between two cameras) mean their calibrations agree; red means one of them is off, and "By camera" shows which.
       </div>
     </div>
   )

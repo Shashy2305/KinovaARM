@@ -15,6 +15,9 @@ async def ws_fusion(websocket: WebSocket):
     saturating the connection -- see ros_bridge.get_fused_points()."""
     await websocket.accept()
     bridge = ros_bridge.get_bridge()
+    mode = websocket.query_params.get('mode', 'rgb')
+    if mode not in ('rgb', 'camera', 'overlap'):
+        mode = 'rgb'
     try:
         while True:
             # get_fused_points() does up to one TF lookup_transform (0.2s
@@ -22,8 +25,14 @@ async def ws_fusion(websocket: WebSocket):
             # ~0.6s. Same event-loop-stall risk as status.py's all_status():
             # off-thread it so a slow TF lookup doesn't freeze every other
             # connection this backend is serving.
-            points = await asyncio.to_thread(bridge.get_fused_points)
+            points = await asyncio.to_thread(bridge.get_fused_points, mode)
             await websocket.send_bytes(points.tobytes())
             await asyncio.sleep(0.25)
     except WebSocketDisconnect:
         pass
+
+
+@router.get('/fusion/stats')
+def fusion_stats():
+    """Per-camera status/points, how well each pair of cameras overlaps (median nearest-point distance in cm: a few = the calibrations agree) and the merge cost."""
+    return ros_bridge.get_bridge().get_fusion_stats()
