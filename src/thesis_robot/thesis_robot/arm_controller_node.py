@@ -118,6 +118,8 @@ class ArmControllerNode(Node):
         # (a pick took 24 s on average, 6 s of it the hover transit).
         self.declare_parameter('smooth_free_vel_scale', 0.30)
         self.declare_parameter('smooth_free_min_rad', 0.6)
+        self.declare_parameter('smooth_profile', 'min_jerk')   # 'min_jerk' (today) or 's_curve': same speed/acceleration limits, jerk-limited, reaches the cap (analysis: 39% shorter)
+        self.declare_parameter('smooth_jerk_limit', 8.0)       # rad/s^3 per joint for the s_curve profile (a 0.2 s acceleration ramp at the default acceleration cap)
         self.declare_parameter('smooth_acc_scale', 0.20)    # peak joint acceleration as a fraction of the limit
         self.declare_parameter('smooth_min_duration_s', 0.6)
 
@@ -681,7 +683,9 @@ class ArmControllerNode(Node):
             r = ts.smooth(pos, JOINT_VMAX, JOINT_AMAX,
                           vel_scale=vs,
                           acc_scale=float(self.get_parameter('smooth_acc_scale').value),
-                          min_duration=float(self.get_parameter('smooth_min_duration_s').value))
+                          min_duration=float(self.get_parameter('smooth_min_duration_s').value),
+                          profile=str(self.get_parameter('smooth_profile').value),
+                          jerk_max=float(self.get_parameter('smooth_jerk_limit').value))
             if r is None:
                 return traj
             out = JointTrajectory()
@@ -697,7 +701,7 @@ class ArmControllerNode(Node):
                 out.points.append(pt)
             self.get_logger().info(
                 f'{label}: smoothed {len(traj.points)} points / {old_t:.1f}s -> {len(out.points)} points / '
-                f'{r["duration"]:.1f}s ({r["path"]})')
+                f'{r["duration"]:.1f}s ({r["path"]}, {r.get("profile", "min_jerk")})')
             return out
         except Exception as e:
             self.get_logger().warn(f'{label}: smoothing failed ({e}), using the planner timing')

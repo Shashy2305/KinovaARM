@@ -15,6 +15,8 @@ import math
 
 import numpy as np
 
+PROFILES = ('min_jerk', 's_curve')
+
 PEAK_U_DOT = 1.875          # max of u'(t) for the minimum-jerk curve, times 1/T
 PEAK_U_DDOT = 5.7735        # max of |u''(t)|, times 1/T^2
 MIN_JERK_PEAK_U_DOT_SQ = PEAK_U_DOT ** 2
@@ -65,6 +67,48 @@ class _LinearPath:
         return np.zeros((len(uu), self.P.shape[1]))
 
 
+def scurve_profile(dt, V, A, J):
+    """Rest-to-rest jerk-limited S-curve u(t) from 0 to 1 with |u'| <= V, |u''| <= A, |u'''| <= J: the acceleration ramps up with jerk J, holds A,
+    ramps down, the speed holds V, and the whole thing mirrors for the stop. Returns (t, u, ud, udd) sampled every ~dt seconds, ending exactly at u = 1.
+    Unlike the minimum-jerk curve (whose peak speed is 1.875 x its mean) it reaches V and stays there, so the same limits give a much shorter move."""
+    def accel_time(vp):
+        """duration of the speed-up from 0 to vp (jerk J, acceleration at most A)"""
+        return (vp / A + A / J) if vp * J >= A * A else 2.0 * math.sqrt(vp / J)
+    vp = V
+    if vp * accel_time(vp) >= 1.0:                       # too short to reach V: lower the peak speed until the two ramps just cover the distance
+        lo, hi = 0.0, V
+        for _ in range(80):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if mid * accel_time(mid) < 1.0 else (lo, mid)
+        vp = 0.5 * (lo + hi)
+    t_acc = accel_time(vp)
+    cruise = max(0.0, (1.0 - vp * t_acc) / vp)
+    if vp * J >= A * A:
+        tj, tc = A / J, vp / A - A / J
+    else:
+        tj, tc = math.sqrt(vp / J), 0.0
+    # the jerk pattern: +J, 0, -J, cruise, -J, 0, +J
+    seg = [(tj, J), (tc, 0.0), (tj, -J), (cruise, 0.0), (tj, -J), (tc, 0.0), (tj, J)]
+    T = sum(d for d, _ in seg)
+    fine = 0.0005
+    n = int(math.ceil(T / fine)) + 1
+    t = np.linspace(0.0, T, n)
+    jerk = np.zeros(n)
+    t0 = 0.0
+    for d, jv in seg:
+        jerk[(t >= t0) & (t < t0 + d)] = jv
+        t0 += d
+    h = t[1] - t[0]
+    udd = np.concatenate([[0.0], np.cumsum(0.5 * (jerk[1:] + jerk[:-1]) * h)])
+    ud = np.concatenate([[0.0], np.cumsum(0.5 * (udd[1:] + udd[:-1]) * h)])
+    u = np.concatenate([[0.0], np.cumsum(0.5 * (ud[1:] + ud[:-1]) * h)])
+    scale = 1.0 / u[-1]                                  # absorb the (tiny) numerical error so that u ends at exactly 1
+    u, ud, udd = u * scale, ud * scale, udd * scale
+    m = int(math.ceil(T / dt)) + 1
+    ts = np.linspace(0.0, T, m)
+    return ts, np.interp(ts, t, u), np.interp(ts, t, ud), np.interp(ts, t, udd)
+
+
 def _dedupe(P):
     keep = [0]
     for i in range(1, len(P)):
@@ -73,9 +117,11 @@ def _dedupe(P):
     return P[keep]
 
 
-def smooth(positions, vmax, amax, vel_scale=0.35, acc_scale=0.25, dt=0.04, min_duration=0.6, max_dev=0.01):
+def smooth(positions, vmax, amax, vel_scale=0.35, acc_scale=0.25, dt=0.04, min_duration=0.6, max_dev=0.01, profile='min_jerk', jerk_max=8.0):
     """positions: (N, J) planned waypoints (rad). Returns {'t', 'q', 'qd', 'qdd', 'duration', 'path'} sampled
-    every ~dt seconds, or None when the path has no length. vmax/amax: per-joint limits (rad/s, rad/s^2)."""
+    every ~dt seconds, or None when the path has no length. vmax/amax: per-joint limits (rad/s, rad/s^2).
+    profile 's_curve': a jerk-limited S-curve (jerk_max rad/s^3 per joint) with the SAME speed and acceleration limits; if the path's curvature makes
+    the conservative bounds infeasible it falls back to the minimum-jerk law."""
     P = _dedupe(np.asarray(positions, dtype=float))
     if len(P) < 2:
         return None
@@ -95,6 +141,31 @@ def smooth(positions, vmax, amax, vel_scale=0.35, acc_scale=0.25, dt=0.04, min_d
     grid = np.linspace(0.0, 1.0, 400)
     d1, d2 = np.abs(path(grid, 1)), np.abs(path(grid, 2))
     A1, A2 = d1.max(axis=0), d2.max(axis=0)              # rad per unit of path progress
+    if profile == 's_curve':
+        # Joint speed, acceleration and jerk along the path q(u(t)) are bounded with the path's own derivative maxima (conservative: every maximum is taken
+        # over the whole path and the terms are added), so ONE shared S-curve u(t) keeps every joint inside its limits, straight or curved.
+        vlim, alim = vmax * vel_scale, amax * acc_scale
+        live = A1 > 1e-12                                # joints that move at all
+        dd = np.diff(path(grid, 2), axis=0) / np.diff(grid)[:, None]
+        A3 = np.abs(dd).max(axis=0)                      # q''' per unit of path progress (piecewise constant for a cubic spline, 0 for a line)
+        V = float(np.min(vlim[live] / A1[live]))         # path progress per second
+        bad = live & (A2 > 1e-12)
+        if bad.any():                                    # curvature: keep the centripetal part q'' u'^2 under half of each joint's acceleration limit
+            V = min(V, float(np.min(np.sqrt(0.5 * alim[bad] / A2[bad]))))
+        A = float(np.min((alim[live] - A2[live] * V ** 2) / A1[live]))
+        J = float(np.min((jerk_max - A3[live] * V ** 3 - 3.0 * A2[live] * V * max(A, 0.0)) / A1[live]))
+        if V > 0 and A > 0 and J > 0:
+            ts_, uu, ud, udd = scurve_profile(dt, V, A, J)
+            if ts_[-1] < min_duration:                   # never faster than min_duration: stretch the same shape in time
+                k = ts_[-1] / min_duration
+                ts_, ud, udd = ts_ / k, ud * k, udd * k * k
+            q = path(uu)
+            qd = path(uu, 1) * ud[:, None]
+            qdd = path(uu, 2) * (ud ** 2)[:, None] + path(uu, 1) * udd[:, None]
+            q[0], q[-1] = P[0], P[-1]
+            qd[0] = qd[-1] = 0.0
+            qdd[0] = qdd[-1] = 0.0
+            return {'t': ts_, 'q': q, 'qd': qd, 'qdd': qdd, 'duration': float(ts_[-1]), 'path': kind, 'profile': 's_curve'}
     t_vel = PEAK_U_DOT * np.max(A1 / (vmax * vel_scale))
     t_acc = math.sqrt(np.max((MIN_JERK_PEAK_U_DOT_SQ * A2 + PEAK_U_DDOT * A1) / (amax * acc_scale)))
     T = max(t_vel, t_acc, min_duration)
@@ -110,4 +181,4 @@ def smooth(positions, vmax, amax, vel_scale=0.35, acc_scale=0.25, dt=0.04, min_d
     q[0], q[-1] = P[0], P[-1]                            # exact ends
     qd[0] = qd[-1] = 0.0
     qdd[0] = qdd[-1] = 0.0
-    return {'t': tau * T, 'q': q, 'qd': qd, 'qdd': qdd, 'duration': T, 'path': kind}
+    return {'t': tau * T, 'q': q, 'qd': qd, 'qdd': qdd, 'duration': T, 'path': kind, 'profile': 'min_jerk'}

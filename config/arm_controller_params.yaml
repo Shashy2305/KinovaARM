@@ -21,6 +21,8 @@ arm_controller:
     smooth_trajectories: true
     smooth_vel_scale: 0.30
     smooth_acc_scale: 0.20
+    smooth_profile: min_jerk         # 's_curve': same speed/acceleration limits, jerk-limited: about 40% shorter swings (docs/TRAJECTORY_OPTIMISATION.md)
+    smooth_jerk_limit: 8.0           # rad/s^3 per joint, used by s_curve
     smooth_free_vel_scale: 0.30      # raise (0.38-0.45) to speed up big free-space swings
     smooth_free_min_rad: 0.6
     # data

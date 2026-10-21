@@ -160,7 +160,7 @@ def test_free_space_transits_use_the_free_scale_and_short_moves_do_not():
     from builtin_interfaces.msg import Duration
     from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
     params = {'smooth_trajectories': True, 'smooth_vel_scale': 0.30, 'smooth_free_vel_scale': 0.50, 'smooth_free_min_rad': 0.6,
-              'smooth_acc_scale': 0.20, 'smooth_min_duration_s': 0.6}
+              'smooth_acc_scale': 0.20, 'smooth_min_duration_s': 0.6, 'smooth_profile': 'min_jerk', 'smooth_jerk_limit': 8.0}
     n = types.SimpleNamespace(get_parameter=lambda k: Param(params[k]), get_logger=lambda: FakeLogger())
 
     def traj(delta):
@@ -180,3 +180,8 @@ def test_free_space_transits_use_the_free_scale_and_short_moves_do_not():
         return d.sec + d.nanosec * 1e-9
     assert duration(1.2, 0.50) < 0.75 * duration(1.2, 0.30)               # a long swing speeds up
     assert duration(0.3, 0.50) == pytest.approx(duration(0.3, 0.30), rel=1e-6)   # a short precise move does not
+    # the jerk-limited S-curve option shortens the same swing under the same caps, and is off by default
+    mj = duration(1.2, 0.30)
+    params['smooth_profile'] = 's_curve'
+    assert duration(1.2, 0.30) < 0.8 * mj
+    params['smooth_profile'] = 'min_jerk'
