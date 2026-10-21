@@ -35,6 +35,7 @@ import numpy as np
 import tf2_ros
 import tf2_geometry_msgs  # noqa: F401 — registers PointStamped with tf2
 
+from thesis_robot import camera_calibration_files as ccf
 from thesis_robot import safety_geometry as sg
 
 # Every coordinate stored in the scene (and therefore every coordinate the
@@ -441,6 +442,9 @@ class SceneGraphNode(Node):
         Anything else is dropped: camera-frame numbers are never used as
         robot-frame numbers.
         """
+        if not ccf.has_calibration(str(det.get('source', ''))):
+            return None          # a static camera without a calibration file must not place anything (a stale remembered transform would)
+
         def num(key):
             v = det.get(key)
             if v is None:

@@ -83,3 +83,17 @@ def test_the_full_bring_up_skips_the_third_camera_until_it_has_a_calibration_fil
     from app import config
     assert set(config.NEEDS_CALIBRATION_FILE) == {'realsense3_tf_broadcaster', 'realsense3_detection'}
     assert all(p in config.PROCESSES for p in config.NEEDS_CALIBRATION_FILE)
+
+
+def test_a_static_camera_without_a_calibration_file_is_never_used(tmp_path, monkeypatch):
+    """2026-10-20: a removed trial calibration left a stale static transform in the long-running nodes and drew a phantom obstacle."""
+    import importlib
+    ccf = importlib.import_module('thesis_robot.camera_calibration_files')
+    monkeypatch.setitem(ccf.CALIBRATION_FILES, 'realsense3', str(tmp_path / 'realsense3_calibration.yaml'))
+    assert ccf.has_calibration('realsense3') is False
+    (tmp_path / 'realsense3_calibration.yaml').write_text('x: 1\n')
+    assert ccf.has_calibration('realsense3') is True
+    assert ccf.has_calibration('wrist') is True                      # calibrated by the arm's kinematics, needs no file
+    for module in ('obstacle_guard_node', 'scene_graph_node'):
+        assert 'has_calibration' in _read(f'src/thesis_robot/thesis_robot/{module}.py'), module
+    assert 'has_calibration' in _read('dashboard/backend/app/ros_bridge.py')

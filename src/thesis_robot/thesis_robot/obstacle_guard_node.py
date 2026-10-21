@@ -27,6 +27,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 from thesis_robot import obstacle_guard as og
+from thesis_robot import camera_calibration_files as ccf
 from thesis_robot import safety_geometry as sg
 from thesis_robot import wrist_servo as ws
 
@@ -115,6 +116,8 @@ class ObstacleGuardNode(Node):
             item, K = self.depth.get(name), self.K.get(name)
             if not item or K is None or time.monotonic() - item[0] > 1.0:
                 continue
+            if not ccf.has_calibration(name):
+                continue                                      # no calibration file: whatever transform this node remembers is stale
             try:
                 tf = self.tf_buffer.lookup_transform(BASE, c['frame'], rclpy.time.Time()).transform
                 R = Rotation.from_quat([tf.rotation.x, tf.rotation.y, tf.rotation.z, tf.rotation.w]).as_matrix()

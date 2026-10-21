@@ -30,6 +30,9 @@ from std_msgs.msg import Float32, String
 
 from . import config, fusion_cloud
 
+sys.path.insert(0, os.path.join(config.REPO_ROOT, 'src', 'thesis_robot', 'thesis_robot'))
+import camera_calibration_files as ccf  # noqa: E402
+
 # camera name -> (point cloud topic, has_rgb, fixed display color if no rgb)
 POINTCLOUD_TOPICS = {
     'oakd':       {'topic': '/global_camera/stereo/points', 'rgb': True},
@@ -267,6 +270,8 @@ class RosBridge(Node):
                 cams[name] = {'status': 'stale', 'points': 0, 'age_s': round(age, 1)}
                 continue
             try:
+                if not ccf.has_calibration(name):
+                    raise RuntimeError('no calibration file')
                 T = self._tf_matrix(hist[-1][1].header.frame_id)
             except Exception:
                 cams[name] = {'status': 'no calibration (TF)', 'points': 0}

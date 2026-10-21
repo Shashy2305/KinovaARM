@@ -672,3 +672,7 @@ Also: the full bring-up now includes RealSense 2's TF broadcaster and detection.
   `calibration/refine_from_clouds.py` registers RS3's depth cloud onto RS1+RS2 using only points above the table (the table plane lets ICP slide): the arm-only registration reached 92-94% overlap on a still capture, but repeated runs scatter by about 4 cm and 5 deg, and a
   trial install put the cup 3-5 cm off and a mouse 16 cm BELOW the table (a few degrees of rotation error grows with the 1.5 m distance). So it is not good enough for fusion. Next: 3-4 arm poses pooled at 1280x720, then `calibration/check_markers.py` with the ArUco board (DICT_4X4_50, ids 0-3).
 - `~/.ros/realsense3_calibration.yaml` is absent, so the full bring-up skips RS3's TF broadcaster and detection.
+
+### 21c. Phantom "unknown obstacle" on the scene map after a trial calibration (2026-10-21)
+A static camera transform never expires in a running node. After RealSense 3's trial calibration was installed and removed, the obstacle guard kept the last pose and drew a 25 x 55 cm amber "? 8 cm" box from RS3's depth; the workspace bound and the table geometry (`~/.ros/table_geometry.yaml`, `workspace_bounds.yaml`, unchanged) were never involved.
+Fixed by `camera_calibration_files.has_calibration()`: the obstacle guard, the scene graph and the 3D fusion use a static camera only while its `~/.ros/<camera>_calibration.yaml` exists. After removing or replacing a calibration, restart `obstacle_guard` and `scene_graph_node` anyway.
