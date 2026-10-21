@@ -73,6 +73,8 @@ def main():
     ap.add_argument('--imgsz', type=int, default=640)
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
+    if args.out:
+        args.out = os.path.abspath(args.out)                  # load_model() changes the directory
     samples = load_samples()
     print(f'{len(samples)} labelled wrist frames: {dict(Counter(m["label"] for _, m in samples))}')
     results = {}

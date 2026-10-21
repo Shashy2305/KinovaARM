@@ -1,0 +1,29 @@
+21 labelled wrist frames: {'cup': 10, 'mouse': 9, 'bottle': 2}
+yolov8m-seg: top-1 correct 18/21, truth among the candidates 19/21, nothing found 0, 19 ms/frame
+   per object: {'cup': '10/10', 'mouse': '8/9', 'bottle': '0/2'}
+   confusions (truth -> called): {'bottle->cup': 1, 'bottle->frisbee': 1, 'mouse->remote': 1}
+rtdetr-l: top-1 correct 10/21, truth among the candidates 21/21, nothing found 0, 21 ms/frame
+   per object: {'cup': '2/10', 'mouse': '8/9', 'bottle': '0/2'}
+   confusions (truth -> called): {'cup->vase': 8, 'bottle->dining table': 1, 'bottle->vase': 1, 'mouse->bowl': 1}
+rtdetr-x: top-1 correct 12/21, truth among the candidates 19/21, nothing found 0, 33 ms/frame
+   per object: {'cup': '4/10', 'mouse': '8/9', 'bottle': '0/2'}
+   confusions (truth -> called): {'cup->bowl': 3, 'cup->dining table': 2, 'bottle->dining table': 1, 'bottle->vase': 1, 'mouse->bowl': 1, 'cup->vase': 1}
+yolo11m: top-1 correct 13/21, truth among the candidates 16/21, nothing found 3, 16 ms/frame
+   per object: {'cup': '5/10', 'mouse': '8/9', 'bottle': '0/2'}
+   confusions (truth -> called): {'cup->bowl': 4, 'bottle->None': 2, 'mouse->bowl': 1, 'cup->None': 1}
+yolo12m: top-1 correct 3/21, truth among the candidates 5/21, nothing found 3, 9 ms/frame
+   per object: {'cup': '0/10', 'mouse': '3/9', 'bottle': '0/2'}
+   confusions (truth -> called): {'mouse->sports ball': 5, 'cup->dining table': 4, 'cup->vase': 3, 'cup->None': 3, 'bottle->dining table': 1, 'bottle->bowl': 1, 'mouse->frisbee': 1}
+yolov10m: top-1 correct 13/21, truth among the candidates 18/21, nothing found 0, 10 ms/frame
+   per object: {'cup': '6/10', 'mouse': '6/9', 'bottle': '1/2'}
+   confusions (truth -> called): {'mouse->sports ball': 2, 'cup->bowl': 2, 'bottle->sports ball': 1, 'mouse->frisbee': 1, 'cup->bottle': 1, 'cup->vase': 1}
+yolov9c: top-1 correct 12/21, truth among the candidates 18/21, nothing found 0, 13 ms/frame
+   per object: {'cup': '6/10', 'mouse': '6/9', 'bottle': '0/2'}
+   confusions (truth -> called): {'bottle->cup': 2, 'mouse->toilet': 2, 'cup->vase': 2, 'cup->dining table': 1, 'mouse->bowl': 1, 'cup->wine glass': 1}
+=== second opinion vs the current detector (yolov8m-seg), top-1 label at the pixel ===
+rtdetr-l     both right 9, only yolov8 9, only rtdetr-l 1, neither 2 | they agree on 9/21 frames and are right on 9 of those | truth in either one's candidates 21/21
+rtdetr-x     both right 11, only yolov8 7, only rtdetr-x 1, neither 2 | they agree on 11/21 frames and are right on 11 of those | truth in either one's candidates 20/21
+yolo11m      both right 12, only yolov8 6, only yolo11m 1, neither 2 | they agree on 12/21 frames and are right on 12 of those | truth in either one's candidates 19/21
+yolo12m      both right 3, only yolov8 15, only yolo12m 0, neither 3 | they agree on 3/21 frames and are right on 3 of those | truth in either one's candidates 19/21
+yolov10m     both right 12, only yolov8 6, only yolov10m 1, neither 2 | they agree on 12/21 frames and are right on 12 of those | truth in either one's candidates 20/21
+yolov9c      both right 12, only yolov8 6, only yolov9c 0, neither 3 | they agree on 13/21 frames and are right on 12 of those | truth in either one's candidates 19/21
