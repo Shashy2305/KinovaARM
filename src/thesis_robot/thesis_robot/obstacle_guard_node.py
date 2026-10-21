@@ -40,6 +40,9 @@ CAMERAS = {
     'realsense2': {'depth': '/global_camera_2/global_camera_2/aligned_depth_to_color/image_raw',
                    'info': '/global_camera_2/global_camera_2/aligned_depth_to_color/camera_info',
                    'frame': 'global_camera_2_color_optical_frame'},
+    'realsense3': {'depth': '/global_camera_3/global_camera_3/aligned_depth_to_color/image_raw',
+                   'info': '/global_camera_3/global_camera_3/aligned_depth_to_color/camera_info',
+                   'frame': 'global_camera_3_color_optical_frame'},
 }
 
 

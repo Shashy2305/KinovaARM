@@ -85,8 +85,10 @@ def launch_setup(context, *args, **kwargs):
     launch_wrist_camera = LaunchConfiguration("launch_wrist_camera")
     launch_oak_camera   = LaunchConfiguration("launch_oak_camera")
     launch_realsense_2  = LaunchConfiguration("launch_realsense_2")
+    launch_realsense_3  = LaunchConfiguration("launch_realsense_3")
     realsense_serial    = LaunchConfiguration("realsense_serial")
     realsense2_serial   = LaunchConfiguration("realsense2_serial")
+    realsense3_serial   = LaunchConfiguration("realsense3_serial")
 
     # ── Global RealSense D435I calibration TFs ───────────────────────────────
     # eye-to-base: base_link → global_camera_color_optical_frame
@@ -209,6 +211,36 @@ def launch_setup(context, *args, **kwargs):
         }],
     )
 
+    # ── Third RealSense D435 (global_camera_3) — replaces the OAK-D (2026-10-20) ─────────────────────────────────────
+    # Same recipe as the second one: no hardcoded calibration here; its base_link extrinsic comes from the dashboard's
+    # "Calibrate from arm" and is written to ~/.ros/realsense3_calibration.yaml for realsense3_tf_broadcaster.
+    realsense3_node = Node(
+        package="realsense2_camera",
+        executable="realsense2_camera_node",
+        name="global_camera_3",
+        namespace="global_camera_3",
+        output="screen",
+        respawn=True,
+        respawn_delay=3.0,
+        condition=IfCondition(launch_realsense_3),
+        parameters=[{
+            "camera_name":                    "global_camera_3",
+            "serial_no":                      realsense3_serial.perform(context),
+            "align_depth.enable":             True,
+            "pointcloud.enable":              True,
+            "pointcloud.stream_filter":       2,
+            "pointcloud.stream_index_filter": 0,
+            "enable_sync":                    False,
+            "depth_module.profile":           "424x240x15",
+            "rgb_camera.profile":             "424x240x15",
+            "enable_color":                   True,
+            "enable_depth":                   True,
+            "publish_tf":                     False,
+            "enable_accel":                   False,
+            "enable_gyro":                    False,
+        }],
+    )
+
     # ── Wrist camera — Kinova Gen3 built-in vision module (RTSP) ────────────
     # Delayed 5 s: robot control and RTSP share the 192.168.1.x NIC.
     # Launching immediately congests the link during the 1 kHz cyclic init.
@@ -285,6 +317,7 @@ def launch_setup(context, *args, **kwargs):
         usb_check,
         realsense_node,
         realsense2_node,
+        realsense3_node,
         usb_cleanup,
         wrist_camera_delayed,
         wrist_pcl,
@@ -304,8 +337,13 @@ def generate_launch_description():
             description="Launch Kinova built-in wrist camera via RTSP."),
         DeclareLaunchArgument(
             "launch_oak_camera",
+            default_value="false",
+            description="Launch OAK-D via oak_camera_node.py (depthai v3 standalone driver). Off since 2026-10-20: "
+                        "the OAK-D was replaced by the third RealSense (launch_realsense_3)."),
+        DeclareLaunchArgument(
+            "launch_realsense_3",
             default_value="true",
-            description="Launch OAK-D via oak_camera_node.py (depthai v3 standalone driver)."),
+            description="Launch a third RealSense (global_camera_3 namespace), the OAK-D's replacement."),
         DeclareLaunchArgument(
             "launch_realsense_2",
             default_value="true",
@@ -331,6 +369,11 @@ def generate_launch_description():
             # D435 (no IMU) — the newly added global_camera_2.
             default_value="215322071290",
             description="Serial number to pin the second RealSense to."),
+        DeclareLaunchArgument(
+            "realsense3_serial",
+            # D435 — the third camera, on USB 3 since 2026-10-20.
+            default_value="207522071578",
+            description="Serial number to pin the third RealSense to."),
     ]
 
     return LaunchDescription(

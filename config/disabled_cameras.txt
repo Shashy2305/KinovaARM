@@ -2,7 +2,8 @@
 # "disabled" (grey, not red), the health check does not FAIL on them, and nothing waits for their frames.
 # Names: oakd, realsense, realsense2, wrist. Read every few seconds: no restart needed.
 #
-# oakd: disabled 2026-10-06. The device enumerates but stays in the depthai BOOTLOADER state and never finishes
+# oakd: disabled 2026-10-06, and REPLACED on 2026-10-20 by the third RealSense (realsense3, serial 207522071578, global_camera_3).
+# Earlier note on why it was off: The device enumerates but stays in the depthai BOOTLOADER state and never finishes
 # booting its firmware (X_LINK_DEVICE_NOT_FOUND after booting): a marginal USB link. To bring it back, try the
 # driver's USB2 mode (drivers/oak_camera_node.py, "USB2 mode: OFF"), a short USB 3 cable on a direct port, then
 # delete the line below and start oakd_driver from the dashboard.

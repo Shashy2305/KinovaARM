@@ -37,6 +37,7 @@ CAMERA_TOPICS = {
     'oakd':       {'image': '/global_camera/color/image_raw'},
     'realsense':  {'image': '/global_camera/global_camera/color/image_raw'},
     'realsense2': {'image': '/global_camera_2/global_camera_2/color/image_raw'},
+    'realsense3': {'image': '/global_camera_3/global_camera_3/color/image_raw'},
     'wrist':      {'image': '/camera/color/image_raw'},
 }
 
@@ -57,7 +58,7 @@ def ros_args(node_name, *extra):
 
 
 # RealSense serials, to name which camera another user's launch command occupies (hardware_holders)
-CAMERA_SERIALS = {'RS1': '938422070760', 'RS2': '215322071290'}
+CAMERA_SERIALS = {'RS1': '938422070760', 'RS2': '215322071290', 'RS3': '207522071578'}
 
 PROCESSES = {
     'robot_bringup': {
@@ -134,6 +135,19 @@ PROCESSES = {
         ),
         'signature': 'realsense2_tf_broadcaster',
     },
+    'realsense3_tf_broadcaster': {
+        'label': 'RealSense #3 TF broadcaster',
+        'category': 'cameras',
+        'hardware_affecting': False,
+        # Skipped by the full bring-up until ~/.ros/realsense3_calibration.yaml exists (calibrate it with "Calibrate from arm").
+        'cmd': (
+            f'{ROS_ENV_CMD} ros2 run thesis_robot camera_tf_broadcaster --ros-args '
+            '-r __node:=realsense3_tf_broadcaster '
+            '-p calibration_file:=~/.ros/realsense3_calibration.yaml '
+            '-p parent_frame:=base_link -p child_frame:=global_camera_3_color_optical_frame'
+        ),
+        'signature': 'realsense3_tf_broadcaster',
+    },
     'camera_watchdog': {
         'label': 'Camera watchdog',
         'category': 'cameras',
@@ -164,6 +178,14 @@ PROCESSES = {
         # Careful: must not also match 'realsense_detection' as a substring
         # (process_manager.py's duplicate-guard greps ps aux for this).
         'signature': 'thesis_robot/lib/thesis_robot/realsense2_detection',
+    },
+    'realsense3_detection': {
+        'label': 'RealSense #3 detection',
+        'category': 'perception',
+        'hardware_affecting': False,
+        # run as a module so it works without a rebuild (like the obstacle guard); setup.py has the entry point for the next build
+        'cmd': f'{ROS_ENV_CMD} python3 -m thesis_robot.realsense3_detection',
+        'signature': 'thesis_robot.realsense3_detection',
     },
     'wrist_detection': {
         'label': 'Wrist camera detection',
@@ -226,6 +248,12 @@ PROCS_OF_CAMERA = {
     'oakd': ('oakd_driver', 'oakd_tf_broadcaster', 'object_detection'),
 }
 
+# Processes that cannot run before a camera has been calibrated (its TF file): the full bring-up skips them until the file exists.
+NEEDS_CALIBRATION_FILE = {
+    'realsense3_tf_broadcaster': '~/.ros/realsense3_calibration.yaml',
+    'realsense3_detection': '~/.ros/realsense3_calibration.yaml',
+}
+
 
 def disabled_camera_procs():
     """Process ids that belong to cameras listed in config/disabled_cameras.txt."""
@@ -244,9 +272,13 @@ def disabled_camera_procs():
 FULL_BRINGUP_ORDER = [
     ('oakd_tf_broadcaster', 1.0),
     ('realsense_tf_broadcaster', 1.0),
+    ('realsense2_tf_broadcaster', 1.0),
+    ('realsense3_tf_broadcaster', 1.0),
     ('camera_watchdog', 1.0),
     ('object_detection', 2.0),
     ('realsense_detection', 2.0),
+    ('realsense2_detection', 2.0),
+    ('realsense3_detection', 2.0),
     ('wrist_detection', 2.0),
     ('scene_graph_node', 1.0),
     ('obstacle_guard', 1.0),

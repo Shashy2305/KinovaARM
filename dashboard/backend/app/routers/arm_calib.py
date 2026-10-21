@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from .. import ros_bridge
 
 router = APIRouter()
-Camera = Literal['oakd', 'realsense', 'realsense2']
+Camera = Literal['oakd', 'realsense', 'realsense2', 'realsense3']
 
 
 class Click(BaseModel):

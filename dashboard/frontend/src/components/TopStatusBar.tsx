@@ -30,7 +30,7 @@ export function TopStatusBar({ status, connected }: { status: StatusPayload | nu
   const robotUp = !!robot && robot !== 'stopped' && !robotOther
   const noJoints = robotUp && status?.ros.joint_state_publishers === 0     // driver process alive but nothing publishes the arm's joint states
 
-  const cams = ['oakd', 'realsense', 'realsense2', 'wrist']
+  const cams = ['oakd', 'realsense', 'realsense2', 'realsense3', 'wrist']
   const camOff = cams.filter((c) => calib?.[c] === 'disabled')     // switched off on purpose: neither ok nor a fault
   const camOk = cams.filter((c) => calib?.[c] === 'ok').length
   const camBad = cams.some((c) => calib?.[c] === 'needs_recalibration')

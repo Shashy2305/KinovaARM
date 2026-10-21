@@ -1,5 +1,6 @@
 import os
 import subprocess
+import os
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -51,6 +52,10 @@ def full_bringup():
     for proc_id, settle_sec in config.FULL_BRINGUP_ORDER:
         if proc_id in skip:
             steps.append({'proc_id': proc_id, 'ok': True, 'message': 'skipped: its camera is listed in config/disabled_cameras.txt'})
+            continue
+        need = config.NEEDS_CALIBRATION_FILE.get(proc_id)
+        if need and not os.path.exists(os.path.expanduser(need)):
+            steps.append({'proc_id': proc_id, 'ok': True, 'message': f'skipped: {need} does not exist yet (calibrate that camera first)'})
             continue
         ok, msg = process_manager.manager.start(proc_id)
         steps.append({'proc_id': proc_id, 'ok': ok, 'message': msg})

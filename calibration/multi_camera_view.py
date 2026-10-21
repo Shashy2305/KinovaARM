@@ -39,6 +39,8 @@ CAMERAS = {
                   'info':  '/global_camera/global_camera/color/camera_info'},
     'realsense2': {'image': '/global_camera_2/global_camera_2/color/image_raw',
                    'info':  '/global_camera_2/global_camera_2/color/camera_info'},
+    'realsense3': {'image': '/global_camera_3/global_camera_3/color/image_raw',
+                   'info':  '/global_camera_3/global_camera_3/color/camera_info'},
     'wrist':     {'image': '/camera/color/image_raw',
                   'info':  '/camera/color/camera_info'},
 }
@@ -151,7 +153,7 @@ def main():
 
     try:
         while rclpy.ok():
-            tiles = [node.panels[name].render_tile() for name in ('oakd', 'realsense', 'realsense2', 'wrist')]
+            tiles = [node.panels[name].render_tile() for name in ('oakd', 'realsense', 'realsense2', 'realsense3', 'wrist')]
             canvas = np.hstack(tiles)
             cv2.imshow('Multi-Camera View', canvas)
             if cv2.waitKey(30) & 0xFF in (ord('q'), ord('Q'), 27):

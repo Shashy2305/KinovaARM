@@ -29,6 +29,7 @@ CAMERA_INFO = {
     'oakd': '/global_camera/color/camera_info',
     'realsense': '/global_camera/global_camera/color/camera_info',
     'realsense2': '/global_camera_2/global_camera_2/color/camera_info',
+    'realsense3': '/global_camera_3/global_camera_3/color/camera_info',
 }
 CANDIDATE_DIR = os.path.expanduser('~/.ros/calibration_candidates')
 PAD_FRAMES = ('left_inner_finger_pad', 'right_inner_finger_pad')

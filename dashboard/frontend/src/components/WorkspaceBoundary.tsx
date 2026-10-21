@@ -8,6 +8,7 @@ const CAMERAS = [
   { id: 'oakd', label: 'OAK-D', note: 'Usually far from the table — clicks here are the least precise.' },
   { id: 'realsense', label: 'RealSense', note: 'Fixed-mount, moderate distance.' },
   { id: 'realsense2', label: 'RealSense 2', note: 'Second fixed-mount camera — good if it has a closer or less occluded angle than the first.' },
+  { id: 'realsense3', label: 'RealSense 3', note: 'Third fixed-mount camera (replaced the OAK-D): a high, wide view from the left.' },
 ] as const
 
 type CameraId = (typeof CAMERAS)[number]['id']

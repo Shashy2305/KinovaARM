@@ -37,6 +37,7 @@ RECAL_CAMERAS = {
     'oakd': '/global_camera/color/image_raw',
     'realsense': '/global_camera/global_camera/color/image_raw',
     'realsense2': '/global_camera_2/global_camera_2/color/image_raw',
+    'realsense3': '/global_camera_3/global_camera_3/color/image_raw',
 }
 # The wrist camera never needs recalibration (its pose comes from the arm's
 # kinematics) but must still be watched for LIVENESS: this node used to

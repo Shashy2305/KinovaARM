@@ -657,3 +657,10 @@ The `kinova` account on this machine runs its own stack on **ROS domain 0** (our
 Symptoms on our side: cameras `realsense` and `wrist` = no signal (`Device or resource busy`, `Failed to start stream`), Robot chip "driven by kinova", no `/joint_states` on domain 42.
 The dashboard now says who holds what (amber banner, `hardware_holders` in `/api/status`, node chip "run by kinova"), and Start/Stop on a node another user runs is refused with their name.
 It never stops other users' processes; ask them. Check by hand: `ros2 node list` with `ROS_DOMAIN_ID=0`, `ps -eo user,args | grep -E "ros2_control_node|kinova_vision_node|serial_no"`.
+
+## 21. Third RealSense replaces the OAK-D (2026-10-20)
+Four cameras now: RealSense 1 (D435i, serial 938422070760), RealSense 2 (D435, 215322071290), **RealSense 3 (D435, 207522071578, high wide view from the left)** and the Kinova wrist (RTSP). The OAK-D stays disabled (`config/disabled_cameras.txt`).
+Wiring (all in one commit): `cameras.launch.py` (pins three serials, `launch_realsense_3` default true, `launch_oak_camera` default false; the repo copy and the `ros2_kortex_ws` copy must stay identical, a test checks it),
+`realsense3_detection.py` (publishes `/detections_realsense3`; started as a module, setup.py has the entry for the next build), `realsense3_tf_broadcaster` (reads `~/.ros/realsense3_calibration.yaml`), camera watchdog, scene graph, obstacle guard, point clouds, calibration tools and the dashboard tabs.
+**The full bring-up skips RealSense 3's TF broadcaster and detection until `~/.ros/realsense3_calibration.yaml` exists**; calibrate it with 15.2 ("Calibrate from arm", camera RealSense 3), `cp` the candidate to `~/.ros/realsense3_calibration.yaml`, then start `realsense3_tf_broadcaster` and `realsense3_detection` from the Node Control grid (or rerun the full bring-up).
+Also: the full bring-up now includes RealSense 2's TF broadcaster and detection. Serials from `pyrealsense2` (`rs.context().query_devices()`), NOT from `/sys/bus/usb/devices/*/serial` (that is the USB descriptor, a different number).

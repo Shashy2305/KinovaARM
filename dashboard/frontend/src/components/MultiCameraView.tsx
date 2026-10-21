@@ -5,6 +5,7 @@ const CAMERAS = [
   { id: 'oakd', label: 'OAK-D' },
   { id: 'realsense', label: 'RealSense' },
   { id: 'realsense2', label: 'RealSense 2' },
+  { id: 'realsense3', label: 'RealSense 3' },
   { id: 'wrist', label: 'Wrist' },
 ] as const
 

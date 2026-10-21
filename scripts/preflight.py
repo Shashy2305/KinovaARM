@@ -103,7 +103,10 @@ def main():
     arm = ros.get('arm_status') or '?'
     report('PASS' if 'DRY RUN' in arm else 'WARN', 'arm mode', f'{arm}' + ('' if 'DRY RUN' in arm else '  (LIVE: the arm moves)'))
     procs = status.get('processes') or {}
-    down = [k for k, v in procs.items() if v.get('status') == 'stopped' and k not in ('oakd_driver', 'oakd_tf_broadcaster', 'object_detection', 'audio_node')]
+    expected_off = ['oakd_driver', 'oakd_tf_broadcaster', 'object_detection', 'audio_node']
+    if not os.path.exists(os.path.expanduser('~/.ros/realsense3_calibration.yaml')):
+        expected_off += ['realsense3_tf_broadcaster', 'realsense3_detection']      # held back until RealSense 3 is calibrated
+    down = [k for k, v in procs.items() if v.get('status') == 'stopped' and k not in expected_off]
     report('PASS' if not down else 'WARN', 'processes', 'all expected nodes running' if not down else f'stopped: {", ".join(down)}')
 
     rclpy.init()
@@ -115,7 +118,7 @@ def main():
     cam = ros.get('camera_calibration_status') or {}
     bad = {k: v for k, v in cam.items() if k != 'oakd' and v != 'ok'}
     report('PASS' if cam and not bad else 'FAIL', 'cameras', ', '.join(f'{k}:{v}' for k, v in cam.items()) or 'no status')
-    flags = [f for f in ('realsense', 'realsense2') if os.path.exists(os.path.expanduser(f'~/.ros/{f}_needs_recalibration.flag'))]
+    flags = [f for f in ('realsense', 'realsense2', 'realsense3') if os.path.exists(os.path.expanduser(f'~/.ros/{f}_needs_recalibration.flag'))]
     report('PASS' if not flags else 'WARN', 'recalibration flags', 'none' if not flags else f'present for {flags}: run calibration/check_extrinsics.py, then delete the flag if the cameras agree')
     fresh = {k: (v['label'], round(v['x'], 2), round(v['y'], 2)) for k, v in n.scene.items() if isinstance(v, dict) and not v.get('stale')}
     report('PASS' if fresh else 'WARN', 'scene', f'{len(fresh)} fresh objects: ' + ', '.join(f'{l}({x},{y})' for l, x, y in fresh.values()) if fresh else 'no fresh objects')

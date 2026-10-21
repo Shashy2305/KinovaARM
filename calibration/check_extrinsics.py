@@ -45,6 +45,9 @@ CAMS = {
     'realsense2': ('/global_camera_2/global_camera_2/color/image_raw',
                    '/global_camera_2/global_camera_2/aligned_depth_to_color/image_raw',
                    '/global_camera_2/global_camera_2/color/camera_info'),
+    'realsense3': ('/global_camera_3/global_camera_3/color/image_raw',
+                   '/global_camera_3/global_camera_3/aligned_depth_to_color/image_raw',
+                   '/global_camera_3/global_camera_3/color/camera_info'),
 }
 SEG_MODEL = '/mnt/ros_workspace/models/yolov8m-seg.pt'
 TILT_LIMIT_DEG, HEIGHT_LIMIT_M, OBJECT_LIMIT_M = 3.0, 0.03, 0.05

@@ -119,7 +119,7 @@ def main():
                 cam = '/'.join(f'{k[:3]}:{v[:3]}' for k, v in cam.items())
             except json.JSONDecodeError:
                 cam = '?'
-            flags = ''.join(c for c, name in (('1', 'realsense'), ('2', 'realsense2')) if os.path.exists(os.path.expanduser(f'~/.ros/{name}_needs_recalibration.flag')))
+            flags = ''.join(c for c, name in (('1', 'realsense'), ('2', 'realsense2'), ('3', 'realsense3')) if os.path.exists(os.path.expanduser(f'~/.ros/{name}_needs_recalibration.flag')))
             mem, swap = meminfo()
             row = [time.strftime('%Y-%m-%d %H:%M:%S'), round(os.getloadavg()[0], 1), mem, swap, gb('/'), gb('/mnt/ros_workspace'),
                    (n.arm or '?').replace(',', ';'), '?' if n.fault is None else ('FAULT' if n.fault else 'ok'), pubs, round(js_hz), round(n.count['rs1'] / max(dt, 1e-6), 1),

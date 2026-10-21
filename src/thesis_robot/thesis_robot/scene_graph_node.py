@@ -122,6 +122,9 @@ class SceneGraphNode(Node):
         self.create_subscription(
             String, '/detections_realsense2',
             self.detection_callback, 10)
+        self.create_subscription(
+            String, '/detections_realsense3',
+            self.detection_callback, 10)
 
         # ── publishers ───────────────────────────────────────────────
         self.snapshot_pub = self.create_publisher(

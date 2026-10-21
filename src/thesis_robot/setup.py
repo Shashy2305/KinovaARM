@@ -26,6 +26,7 @@ setup(
             'scene_graph_node     = thesis_robot.scene_graph_node:main',
             'realsense_detection = thesis_robot.realsense_detection:main',
             'realsense2_detection = thesis_robot.realsense2_detection:main',
+            'realsense3_detection = thesis_robot.realsense3_detection:main',
             'wrist_detection      = thesis_robot.wrist_detection:main',
             'camera_watchdog      = thesis_robot.camera_watchdog:main',
             'llm_planner_node     = thesis_robot.llm_planner_node:main',

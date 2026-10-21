@@ -33,7 +33,7 @@ def board_png():
     return FileResponse(BOARD_PNG, media_type='image/png')
 
 
-CALIBRATION_TARGETS = ('oakd', 'realsense', 'realsense2')
+CALIBRATION_TARGETS = ('oakd', 'realsense', 'realsense2', 'realsense3')
 
 
 @router.get('/calibration/board_visible/{camera_name}')
@@ -59,7 +59,7 @@ def capture(camera_name: str):
     return {'ok': ok, 'message': msg, 'result': result}
 
 
-BOUNDARY_CAMERAS = ('oakd', 'realsense', 'wrist')
+BOUNDARY_CAMERAS = ('oakd', 'realsense', 'realsense2', 'realsense3', 'wrist')
 
 
 class ClickRequest(BaseModel):
@@ -86,7 +86,7 @@ def boundary_click(req: ClickRequest):
 
 
 @router.post('/workspace_boundary/reset')
-def boundary_reset(camera: str = 'oakd'):
+def boundary_reset(camera: str = 'realsense'):
     tool = _boundary_tool_or_404(camera)
     tool.clicked_base_xyz.clear()
     tool.clicked_pixels.clear()
@@ -95,7 +95,7 @@ def boundary_reset(camera: str = 'oakd'):
 
 
 @router.post('/workspace_boundary/save')
-def boundary_save(camera: str = 'oakd'):
+def boundary_save(camera: str = 'realsense'):
     tool = _boundary_tool_or_404(camera)
     ok = tool.compute_and_save()
     return {'ok': ok, 'status': tool.last_click_status}
