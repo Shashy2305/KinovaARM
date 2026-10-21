@@ -227,12 +227,14 @@ def launch_setup(context, *args, **kwargs):
             "camera_name":                    "global_camera_3",
             "serial_no":                      realsense3_serial.perform(context),
             "align_depth.enable":             True,
-            "pointcloud.enable":              True,
+            "pointcloud.enable":              False,   # a 1280x720 cloud per frame costs too much CPU; only the 3D fusion tab used it
             "pointcloud.stream_filter":       2,
             "pointcloud.stream_index_filter": 0,
             "enable_sync":                    False,
-            "depth_module.profile":           "424x240x15",
-            "rgb_camera.profile":             "424x240x15",
+            # The names "rgb_camera.profile" / "depth_module.profile" (424x240) are NOT read by this driver version, so the cameras ran at the
+            # defaults (640x480, blurry from a far mount). These are the real names; the first colour frame is 1280x720.
+            "rgb_camera.color_profile":       "1280x720x15",
+            "depth_module.depth_profile":     "848x480x15",
             "enable_color":                   True,
             "enable_depth":                   True,
             "publish_tf":                     False,

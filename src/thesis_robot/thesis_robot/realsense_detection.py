@@ -84,7 +84,7 @@ class RealSenseDetection(Node):
         self._blocked = newly_blocked
 
     def _info_cb(self, msg):
-        if self.fx is None:
+        if self.fx is None or self.fx != msg.k[0] or self.cx != msg.k[2]:    # also when the stream is switched to another resolution
             self.fx = msg.k[0]
             self.fy = msg.k[4]
             self.cx = msg.k[2]

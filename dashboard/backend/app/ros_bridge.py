@@ -175,7 +175,7 @@ class RosBridge(Node):
             bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception:
             return
-        ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        ok, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 88])
         if not ok:
             return
         with self._lock:
