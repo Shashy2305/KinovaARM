@@ -676,3 +676,10 @@ Also: the full bring-up now includes RealSense 2's TF broadcaster and detection.
 ### 21c. Phantom "unknown obstacle" on the scene map after a trial calibration (2026-10-21)
 A static camera transform never expires in a running node. After RealSense 3's trial calibration was installed and removed, the obstacle guard kept the last pose and drew a 25 x 55 cm amber "? 8 cm" box from RS3's depth; the workspace bound and the table geometry (`~/.ros/table_geometry.yaml`, `workspace_bounds.yaml`, unchanged) were never involved.
 Fixed by `camera_calibration_files.has_calibration()`: the obstacle guard, the scene graph and the 3D fusion use a static camera only while its `~/.ros/<camera>_calibration.yaml` exists. After removing or replacing a calibration, restart `obstacle_guard` and `scene_graph_node` anyway.
+
+### 21d. Dashboard backend hung at 8-17 GB of memory (2026-10-22)
+Symptom: the dashboard showed "bringup off, 0/5 cameras, Waiting for the backend", every endpoint timed out, the backend process held 8-17 GB in cycles and the machine swapped.
+Cause: `~/.ros/dashboard_logs/robot_bringup.log` had grown to 14 GB (the driver prints a debug line every millisecond) and `process_manager.tail_log` answered the System log panel's "last 200 lines" with `readlines()` on the whole file.
+Fix: `log_relay.tail_file()` reads only the end (12 ms on the 14 GB file); every process the dashboard starts now writes through `LogRelay` (capped at 40 MB with one `.1` backup, and one sample per 30 s of the known spam lines: the driver's LOW_LEVEL_SERVOING line, `xioctl`, "Stream is PAUSED").
+Processes that were started BEFORE this fix still write straight into their old files: restart `robot_bringup` and `cameras_bringup` from the dashboard once to move them onto the relay, then delete the old 14 GB file.
+Also learned: never `pkill -f` a pattern that appears in your own command line (it killed the shell again).

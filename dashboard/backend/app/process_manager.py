@@ -16,7 +16,7 @@ import time
 
 import psutil
 
-from . import config
+from . import config, log_relay
 
 os.makedirs(config.LOG_DIR, exist_ok=True)
 
@@ -200,12 +200,8 @@ class ProcessManager:
             return False, f'{cfg["label"]} has no direct start (composite action).'
 
         mp = self._procs[proc_id]
-        log_f = open(mp.log_path, 'w')
-        mp.popen = subprocess.Popen(
-            ['bash', '-c', cfg['cmd']],
-            stdout=log_f, stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid,
-        )
+        mp.popen = log_relay.spawn_with_log(
+            lambda **kw: subprocess.Popen(['bash', '-c', cfg['cmd']], preexec_fn=os.setsid, **kw), mp.log_path)
         return True, f'Started {cfg["label"]} (pid {mp.popen.pid}).'
 
     _SHELLS = {'bash', 'sh', 'dash', 'zsh', 'fish'}
@@ -301,9 +297,7 @@ class ProcessManager:
         mp = self._procs[proc_id]
         if not os.path.exists(mp.log_path):
             return ''
-        with open(mp.log_path, 'r', errors='replace') as f:
-            content = f.readlines()
-        return ''.join(content[-lines:])
+        return log_relay.tail_file(mp.log_path, lines)
 
     # ── composite: cameras bring-up ─────────────────────────────────
     def start_cameras(self):
@@ -325,10 +319,9 @@ class ProcessManager:
                 f'ros2 launch kinova_gen3_7dof_robotiq_2f_140_moveit_config '
                 f'cameras.launch.py robot_ip:={config.ROBOT_IP}'
             )
-            log_f = open(os.path.join(config.LOG_DIR, 'cameras_bringup.log'), 'w')
-            popen = subprocess.Popen(
-                ['bash', '-c', cmd], stdout=log_f, stderr=subprocess.STDOUT,
-                preexec_fn=os.setsid)
+            popen = log_relay.spawn_with_log(
+                lambda **kw: subprocess.Popen(['bash', '-c', cmd], preexec_fn=os.setsid, **kw),
+                os.path.join(config.LOG_DIR, 'cameras_bringup.log'))
             self._procs['cameras_bringup'].popen = popen
             steps.append({'step': 'cameras.launch.py', 'ok': True,
                            'message': f'started (pid {popen.pid}), waiting for it to settle...'})
