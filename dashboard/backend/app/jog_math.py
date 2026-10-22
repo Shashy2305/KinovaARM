@@ -11,7 +11,11 @@ from thesis_robot import safety_geometry as sg
 JOINT_MAX_RAD_S = 0.30        # one joint at speed 1.0 (the Kinova limit is 1.2-1.4); the UI slider starts at 25 %
 LINEAR_MAX_M_S = 0.08
 ANGULAR_MAX_RAD_S = 0.30
-HORIZON_S = 0.20              # each command asks the controller to reach (measured + velocity * HORIZON) in HORIZON seconds, so it stops by itself if commands stop
+HORIZON_S = 0.20              # the reference step of one command: dq = velocity * HORIZON_S (the caps above are speeds, so this only converts)
+HOLD_S = 0.20                 # each command asks for constant velocity for this long ...
+RAMP_S = 0.12                 # ... then a linear slow-down to a stop over this long: if commands stop the arm coasts about v * (HOLD_S + RAMP_S / 2) and halts
+LEAD_MAX_S = 0.25             # the integrated reference may run at most this many seconds of motion ahead of the measured joints (a lagging arm cannot wind it up)
+FIRST_POINT_S = 0.10          # first waypoint of a message: far enough ahead that the controller is not asked for a jerk to catch up
 JOINT_LIMIT_MARGIN_RAD = 0.10
 DLS_LAMBDA = 0.05             # damping of the Cartesian solve
 MIN_SINGULAR = 0.02           # smallest singular value of the 6x7 Jacobian below which a Cartesian move is refused (near a singularity)
@@ -89,3 +93,29 @@ def check_pose(kinematics, q_now, q_new, geom, gripper=None):
         if x < sg.REAR_KEEP_OUT_X and x <= now[link][0] + 1e-4:
             return False, f'{link} would be at x={x:.3f}, behind the rear limit {sg.REAR_KEEP_OUT_X:.2f}'
     return True, 'ok'
+
+
+def velocity_profile(q_ref, v, hold_s=HOLD_S, ramp_s=RAMP_S, first_s=FIRST_POINT_S):
+    """Waypoints for ONE message of a continuous jog: constant velocity v (7,) for hold_s, then a linear slow-down to zero over ramp_s, starting at q_ref (where the
+    arm should be now). Returns (times (n,), positions (n,7), velocities (n,7)); every waypoint carries a velocity, so consecutive messages join without the stop-start
+    of position-only points (which made the arm vibrate at the command rate, measured 2026-10-22)."""
+    q_ref, v = np.asarray(q_ref, float), np.asarray(v, float)
+    t_hold = [first_s, hold_s] if hold_s > first_s else [hold_s]
+    t_ramp = [hold_s + ramp_s * f for f in (1 / 3, 2 / 3, 1.0)]
+    times, pos, vel = [], [], []
+    for t in t_hold:
+        times.append(t)
+        pos.append(q_ref + v * t)
+        vel.append(v)
+    q_end_hold = q_ref + v * hold_s
+    for t in t_ramp:
+        tau = t - hold_s
+        times.append(t)
+        pos.append(q_end_hold + v * (tau - tau * tau / (2 * ramp_s)))
+        vel.append(v * (1 - tau / ramp_s))
+    return np.array(times), np.array(pos), np.array(vel)
+
+
+def coast_displacement(v, hold_s=HOLD_S, ramp_s=RAMP_S):
+    """How far each joint still travels after the last message if no more arrive."""
+    return np.asarray(v, float) * (hold_s + ramp_s / 2.0)

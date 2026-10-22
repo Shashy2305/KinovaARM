@@ -56,6 +56,27 @@ def test_rotvec_roundtrip():
         assert np.allclose(np.abs(got), np.abs(ax * ang), atol=1e-4)
 
 
+def test_profile_shape_and_coast_distance():
+    v = np.array([0.1, -0.2, 0, 0, 0, 0, 0.0])
+    q0 = np.ones(7)
+    times, pos, vel = jm.velocity_profile(q0, v)
+    assert np.all(np.diff(times) > 0) and times[-1] == pytest.approx(jm.HOLD_S + jm.RAMP_S)
+    assert np.allclose(vel[-1], 0) and np.allclose(vel[0], v)
+    assert np.allclose(pos[-1] - q0, jm.coast_displacement(v))
+    # the positions are the integral of the velocities (trapezoid), so the controller sees a consistent spline
+    t = np.r_[0.0, times]
+    p = np.vstack([q0, pos])
+    w = np.vstack([v, vel])
+    est = q0 + np.cumsum(0.5 * (w[1:] + w[:-1]) * np.diff(t)[:, None], axis=0)
+    assert np.allclose(est[-1], pos[-1], atol=2e-3)
+    assert np.all(np.sign(np.diff(p[:, 0])) >= 0)
+
+
+def test_coast_after_commands_stop_is_small():
+    d = jm.coast_displacement(np.full(7, jm.JOINT_MAX_RAD_S))
+    assert np.degrees(d.max()) < 5.0                                # at full speed the arm still stops within 5 degrees of a joint
+
+
 def test_joint_step_is_capped_and_directional():
     dq = jm.joint_step(Q, 2, +1, 1.0)
     assert dq[2] == pytest.approx(jm.JOINT_MAX_RAD_S * jm.HORIZON_S) and np.count_nonzero(dq) == 1
@@ -226,13 +247,28 @@ def test_command_when_off_does_nothing(jogger):
     assert st['blocked'] == 'jog is off' and not jogger.pub.sent
 
 
-def test_joint_command_publishes_a_short_step(jogger):
+def test_joint_command_publishes_a_continuous_velocity_profile(jogger):
     jogger.enable('area clear, hands off')
     st = jogger.command({'mode': 'joint', 'joint': 3, 'dir': -1, 'speed': 1.0})
     assert st['moved'] and len(jogger.pub.sent) == 1
-    p = jogger.pub.sent[0].points[0]
-    assert p.positions[2] == pytest.approx(Q[2] - jm.JOINT_MAX_RAD_S * jm.HORIZON_S)
-    assert p.time_from_start.nanosec == pytest.approx(jm.HORIZON_S * 1e9, rel=0.01) and not p.velocities
+    pts = jogger.pub.sent[0].points
+    v = -jm.JOINT_MAX_RAD_S
+    assert all(len(p.velocities) == 7 for p in pts)               # position-only points made the arm vibrate at the command rate
+    assert pts[0].positions[2] == pytest.approx(Q[2] + v * jm.FIRST_POINT_S) and pts[0].velocities[2] == pytest.approx(v)
+    assert all(abs(x) < 1e-12 for x in pts[-1].velocities)        # ends at rest (the controller rejects a non-zero end velocity)
+    tf = pts[-1].time_from_start
+    assert tf.sec + tf.nanosec / 1e9 == pytest.approx(jm.HOLD_S + jm.RAMP_S, abs=1e-6)
+
+
+def test_consecutive_messages_join_up(jogger):
+    jogger.enable('area clear, hands off')
+    jogger.command({'mode': 'joint', 'joint': 1, 'dir': 1, 'speed': 1.0})
+    time.sleep(0.09)
+    jogger.command({'mode': 'joint', 'joint': 1, 'dir': 1, 'speed': 1.0})       # the arm has not moved in this test: the reference must not be reset to it
+    first, second = jogger.pub.sent[0].points[0], jogger.pub.sent[1].points[0]
+    gap = second.positions[0] - first.positions[0]
+    assert 0.0 < gap < jm.JOINT_MAX_RAD_S * 0.15                    # ahead by about one tick of motion, within the lead limit
+    assert second.positions[0] - Q[0] <= jm.JOINT_MAX_RAD_S * (jm.LEAD_MAX_S + jm.FIRST_POINT_S) + 1e-6
 
 
 def test_bad_commands_are_rejected_without_motion(jogger):

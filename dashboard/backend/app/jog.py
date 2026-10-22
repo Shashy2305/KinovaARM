@@ -54,6 +54,8 @@ class Jogger(Node):
         self._fault_t = 0.0
         self._arm_status = ''
         self._win = None              # [t_start, q_start, expected displacement (7,)] of the current continuous move
+        self._ref = None              # where the arm should be NOW (integrated command) and the velocity being commanded; None = not in a continuous move
+        self._v = np.zeros(7)
         self.last_step = None
         self.pub = self.create_publisher(JointTrajectory, TOPIC, 5)
         self.create_subscription(JointState, '/joint_states', self._on_js, 10)
@@ -134,7 +136,7 @@ class Jogger(Node):
         with self._lock:
             self.enabled = True
             self.enabled_at = self.last_cmd_t = time.monotonic()
-            self._win = None
+            self._win = self._ref = None
             self.message = 'jog is ON: hold a button to move'
         return {'ok': True}
 
@@ -142,7 +144,7 @@ class Jogger(Node):
         with self._lock:
             was = self.enabled
             self.enabled = False
-            self._win = None
+            self._win = self._ref = None
             self.message = why
         return was
 
@@ -154,13 +156,20 @@ class Jogger(Node):
         self.disable(why)
 
     def _publish(self, q_target, t_s):
+        """One waypoint to q_target in t_s seconds (used for 'hold here' on Stop / fault)."""
+        self._send([t_s], [np.asarray(q_target, float)], None)
+
+    def _send(self, times, positions, velocities):
         msg = JointTrajectory()
         msg.joint_names = list(kin.ARM_JOINTS)
-        p = JointTrajectoryPoint()
-        p.positions = [float(v) for v in q_target]
-        sec = int(t_s)
-        p.time_from_start = Duration(sec=sec, nanosec=int((t_s - sec) * 1e9))
-        msg.points = [p]
+        for i, t_s in enumerate(times):
+            p = JointTrajectoryPoint()
+            p.positions = [float(v) for v in positions[i]]
+            if velocities is not None:
+                p.velocities = [float(v) for v in velocities[i]]
+            sec = int(t_s)
+            p.time_from_start = Duration(sec=sec, nanosec=int((t_s - sec) * 1e9))
+            msg.points.append(p)
         self.pub.publish(msg)
 
     def command(self, cmd):
@@ -172,6 +181,7 @@ class Jogger(Node):
                 return self.state(blocked='jog is off')
             if now - self.last_tick_t < MIN_TICK_S:
                 return self.state()
+            prev_tick = self.last_tick_t
             self.last_tick_t = now
             idle = now - self.last_cmd_t
             self.last_cmd_t = now
@@ -199,30 +209,40 @@ class Jogger(Node):
         except Exception as e:                                # numeric failure: never move on a half-computed step
             return self.state(blocked=f'step failed: {e}')
         if bad:
-            self._win = None
+            self._win = self._ref = None
             return self.state(blocked=bad)
         if not np.any(dq):
-            self._win = None
+            self._win = self._ref = None
             return self.state()
-        q_new = q + dq
-        ok, reason = jm.check_pose(k, q, q_new, geom, grip)
-        if not ok:
-            self._win = None
-            self.last_step = {'ok': False, 'reason': reason}
-            return self.state(blocked=reason)
+        v = dq / jm.HORIZON_S
+        dt = now - prev_tick
+        continuing = self._ref is not None and dt <= GAP_S
+        q_ref = self._ref + self._v * dt if continuing else q.copy()
+        lead = np.maximum(np.abs(v), np.abs(self._v if continuing else 0.0)) * jm.LEAD_MAX_S + 1e-4
+        q_ref = np.clip(q_ref, q - lead, q + lead)
+        q_hold = q_ref + v * jm.HOLD_S
+        q_stop = q_ref + jm.coast_displacement(v)
+        for q_chk in (q_hold, q_stop):
+            ok, reason = jm.check_pose(k, q, q_chk, geom, grip)
+            if not ok:
+                self._win = self._ref = None
+                self.last_step = {'ok': False, 'reason': reason}
+                return self.state(blocked=reason)
         # the joint feedback must follow: frozen or faulted feedback would let the next tick plan from a lie
         w = self._win
         if w is None or idle > GAP_S:
             self._win = w = [now, q.copy(), np.zeros(7)]
-        w[2] = w[2] + dq
+        w[2] = w[2] + v * (dt if continuing else MIN_TICK_S)
         if now - w[0] >= FOLLOW_CHECK_S:
             expected, got = np.linalg.norm(w[2]), np.linalg.norm(q - w[1])
             if expected > FOLLOW_MIN_RAD and got < FOLLOW_MIN_FRACTION * expected:
                 self.stop('stopped: the arm is not following the commands (joint feedback frozen or the driver is faulted)')
                 return self.state(blocked=self.message)
             self._win = [now, q.copy(), np.zeros(7)]
-        self._publish(q_new, jm.HORIZON_S)
-        self.last_step = {'ok': True, 'dq_deg': [round(float(np.degrees(x)), 3) for x in dq]}
+        times, pos, vel = jm.velocity_profile(q_ref, v)
+        self._send(times, pos, vel)
+        self._ref, self._v = q_ref, v
+        self.last_step = {'ok': True, 'v_deg_s': [round(float(np.degrees(x)), 2) for x in v]}
         with self._lock:
             self.message = 'moving'
         return self.state(moved=True)
