@@ -12,6 +12,7 @@ import { HardwareBanner } from '../components/HardwareBanner'
 import { WorkspaceBoundary } from '../components/WorkspaceBoundary'
 import { TableRecorder } from '../components/TableRecorder'
 import { ArmCalibration } from '../components/ArmCalibration'
+import { JogPanel } from '../components/JogPanel'
 import { useStatus } from '../lib/useStatus'
 
 const TABS = [
@@ -19,6 +20,7 @@ const TABS = [
   { id: 'fusion', label: '3D Fusion' },
   { id: 'calibration', label: 'Calibration' },
   { id: 'armcal', label: 'Calibrate from arm' },
+  { id: 'jog', label: 'Jog the arm' },
   { id: 'boundary', label: 'Workspace boundary' },
   { id: 'table', label: 'Table safety' },
 ] as const
@@ -86,6 +88,7 @@ export function Dashboard() {
           {tab === 'fusion' && <FusionView />}
           {tab === 'calibration' && <CalibrationWizard />}
           {tab === 'armcal' && <ArmCalibration />}
+          {tab === 'jog' && <JogPanel />}
           {tab === 'boundary' && <WorkspaceBoundary />}
           {tab === 'table' && <TableRecorder />}
         </main>

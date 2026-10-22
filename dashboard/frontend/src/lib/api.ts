@@ -31,6 +31,13 @@ export interface ArmCalibResult {
   poses?: { n: number; rms_px: number | null; single_pose_rms_px: number; time: string }[]
 }
 
+export interface JogState {
+  enabled: boolean; message: string; moved: boolean; blocked: string | null; phrase: string
+  speed_caps: { joint_deg_s: number; linear_cm_s: number; angular_deg_s: number }
+  joint_age_s: number | null; joints_deg?: number[]; flange?: number[]
+  lowest_link_above_limit_cm?: number; fault: boolean; arm_status: string
+}
+
 export interface TableStatus {
   pose: { x: number; y: number; z: number } | null
   pose_message: string
@@ -101,6 +108,10 @@ export const api = {
     request<{ ok: boolean; message: string; poses: number }>(`/arm_calib/commit_pose?camera=${camera}`, { method: 'POST' }),
   armCalibClearPool: (camera: string) => request<{ ok: boolean }>(`/arm_calib/clear_pool?camera=${camera}`, { method: 'POST' }),
   armCalibSolvePool: (camera: string, mode = 'all') => request<ArmCalibResult>(`/arm_calib/solve_pool?camera=${camera}&mode=${mode}`, { method: 'POST' }),
+  jogState: () => request<JogState>('/jog/state'),
+  jogEnable: (phrase: string) => request<{ ok: boolean; error?: string }>('/jog/enable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phrase }) }),
+  jogDisable: () => request<{ ok: boolean }>('/jog/disable', { method: 'POST' }),
+  jogStop: () => request<{ ok: boolean }>('/jog/stop', { method: 'POST' }),
   tableStatus: () => request<TableStatus>('/table_geometry/status'),
   tableRecord: () => request<{ ok: boolean; message: string }>('/table_geometry/record', { method: 'POST' }),
   tableReset: () => request<{ ok: boolean }>('/table_geometry/reset', { method: 'POST' }),

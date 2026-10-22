@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, type ArmCalibResult, type ArmCalibState } from '../lib/api'
+import { JogPanel } from './JogPanel'
 
 const CAMERAS = [
   { id: 'oakd', label: 'OAK-D' },
@@ -21,6 +22,7 @@ export function ArmCalibration() {
   const [frame, setFrame] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
   const [poolMode, setPoolMode] = useState<'all' | 'sharp' | 'offsets'>('all')
+  const [showJog, setShowJog] = useState(false)
   const imgRef = useRef<HTMLImageElement>(null)
 
   const load = useCallback(async () => {
@@ -69,6 +71,7 @@ export function ArmCalibration() {
   const sol = result?.solved_projection
 
   return (
+    <div className="space-y-4">
     <div className="panel">
       <div className="panel-header">
         <h2>Calibrate a camera from the arm</h2>
@@ -203,6 +206,9 @@ export function ArmCalibration() {
           </div>
         </div>
       </div>
+    </div>
+    <button className="btn" onClick={() => setShowJog((v) => !v)}>{showJog ? 'Hide' : 'Show'} jog controls (move the arm between poses)</button>
+    {showJog && <JogPanel compact />}
     </div>
   )
 }

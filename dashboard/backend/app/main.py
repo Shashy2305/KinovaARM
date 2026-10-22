@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import ros_bridge
-from .routers import arm_calib, audio, calibration, camera, command, fusion, nodes, outcomes, status, table_geometry
+from .routers import arm_calib, audio, calibration, camera, command, fusion, jog, nodes, outcomes, status, table_geometry
 
 # `kill -USR1 <backend pid>` writes every thread's stack to the log (debugging a hung request).
 faulthandler.register(signal.SIGUSR1, all_threads=True)
@@ -43,6 +43,7 @@ app.include_router(table_geometry.router, prefix='/api')
 app.include_router(audio.router, prefix='/api')
 app.include_router(arm_calib.router, prefix='/api')
 app.include_router(outcomes.router, prefix='/api')
+app.include_router(jog.router, prefix='/api')
 
 
 @app.on_event('startup')

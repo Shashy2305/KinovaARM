@@ -420,6 +420,19 @@ def get_or_create_table_recorder():
 _arm_calib = None
 
 
+_jogger = None
+
+
+def get_or_create_jogger():
+    global _jogger
+    executor = _ensure_executor()
+    if _jogger is None:
+        from .jog import Jogger
+        _jogger = Jogger()
+        executor.add_node(_jogger)
+    return _jogger
+
+
 def get_or_create_arm_calib():
     global _arm_calib
     executor = _ensure_executor()
