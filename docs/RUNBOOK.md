@@ -683,3 +683,8 @@ Cause: `~/.ros/dashboard_logs/robot_bringup.log` had grown to 14 GB (the driver 
 Fix: `log_relay.tail_file()` reads only the end (12 ms on the 14 GB file); every process the dashboard starts now writes through `LogRelay` (capped at 40 MB with one `.1` backup, and one sample per 30 s of the known spam lines: the driver's LOW_LEVEL_SERVOING line, `xioctl`, "Stream is PAUSED").
 Processes that were started BEFORE this fix still write straight into their old files: restart `robot_bringup` and `cameras_bringup` from the dashboard once to move them onto the relay, then delete the old 14 GB file.
 Also learned: never `pkill -f` a pattern that appears in your own command line (it killed the shell again).
+
+### 21e. Which camera moved? `calibration/check_arm_depth.py` (2026-10-22)
+Uses the arm as a ruler, no board or objects: points along the arm's skeleton (from TF) are projected into each camera with its calibration and the depth image is read there. The surface is about one link radius nearer than the skeleton,
+so a camera that is where its calibration says shows a constant offset of about 5-6 cm with a spread of 1 cm and 90%+ of points consistent. After RS1's USB cable was reseated the RS1/RS2 pair distance in the 3D Fusion tab went from 3.1 to 7.1 cm; this check cleared RS1
+(5.4-5.8 cm, spread 1.0-1.1 cm, 90-96%) and flagged RS2 (offset 2.2-4.0 cm, spread up to 4.7 cm, 55-70%, only 10-12 usable points), so RS2 is the one to recalibrate, not RS1. The watchdog flags every static camera that reconnects after a driver restart; use this check before deciding.
