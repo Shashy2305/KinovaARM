@@ -26,9 +26,10 @@ from rclpy.node import Node
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from sensor_msgs_py import point_cloud2
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Bool, Float32, String
 
 from . import config, fusion_cloud
+from .joint_feed import JointFeed
 
 sys.path.insert(0, os.path.join(config.REPO_ROOT, 'src', 'thesis_robot', 'thesis_robot'))
 import camera_calibration_files as ccf  # noqa: E402
@@ -134,6 +135,18 @@ class RosBridge(Node):
             self.create_subscription(CameraInfo, itopic, lambda m, n=n: self._depth_K.__setitem__(n, np.array(m.k).reshape(3, 3)), 1)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        # facts for the health banner (health_issues.py): the joint feedback (and whether it is frozen), the driver's fault flag, whether the arm TF exists, and how late this node's own
+        # timer runs (a starved executor shows up here first)
+        self.joint_feed = JointFeed(self)
+        self._joint_last = None
+        self._joint_changed_t = time.monotonic()
+        self._fault = None
+        self._tf_ok = None
+        self._health_tick_t = time.monotonic()
+        self._started_t = time.monotonic()
+        self.create_subscription(Bool, '/fault_controller/internal_fault', self._on_fault, 5)
+        self.create_timer(0.5, self._health_tick)
         # Only the wrist's native cloud is read (get_fused_points); the static cameras are fused from their depth images. Subscribing to their full-resolution driver clouds
         # decoded megabytes per message at 30 Hz for nothing and starved the camera-image callbacks (no frames reached the dashboard, 2026-10-22).
         for name, cfg in POINTCLOUD_TOPICS.items():
@@ -146,6 +159,32 @@ class RosBridge(Node):
     def _on_pointcloud(self, name, msg):
         with self._pc_lock:
             self._latest_pc[name] = msg
+
+    def _on_fault(self, msg):
+        self._fault = bool(msg.data)
+
+    def _health_tick(self):
+        now = time.monotonic()
+        self._health_tick_t = now
+        pos, age = self.joint_feed.latest()
+        vec = tuple(pos.get(f'joint_{i}') for i in range(1, 8))
+        if age < 1.0 and None not in vec:
+            if vec != self._joint_last:
+                self._joint_last = vec
+                self._joint_changed_t = now
+        else:
+            self._joint_changed_t = now                       # no feed: "missing" is reported, not "frozen"
+        try:
+            self._tf_ok = bool(self.tf_buffer.can_transform('base_link', 'end_effector_link', rclpy.time.Time()))
+        except Exception:
+            self._tf_ok = False
+
+    def get_health_facts(self):
+        """The raw facts health_issues.evaluate() needs (cheap: everything was gathered by _health_tick and the callbacks)."""
+        now = time.monotonic()
+        _pos, age = self.joint_feed.latest()
+        return {'joint_age_s': None if age > 1e8 else age, 'frozen_for_s': now - self._joint_changed_t if age < 1.0 else 0.0,
+                'fault': self._fault, 'tf_ok': self._tf_ok, 'executor_lag_s': max(0.0, now - self._health_tick_t - 0.5), 'uptime_s': now - self._started_t}
 
     def _on_audio_level(self, msg):
         self._audio_level = (float(msg.data), time.monotonic())
