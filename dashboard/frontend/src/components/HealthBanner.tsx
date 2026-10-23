@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
-interface Issue { id: string; severity: 'error' | 'warn'; title: string; detail: string; hint: string }
+interface FixAction { id: string; label: string; confirm: string; command: string }
+interface Issue { id: string; severity: 'error' | 'warn'; title: string; detail: string; hint: string; actions?: FixAction[]; command?: string }
+interface FixResult { ok: boolean; message: string }
 
 const POLL_MS = 2500
 const TIMEOUT_MS = 6000
@@ -12,6 +14,8 @@ export function HealthBanner() {
   const [down, setDown] = useState<{ since: number } | null>(null)
   const [open, setOpen] = useState(true)
   const misses = useRef(0)
+  const [running, setRunning] = useState<string | null>(null)
+  const [results, setResults] = useState<Record<string, FixResult>>({})
 
   useEffect(() => {
     let alive = true
@@ -35,11 +39,26 @@ export function HealthBanner() {
     return () => { alive = false; clearInterval(id) }
   }, [])
 
+  const runFix = async (issueId: string, a: FixAction) => {
+    if (!window.confirm(a.confirm)) return
+    setRunning(a.id)
+    setResults((r) => ({ ...r, [issueId]: { ok: true, message: 'Working…' } }))
+    try {
+      const res = await fetch('/api/health/fix', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: a.id }) })
+      const d: FixResult = await res.json()
+      setResults((r) => ({ ...r, [issueId]: d }))
+    } catch {
+      setResults((r) => ({ ...r, [issueId]: { ok: a.id === 'restart_backend', message: a.id === 'restart_backend' ? 'The backend is restarting: this page reconnects in about 10 s.' : 'The request failed: the backend did not answer.' } }))
+    } finally {
+      setRunning(null)
+    }
+  }
+
   if (down) {
     return (
       <div className="px-5 py-2 border-b border-(--color-red)/50 bg-(--color-red)/10 text-xs">
         <span className="text-(--color-red) font-semibold">The dashboard backend is not responding. </span>
-        <span className="text-(--color-text-dim)">Nothing on this page is current. It is hung, restarting or overloaded: <span className="mono">bash scripts/restart_dashboard_backend.sh</span></span>
+        <span className="text-(--color-text-dim)">Nothing on this page is current. It is hung, restarting or overloaded. If it does not come back within a minute, in a terminal: <span className="mono">bash scripts/restart_dashboard_backend.sh</span></span>
       </div>
     )
   }
@@ -62,6 +81,16 @@ export function HealthBanner() {
               <div className={`font-semibold ${i.severity === 'error' ? 'text-(--color-red)' : 'text-(--color-amber)'}`}>{i.title}</div>
               <div className="text-(--color-text-dim) leading-snug">{i.detail}</div>
               <div className="text-(--color-text) leading-snug"><span className="text-(--color-text-faint)">What to do: </span>{i.hint}</div>
+              {(i.actions?.length ?? 0) > 0 && (
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  {i.actions!.map((a) => (
+                    <button key={a.id} className="btn btn-primary" disabled={running !== null} onClick={() => runFix(i.id, a)}>{running === a.id ? 'Working…' : a.label}</button>
+                  ))}
+                  <span className="text-(--color-text-faint) mono break-all">or in a terminal: {i.actions![0].command}</span>
+                </div>
+              )}
+              {i.command && <div className="mt-1 text-(--color-text-faint)">Check in a terminal: <span className="mono break-all">{i.command}</span></div>}
+              {results[i.id] && <div className={`mt-1 font-mono ${results[i.id].ok ? 'text-(--color-green)' : 'text-(--color-red)'}`}>{results[i.id].message}</div>}
             </li>
           ))}
         </ul>

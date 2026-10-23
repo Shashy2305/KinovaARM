@@ -32,8 +32,50 @@ LOG_PATTERNS = [
 ]
 
 
+# What a button next to an issue can do (executed by routers/health.py; the same thing in a terminal is in `command`). Nothing here moves the arm.
+ACTIONS = {
+    'restart_robot_bringup': {
+        'label': 'Restart Robot bringup',
+        'confirm': 'Restart Robot bringup (driver, MoveIt, controllers)? It does not move the arm, but the arm stops accepting commands for about a minute and the jog switches off.',
+        'command': 'curl -X POST localhost:8000/api/nodes/robot_bringup/stop; curl -X POST localhost:8000/api/nodes/robot_bringup/start'},
+    'fix_controllers': {
+        'label': 'Fix controllers',
+        'confirm': 'Configure and activate the joint-state broadcaster and fault controller if they are stuck unconfigured? This publishes state only and moves nothing.',
+        'command': 'ros2 control set_controller_state joint_state_broadcaster inactive && ros2 control set_controller_state joint_state_broadcaster active'},
+    'restart_cameras': {
+        'label': 'Restart Cameras bringup',
+        'confirm': 'Restart Cameras bringup (RealSense 1-3 and the wrist camera)? Images drop out for about 30 s, and the watchdog then flags the static cameras as "needs recalibration check".',
+        'command': 'curl -X POST localhost:8000/api/nodes/cameras_bringup/stop; curl -X POST localhost:8000/api/nodes/cameras_bringup/start'},
+    'restart_backend': {
+        'label': 'Restart dashboard backend',
+        'confirm': 'Restart the dashboard backend? This page is unreachable for about 10 s and the jog switches off. The robot and cameras are not touched.',
+        'command': 'bash scripts/restart_dashboard_backend.sh'},
+}
+ISSUE_ACTIONS = {
+    'driver_fault_recovery': ['restart_robot_bringup'],
+    'joints_frozen': ['restart_robot_bringup'],
+    'fault_flag': ['restart_robot_bringup'],
+    'tf_missing': ['fix_controllers', 'restart_robot_bringup'],
+    'joints_missing': ['fix_controllers', 'restart_robot_bringup'],
+    'controller_failed': ['fix_controllers', 'restart_robot_bringup'],
+    'arm_unreachable': ['restart_robot_bringup'],          # after the cable / power check in the hint
+    'backend_lag': ['restart_backend'],
+}
+CHECK_COMMANDS = {
+    'arm_link_down': 'ip -br addr show enp2s0; ping -c2 192.168.1.10',
+    'joints_unchanged': 'ros2 topic echo /joint_trajectory_controller/controller_state --once',
+}
+
+
 def _issue(id_, severity, title, detail, hint):
-    return {'id': id_, 'severity': severity, 'title': title, 'detail': detail, 'hint': hint}
+    acts = list(ISSUE_ACTIONS.get(id_, []))
+    if id_.startswith('camera_'):
+        acts = ['restart_cameras']
+    out = {'id': id_, 'severity': severity, 'title': title, 'detail': detail, 'hint': hint,
+           'actions': [{'id': a, **ACTIONS[a]} for a in acts]}
+    if id_ in CHECK_COMMANDS:
+        out['command'] = CHECK_COMMANDS[id_]
+    return out
 
 
 def log_hits(lines, now_epoch, window_s=LOG_WINDOW_S):
@@ -103,7 +145,7 @@ def evaluate(s):
             when = '' if c.get('age_s') is None else f' (last frame {c["age_s"]:.0f} s ago)'
             issues.append(_issue(f'camera_{name}', 'warn', f'{c.get("label", name)} has no live image' + when,
                                  'The dashboard is not receiving frames from this camera.',
-                                 'Check the USB cable / port (USB 3, direct on the PC), then restart Cameras bringup. Note: a restart flags the static cameras for recalibration check.'))
+                                 'Check the USB cable / port (USB 3, direct on the PC), then use the button (a restart makes the watchdog flag the static cameras for a recalibration check).'))
     order = {'error': 0, 'warn': 1}
     issues.sort(key=lambda i: order.get(i['severity'], 2))
     return issues

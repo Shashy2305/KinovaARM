@@ -77,3 +77,53 @@ def test_log_patterns_only_count_recent_lines():
 
 def test_nothing_is_reported_while_the_backend_is_warming_up():
     assert hi.evaluate(healthy(uptime_s=3.0, joint_age_s=None, cameras={'a': {'has_frame': False, 'stale': True}})) == []
+
+
+def test_every_issue_with_a_remedy_offers_a_button_and_a_terminal_command():
+    cases = {
+        'driver_fault_recovery': healthy(log_hits={'driver_fault_recovery': 3}),
+        'fault_flag': healthy(fault=True),
+        'tf_missing': healthy(tf_ok=False),
+        'joints_missing': healthy(joint_age_s=None),
+        'backend_lag': healthy(executor_lag_s=9.0),
+        'camera_realsense3': healthy(cameras={'realsense3': {'has_frame': False, 'stale': True, 'label': 'RealSense 3'}}),
+        'controller_failed': healthy(log_hits={'controller_failed': 1}),
+        'arm_unreachable': healthy(log_hits={'arm_unreachable': 1}),
+    }
+    for want, snap in cases.items():
+        issue = next(i for i in hi.evaluate(snap) if i['id'] == want)
+        assert issue['actions'], want
+        for a in issue['actions']:
+            assert a['id'] in hi.ACTIONS and a['label'] and a['confirm'] and a['command'], (want, a)
+    # a physical problem has no button but a check command; a camera restart offers exactly the camera button
+    link = next(i for i in hi.evaluate(healthy(arm_link_up=False)) if i['id'] == 'arm_link_down')
+    assert link['actions'] == [] and 'ping' in link['command']
+    cam = next(i for i in hi.evaluate(cases['camera_realsense3']) if i['id'] == 'camera_realsense3')
+    assert [a['id'] for a in cam['actions']] == ['restart_cameras']
+    # a broken controller start offers the cheap fix first, the full restart second
+    ctl = next(i for i in hi.evaluate(cases['controller_failed']) if i['id'] == 'controller_failed')
+    assert [a['id'] for a in ctl['actions']] == ['fix_controllers', 'restart_robot_bringup']
+
+
+def test_fix_controllers_only_touches_the_state_publishers(monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, 'REPO_ROOT', os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))      # an earlier test may have imported config with the default root
+    from app.routers import health as h
+    calls = []
+
+    def fake_ros(cmd, timeout=40):
+        calls.append(cmd)
+        if 'list_controllers' in cmd:
+            return 0, ('joint_trajectory_controller active\njoint_state_broadcaster unconfigured\nfault_controller active\n'
+                       'twist_controller inactive')
+        return 0, 'Successfully activated'
+    monkeypatch.setattr(h, '_ros', fake_ros)
+    ok, msg = h.fix_controllers()
+    assert ok and 'joint_state_broadcaster activated' in msg
+    sets = [c for c in calls if 'set_controller_state' in c]
+    assert sets == ['ros2 control set_controller_state joint_state_broadcaster inactive', 'ros2 control set_controller_state joint_state_broadcaster active']
+    assert not any('joint_trajectory' in c or 'twist' in c for c in sets)
+    calls.clear()
+    monkeypatch.setattr(h, '_ros', lambda cmd, timeout=40: (0, 'joint_state_broadcaster active\nfault_controller active'))
+    ok, msg = h.fix_controllers()
+    assert ok and 'nothing to fix' in msg
