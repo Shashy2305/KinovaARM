@@ -134,7 +134,11 @@ class RosBridge(Node):
             self.create_subscription(CameraInfo, itopic, lambda m, n=n: self._depth_K.__setitem__(n, np.array(m.k).reshape(3, 3)), 1)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        # Only the wrist's native cloud is read (get_fused_points); the static cameras are fused from their depth images. Subscribing to their full-resolution driver clouds
+        # decoded megabytes per message at 30 Hz for nothing and starved the camera-image callbacks (no frames reached the dashboard, 2026-10-22).
         for name, cfg in POINTCLOUD_TOPICS.items():
+            if name != 'wrist':
+                continue
             self.create_subscription(
                 PointCloud2, cfg['topic'],
                 lambda msg, n=name: self._on_pointcloud(n, msg), 1)
