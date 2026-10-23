@@ -3,7 +3,9 @@
 check_arm_depth.py -- is a static camera where its calibration says? READ-ONLY; uses the arm as the ruler (no board, no objects, no clicking).
 
     source /mnt/ros_workspace/Shashproject/scripts/ros_env.sh
-    python3 calibration/check_arm_depth.py [--cams realsense realsense2 realsense3]
+    python3 calibration/check_arm_depth.py [--cams realsense realsense2 realsense3] [--candidate realsense3=~/.ros/calibration_candidates/realsense3_calibration.candidate.yaml]
+
+--candidate checks a calibration file that is NOT installed (it replaces that camera's TF lookup), so a candidate can be judged before it is switched on.
 
 Points are sampled along the arm's skeleton (base -> shoulder -> ... -> flange -> finger pads) from the live TF, projected into each camera with ITS calibration, and
 the depth image is read at those pixels. The skeleton runs along the middle of the links, so the surface the camera measures is about one link radius NEARER than
@@ -11,12 +13,14 @@ the prediction: a well-placed camera shows a CONSTANT offset of about 4-7 cm wit
 (or too few usable points because the arm lands on the background). Compare the cameras with each other: the one that stands out is the one that moved.
 """
 import argparse
+import os
 import sys
 import time
 
 import numpy as np
 import rclpy
 import tf2_ros
+import yaml
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
@@ -34,7 +38,14 @@ TOPICS = {
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--cams', nargs='+', default=['realsense', 'realsense2', 'realsense3'])
+    ap.add_argument('--candidate', nargs='*', default=[], help='camera=path.yaml: use this calibration file instead of the live TF for that camera')
     args = ap.parse_args()
+    cand = {}
+    for item in args.candidate:
+        name, _, path = item.partition('=')
+        with open(os.path.expanduser(path)) as f:
+            y = yaml.safe_load(f)
+        cand[name] = (np.array([y['rotation_quat'][k] for k in 'xyzw']), np.array([y['translation'][k] for k in 'xyz']))
     rclpy.init()
     n = Node('check_arm_depth')
     buf = tf2_ros.Buffer()
@@ -68,13 +79,16 @@ def main():
     for c in args.cams:
         if c not in depth or c not in K:
             print(f'{c:11s}: no depth / camera info'); continue
-        try:
-            t = buf.lookup_transform('base_link', TOPICS[c][2], rclpy.time.Time()).transform
-        except Exception as e:
-            print(f'{c:11s}: no TF ({str(e)[:50]})'); continue
         from scipy.spatial.transform import Rotation
-        R = Rotation.from_quat([t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w]).as_matrix()
-        T = np.array([t.translation.x, t.translation.y, t.translation.z])
+        if c in cand:
+            R, T = Rotation.from_quat(cand[c][0]).as_matrix(), cand[c][1]
+        else:
+            try:
+                t = buf.lookup_transform('base_link', TOPICS[c][2], rclpy.time.Time()).transform
+            except Exception as e:
+                print(f'{c:11s}: no TF ({str(e)[:50]})'); continue
+            R = Rotation.from_quat([t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w]).as_matrix()
+            T = np.array([t.translation.x, t.translation.y, t.translation.z])
         cam = (R.T @ (pts - T).T).T
         d = bridge.imgmsg_to_cv2(depth[c], '16UC1').astype(np.float32) / 1000.0
         h, w = d.shape
