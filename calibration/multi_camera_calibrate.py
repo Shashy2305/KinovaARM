@@ -274,6 +274,7 @@ class MultiCameraCalibrate(Node):
             self.base_frame, self.wrist.frame_id, rclpy.time.Time(),
             timeout=rclpy.duration.Duration(seconds=2.0))
         T_base_wrist = tf_to_matrix(tf_base_wrist)
+        self._last_anchor = (T_base_wrist, T_wrist_marker)          # kept so capture_camera can log the raw pieces
         return T_base_wrist @ T_wrist_marker
 
     def board_visible(self, name):
@@ -291,6 +292,23 @@ class MultiCameraCalibrate(Node):
             and detect_pose(self.detector, self.board, cam.gray,
                              cam.K, cam.dist) is not None
         )
+
+    def _log_raw_capture(self, name, T_cam_marker):
+        """Append the raw pieces of this capture (wrist pose in base, board in the wrist camera, board in the static camera, the board size assumed) to
+        ~/.ros/calibration_candidates/wizard_captures.jsonl. With them a wrong board size or a bad capture can be re-computed or judged afterwards, which the final
+        yaml alone does not allow (2026-10-22: a 35 mm assumption for a 38.15 mm board and a second run that disagreed with the first by up to 1.4 m)."""
+        try:
+            import json
+            from markers.charuco_detector import SQUARE_M
+            T_bw, T_wm = self._last_anchor
+            rec = {'time': time.strftime('%Y-%m-%d %H:%M:%S'), 'camera': name, 'square_m': SQUARE_M,
+                   'T_base_wrist': T_bw.tolist(), 'T_wrist_board': T_wm.tolist(), 'T_cam_board': T_cam_marker.tolist()}
+            d = os.path.expanduser('~/.ros/calibration_candidates')
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, 'wizard_captures.jsonl'), 'a') as f:
+                f.write(json.dumps(rec) + '\n')
+        except Exception as e:                      # logging must never break a capture
+            self.get_logger().warn(f'could not log the raw capture: {e}')
 
     def capture_camera(self, name, timeout_sec=CAPTURE_TIMEOUT_SEC):
         """Detect the board from the wrist camera and camera `name` right
@@ -325,6 +343,7 @@ class MultiCameraCalibrate(Node):
         T_cam_marker = rt_to_matrix(rvec, tvec)
         T_base_cam = T_base_marker @ np.linalg.inv(T_cam_marker)
         t, q = matrix_to_translation_quat(T_base_cam)
+        self._log_raw_capture(name, T_cam_marker)
 
         write_calibration_yaml(
             calib_file, self.base_frame, cam.frame_id, t, q,
