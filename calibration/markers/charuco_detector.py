@@ -9,21 +9,20 @@ scripts in this directory — were removed in OpenCV >= 4.7. This machine
 runs OpenCV 4.13, where those calls raise AttributeError. New code should
 import from here rather than copy the legacy pattern.
 
-Board spec: 5x7 squares, DICT_6X6_250. SQUARE_M/MARKER_M are set to the
-board actually printed and measured for this setup (35mm squares — the PNG
-from generate_charuco_board.py was printed at ~87.5% scale rather than the
-intended 100%; measured with a ruler rather than reprinting). If you
-reprint at true 100% scale (verify with a ruler!), these must go back to
-0.040/0.020 to match handeye_calibration.py's board spec — whatever the
-physical board actually is, this constant must match it exactly, or every
-calibration pose using this board will be systematically wrong.
+Board spec: 5x7 squares, DICT_6X6_250. SQUARE_M/MARKER_M must equal the board that is ACTUALLY printed, or every pose it gives is scaled by the ratio
+(a distance of 1 m is wrong by 10 cm when the squares are 10 % bigger than assumed). The code carried 35 mm (an earlier print at ~87.5 % scale); the board in use on
+2026-10-22 measures 39 mm per square with a ruler, so that is what it is now (the marker is half a square, as generate_charuco_board.py draws it). Override without
+editing: SHASHPROJECT_CHARUCO_SQUARE_MM=<mm>. Measure ACROSS the whole board (5 squares = 5 x the square) rather than one square, and check with
+calibration/check_wrist_board.py, which estimates the true size from the wrist camera alone.
 """
+import os
+
 import cv2
 
 SQUARES_X = 5
 SQUARES_Y = 7
-SQUARE_M = 0.035
-MARKER_M = 0.0175
+SQUARE_M = float(os.environ.get('SHASHPROJECT_CHARUCO_SQUARE_MM', '39')) / 1000.0
+MARKER_M = SQUARE_M / 2.0
 ARUCO_DICT = cv2.aruco.DICT_6X6_250
 MIN_CHARUCO_CORNERS = 6
 
