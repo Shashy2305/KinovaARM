@@ -81,10 +81,18 @@ def evaluate(s):
                              'Robot bringup is running but nothing has published the arm\'s joint positions' + ('' if age is None else f' for {age:.0f} s') + '.',
                              'Restart Robot bringup. If it persists, check the cable and that nobody else (the kinova account) holds the arm.'))
     elif robot and (s.get('frozen_for_s') or 0) >= FROZEN_S:
-        issues.append(_issue('joints_frozen', 'error', 'The arm\'s joint feedback is FROZEN',
-                             f'Joint states keep arriving but every value has been identical for {s["frozen_for_s"]:.0f} s: a live arm always shows sensor noise. Nothing that uses the arm\'s '
-                             'position (calibration poses, planning, the jog) can be trusted.',
-                             'Restart Robot bringup (it does not move the arm). Do not click calibration poses until this is gone.'))
+        # identical values alone prove nothing: a stationary arm's encoders can also report exactly the same numbers (seen live). It is a FREEZE only when the driver says so too.
+        corroborated = bool(s.get('fault')) or bool((s.get('log_hits') or {}).get('driver_fault_recovery'))
+        if corroborated:
+            issues.append(_issue('joints_frozen', 'error', 'The arm\'s joint feedback is FROZEN',
+                                 f'Joint states keep arriving but every value has been identical for {s["frozen_for_s"]:.0f} s and the driver reports a fault. Nothing that uses the arm\'s '
+                                 'position (calibration poses, planning, the jog) can be trusted.',
+                                 'Restart Robot bringup (it does not move the arm). Do not click calibration poses until this is gone.'))
+        else:
+            issues.append(_issue('joints_unchanged', 'warn', f'Joint values have not changed for {s["frozen_for_s"]:.0f} s',
+                                 'Normal when the arm is at rest. If you moved the arm (jog, hand-guiding) and the values stay exactly the same, the feedback is frozen '
+                                 '(the driver in a fault loop): the banner turns red when the driver confirms it.',
+                                 'Before clicking calibration poses, jog the arm a little and check the joint angles on the Jog tab change. If not, restart Robot bringup.'))
     if robot and age is not None and age <= STALE_JOINT_S and s.get('tf_ok') is False:
         issues.append(_issue('tf_missing', 'error', 'The arm has no TF (base_link is missing)',
                              'Joint states arrive but base_link -> end_effector_link cannot be looked up: robot_state_publisher is not publishing. Calibration from the arm, the scene '

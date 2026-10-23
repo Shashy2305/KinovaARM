@@ -23,6 +23,7 @@ import rclpy
 import tf2_ros
 from cv_bridge import CvBridge
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 from sensor_msgs_py import point_cloud2
@@ -113,9 +114,11 @@ class RosBridge(Node):
         self.audio_control_pub = self.create_publisher(String, '/audio_control', 10)
 
         for name, topics in config.CAMERA_TOPICS.items():
+            # BEST_EFFORT, not the default RELIABLE: with a reliable reader a slow Python callback back-pressures the camera driver (DDS slows the writer for the laggard),
+            # which dragged every driver down to 3-10 Hz (2026-10-22). A dashboard view may drop frames; it must never slow the camera for the detectors.
             self.create_subscription(
                 Image, topics['image'],
-                lambda msg, n=name: self._on_image(n, msg), 10)
+                lambda msg, n=name: self._on_image(n, msg), qos_profile_sensor_data)
 
         self.voice_pub = self.create_publisher(String, '/voice_command', 10)
 
@@ -131,7 +134,7 @@ class RosBridge(Node):
         self._fusion_stats = {}
         self._pair_cache = (0.0, {})
         for n, (dtopic, itopic) in DEPTH_TOPICS.items():
-            self.create_subscription(Image, dtopic, lambda m, n=n: self._depth_hist[n].append((time.monotonic(), m)), 1)
+            self.create_subscription(Image, dtopic, lambda m, n=n: self._depth_hist[n].append((time.monotonic(), m)), qos_profile_sensor_data)
             self.create_subscription(CameraInfo, itopic, lambda m, n=n: self._depth_K.__setitem__(n, np.array(m.k).reshape(3, 3)), 1)
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -154,7 +157,7 @@ class RosBridge(Node):
                 continue
             self.create_subscription(
                 PointCloud2, cfg['topic'],
-                lambda msg, n=name: self._on_pointcloud(n, msg), 1)
+                lambda msg, n=name: self._on_pointcloud(n, msg), qos_profile_sensor_data)
 
     def _on_pointcloud(self, name, msg):
         with self._pc_lock:

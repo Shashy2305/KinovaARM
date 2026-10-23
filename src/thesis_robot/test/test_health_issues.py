@@ -21,11 +21,17 @@ def test_a_healthy_system_has_no_issues():
     assert hi.evaluate(healthy()) == []
 
 
-def test_frozen_joint_feedback_is_reported_with_a_restart_hint():
+def test_frozen_joint_feedback_is_an_error_only_when_the_driver_confirms_it():
+    out = hi.evaluate(healthy(frozen_for_s=12.0, fault=True))
+    assert 'joints_frozen' in [i['id'] for i in out]
+    frozen = next(i for i in out if i['id'] == 'joints_frozen')
+    assert frozen['severity'] == 'error' and 'FROZEN' in frozen['title'] and 'Restart Robot bringup' in frozen['hint'] and '12' in frozen['detail']
+    out = hi.evaluate(healthy(frozen_for_s=12.0, log_hits={'driver_fault_recovery': 40}))
+    assert 'joints_frozen' in [i['id'] for i in out]
+    # identical values alone (a stationary arm reports exactly the same numbers) is only a warning with a way to check
     out = hi.evaluate(healthy(frozen_for_s=12.0))
-    assert [i['id'] for i in out] == ['joints_frozen']
-    assert 'FROZEN' in out[0]['title'] and 'Restart Robot bringup' in out[0]['hint'] and '12' in out[0]['detail']
-    assert ids(healthy(frozen_for_s=1.0)) == []                      # a short pause of identical values is not a freeze
+    assert [i['id'] for i in out] == ['joints_unchanged'] and out[0]['severity'] == 'warn' and 'jog the arm' in out[0]['hint']
+    assert ids(healthy(frozen_for_s=1.0)) == []                      # a short pause of identical values is nothing
 
 
 def test_missing_joint_states_and_missing_tf():
