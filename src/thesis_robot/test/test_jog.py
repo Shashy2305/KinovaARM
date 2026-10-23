@@ -209,7 +209,7 @@ def jogger(ros, monkeypatch):
     j = jog.Jogger(urdf_xml=URDF)
     j.pub = StubPub()
     monkeypatch.setattr(sg, 'load_geometry', lambda *a, **kw: (dict(GEOM, table_top_z=-0.5), None))
-    j.set_q = lambda q=Q: j._on_js(_js(q))
+    j.set_q = lambda q=Q: j.feed.inject(_js(q))
     j.set_q()
     yield j
     j.destroy_node()
@@ -238,7 +238,7 @@ def test_enable_refused_with_fault_busy_or_stale(jogger):
     jogger._on_status(String(data='EXECUTING: pick the cup'))
     assert 'busy' in jogger.enable('area clear, hands off')['error']
     jogger._on_status(String(data='READY [DRY RUN]'))
-    jogger._js_t -= 5.0
+    jogger.feed._t -= 5.0
     assert 'joint states' in jogger.enable('area clear, hands off')['error']
 
 

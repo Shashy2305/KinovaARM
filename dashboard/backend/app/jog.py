@@ -11,13 +11,13 @@ Safety, all enforced here:
   * speed caps, joint-limit margins, table / rear limits of safety_geometry on every step (jog_math), refused while a pick/place command is running or the driver reports a fault
 The hardware E-stop stays the primary stop. The Stop button only holds position and switches the jog off.
 """
+import os
 import threading
 import time
 
 import numpy as np
 from builtin_interfaces.msg import Duration
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -25,6 +25,7 @@ from thesis_robot import safety_geometry as sg
 
 from . import jog_math as jm
 from . import kinematics as kin
+from .joint_feed import JointFeed
 
 ENABLE_PHRASE = 'area clear, hands off'
 IDLE_DISABLE_S = 120.0
@@ -35,6 +36,8 @@ FOLLOW_CHECK_S = 1.5
 FOLLOW_MIN_FRACTION = 0.25        # the arm must have covered this share of what was commanded in the window
 FOLLOW_MIN_RAD = 0.03
 TOPIC = '/joint_trajectory_controller/joint_trajectory'
+URDF_CACHE = os.path.expanduser('~/.ros/arm_model_cache.urdf')
+URDF_RETRY_S = 15.0
 
 
 class Jogger(Node):
@@ -43,13 +46,14 @@ class Jogger(Node):
         self._lock = threading.RLock()
         self._urdf = urdf_xml
         self.k = None
+        self._urdf_retry_at = 0.0
+        self._urdf_error = ''
         self.enabled = False
         self.enabled_at = 0.0
         self.last_cmd_t = 0.0
         self.last_tick_t = 0.0
         self.message = 'jog is off'
-        self._js = {}
-        self._js_t = 0.0
+        self.feed = JointFeed(self)
         self._fault = False
         self._fault_t = 0.0
         self._arm_status = ''
@@ -58,16 +62,10 @@ class Jogger(Node):
         self._v = np.zeros(7)
         self.last_step = None
         self.pub = self.create_publisher(JointTrajectory, TOPIC, 5)
-        self.create_subscription(JointState, '/joint_states', self._on_js, 10)
         self.create_subscription(Bool, '/fault_controller/internal_fault', self._on_fault, 5)
         self.create_subscription(String, '/arm_status', self._on_status, 10)
 
     # ── inputs ────────────────────────────────────────────────────────
-    def _on_js(self, msg):
-        with self._lock:
-            self._js = dict(zip(msg.name, msg.position))
-            self._js_t = time.monotonic()
-
     def _on_fault(self, msg):
         with self._lock:
             self._fault = bool(msg.data)
@@ -79,28 +77,63 @@ class Jogger(Node):
 
     def _kinematics(self):
         if self.k is None:
-            xml = self._urdf or self._fetch_urdf()
-            self.k = kin.Kinematics(xml)
+            if time.monotonic() < self._urdf_retry_at:
+                raise RuntimeError(self._urdf_error)
+            try:
+                xml = self._urdf or self._fetch_urdf()
+                self.k = kin.Kinematics(xml)
+            except Exception as e:
+                self._urdf_error = f'cannot load the arm model: {e}'
+                self._urdf_retry_at = time.monotonic() + URDF_RETRY_S      # do not make every status poll wait for a model that is not there
+                raise
         return self.k
 
     def _fetch_urdf(self):
+        """The running model: the latched /robot_description topic first (robot_state_publisher's parameter service is not always discoverable), then its parameter, then the
+        copy saved by an earlier successful run (the arm model does not change between runs)."""
+        xml = self._urdf_from_topic() or self._urdf_from_param()
+        if xml:
+            try:
+                os.makedirs(os.path.dirname(URDF_CACHE), exist_ok=True)
+                with open(URDF_CACHE, 'w') as f:
+                    f.write(xml)
+            except OSError:
+                pass
+            return xml
+        if os.path.exists(URDF_CACHE):
+            self.get_logger().warn(f'using the saved arm model {URDF_CACHE}: robot_description is not available')
+            return open(URDF_CACHE).read()
+        raise RuntimeError('robot_description is not available (is robot bringup running?)')
+
+    def _urdf_from_topic(self, timeout=3.0):
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from std_msgs.msg import String as Str
+        got = []
+        qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE)
+        sub = self.create_subscription(Str, '/robot_description', lambda m: got.append(m.data), qos)
+        t0 = time.time()
+        while not got and time.time() - t0 < timeout:
+            time.sleep(0.02)
+        self.destroy_subscription(sub)
+        return got[0] if got else None
+
+    def _urdf_from_param(self):
         from rcl_interfaces.srv import GetParameters
         cli = self.create_client(GetParameters, '/robot_state_publisher/get_parameters')
-        if not cli.wait_for_service(timeout_sec=3.0):
-            raise RuntimeError('/robot_state_publisher is not running (start robot bringup)')
-        fut = cli.call_async(GetParameters.Request(names=['robot_description']))
-        t0 = time.time()
-        while not fut.done() and time.time() - t0 < 5.0:
-            time.sleep(0.02)
-        if not fut.done():
-            raise RuntimeError('timed out reading robot_description')
-        return fut.result().values[0].string_value
+        try:
+            if not cli.wait_for_service(timeout_sec=2.0):
+                return None
+            fut = cli.call_async(GetParameters.Request(names=['robot_description']))
+            t0 = time.time()
+            while not fut.done() and time.time() - t0 < 3.0:
+                time.sleep(0.02)
+            return fut.result().values[0].string_value if fut.done() else None
+        finally:
+            self.destroy_client(cli)
 
     def _q(self):
         """(q (7,), gripper dict, age_s) or (None, None, age)."""
-        with self._lock:
-            js, t = dict(self._js), self._js_t
-        age = time.monotonic() - t if t else 1e9
+        js, age = self.feed.latest()
         if not all(j in js for j in kin.ARM_JOINTS):
             return None, None, age
         grip = {'finger_joint': js['finger_joint']} if 'finger_joint' in js else None

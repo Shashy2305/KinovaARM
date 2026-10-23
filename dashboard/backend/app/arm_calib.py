@@ -19,9 +19,10 @@ import tf2_ros
 import yaml
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation
-from sensor_msgs.msg import CameraInfo, JointState
+from sensor_msgs.msg import CameraInfo
 
 from . import config
+from .joint_feed import JointFeed
 
 sys.path.insert(0, os.path.join(config.REPO_ROOT, 'calibration'))
 import pnp_extrinsics as pe  # noqa: E402
@@ -38,6 +39,7 @@ HUB_FRAMES = {'joint2': 'half_arm_1_link', 'elbow': 'forearm_link', 'joint6': 's
 PAD_FRAMES = ('left_inner_finger_pad', 'right_inner_finger_pad')
 PAD_TIP_OFFSET_M = 0.035          # pad frame origin -> end of the pad along the tool axis
 MAX_ARM_DRIFT_RAD = 0.01          # the arm must not move between the first click and the solve
+SAME_POSE_RAD = 0.05            # a new pose in the pool must differ from every earlier one by more than this in some joint (3 deg): catches frozen joint feedback
 
 # Click any 5 or more that are visible in the current pose; hubs hidden behind the
 # arm can simply be skipped. Joint hub = the centre of the round cap of that joint.
@@ -81,18 +83,13 @@ class ArmCalib(Node):
         self.pool = {c: [] for c in CAMERA_INFO}
         self.pooled = {c: None for c in CAMERA_INFO}    # last pooled solve
         self._load_pools()
-        self._js = None
+        self.feed = JointFeed(self)
         for cam, topic in CAMERA_INFO.items():
             self.create_subscription(CameraInfo, topic, lambda m, c=cam: self._on_info(c, m), 1)
-        self.create_subscription(JointState, '/joint_states', self._on_js, 10)
 
     def _on_info(self, cam, msg):
         with self._lock:
             self.K[cam] = (np.array(msg.k).reshape(3, 3), (msg.width, msg.height))
-
-    def _on_js(self, msg):
-        with self._lock:
-            self._js = dict(zip(msg.name, msg.position))
 
     # ── arm landmarks from forward kinematics ─────────────────────────
     def _pos(self, frame):
@@ -124,8 +121,7 @@ class ArmCalib(Node):
             return None
 
     def arm_joint_vector(self):
-        with self._lock:
-            js = dict(self._js or {})
+        js, _age = self.feed.latest()
         return np.array([js.get(f'joint_{i}', np.nan) for i in range(1, 8)])
 
     # ── operations ────────────────────────────────────────────────────
@@ -261,8 +257,15 @@ class ArmCalib(Node):
             last = self.last.get(cam)
             if not last or 'pts' not in last:
                 return False, 'Solve this pose first: its points are only kept after a successful solve', len(self.pool[cam])
+            snap = self.joint_snapshot[cam]
+            joints = [float(x) for x in snap] if snap is not None else None
+            if joints is not None and not np.isnan(joints).any():
+                for i, old in enumerate(self.pool[cam]):
+                    if old.get('joints') and np.max(np.abs(np.array(old['joints']) - joints)) < SAME_POSE_RAD:
+                        return False, (f'this is the same arm pose as pose {i + 1} (every joint within {np.degrees(SAME_POSE_RAD):.1f} deg): move the arm to a different '
+                                       f'pose first. If you did move it, the joint feedback is frozen: restart robot bringup.'), len(self.pool[cam])
             self.pool[cam].append({'pts': last['pts'], 'pix': last['pix'], 'used': last['used'], 'rots': last.get('rots', [None] * len(last['used'])),
-                                   'rms': float(last['sol']['rms_px']), 'time': time.strftime('%H:%M:%S')})
+                                   'rms': float(last['sol']['rms_px']), 'time': time.strftime('%H:%M:%S'), 'joints': joints})
             self.clicks[cam] = {}
             self.joint_snapshot[cam] = None
             self.last[cam] = None

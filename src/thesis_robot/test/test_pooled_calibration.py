@@ -60,6 +60,25 @@ def test_the_backend_keeps_only_solved_poses_and_pools_them(monkeypatch):
     assert ok and n == 1 and obj.clicks[cam] == {} and obj.last[cam] is None and obj.pool[cam][0]['used'] == ['base_center']
 
 
+def test_a_pose_identical_to_an_earlier_one_is_refused_as_frozen_feedback():
+    import threading
+    import types
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'dashboard', 'backend'))
+    from app import arm_calib as ac
+    cam = 'realsense3'
+    obj = types.SimpleNamespace(_lock=threading.RLock(), clicks={cam: {}}, joint_snapshot={cam: np.full(7, 0.3)}, pool={cam: []}, _save_pool=lambda c: None)
+    solved = {'sol': {'rms_px': 4.0}, 'pts': [[0, 0, 0]], 'pix': [[1, 1]], 'used': ['base_center']}
+    obj.last = {cam: dict(solved)}
+    assert ac.ArmCalib.commit_pose(obj, cam)[0]
+    obj.last = {cam: dict(solved)}
+    obj.joint_snapshot[cam] = np.full(7, 0.3) + 0.01                       # 0.6 deg off: the arm has not really moved
+    ok, msg, n = ac.ArmCalib.commit_pose(obj, cam)
+    assert not ok and n == 1 and 'same arm pose as pose 1' in msg and 'frozen' in msg
+    obj.joint_snapshot[cam] = np.full(7, 0.3) + np.array([0.3, 0, 0, 0, 0, 0, 0])     # a real move is accepted
+    obj.last = {cam: dict(solved)}
+    assert ac.ArmCalib.commit_pose(obj, cam)[0]
+
+
 def test_solve_pool_modes_end_to_end_with_synthetic_poses(monkeypatch):
     import threading
     import types
