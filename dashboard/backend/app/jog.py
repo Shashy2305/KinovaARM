@@ -17,6 +17,7 @@ import time
 
 import numpy as np
 from builtin_interfaces.msg import Duration
+from rclpy.duration import Duration as RclDuration
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -192,9 +193,11 @@ class Jogger(Node):
         """One waypoint to q_target in t_s seconds (used for 'hold here' on Stop / fault)."""
         self._send([t_s], [np.asarray(q_target, float)], None)
 
-    def _send(self, times, positions, velocities):
+    def _send(self, times, positions, velocities, backdate_s=0.0):
         msg = JointTrajectory()
         msg.joint_names = list(kin.ARM_JOINTS)
+        if backdate_s:
+            msg.header.stamp = (self.get_clock().now() - RclDuration(seconds=backdate_s)).to_msg()
         for i, t_s in enumerate(times):
             p = JointTrajectoryPoint()
             p.positions = [float(v) for v in positions[i]]
@@ -247,11 +250,17 @@ class Jogger(Node):
         if not np.any(dq):
             self._win = self._ref = None
             return self.state()
-        v = dq / jm.HORIZON_S
+        v_target = dq / jm.HORIZON_S
         dt = now - prev_tick
-        continuing = self._ref is not None and dt <= GAP_S
-        q_ref = self._ref + self._v * dt if continuing else q.copy()
-        lead = np.maximum(np.abs(v), np.abs(self._v if continuing else 0.0)) * jm.LEAD_MAX_S + 1e-4
+        continuing = self._ref is not None and dt <= jm.CONT_S
+        if continuing:
+            # the previous message's line goes on through now; the commanded velocity may change only gently
+            q_ref = self._ref + self._v * dt
+            v = jm.approach_velocity(self._v, v_target, dt)
+        else:
+            q_ref = q.copy()
+            v = jm.approach_velocity(np.zeros(7), v_target, jm.NOMINAL_TICK_S)
+        lead = np.maximum(np.abs(v_target), np.abs(self._v if continuing else 0.0)) * jm.LEAD_MAX_S + 1e-4
         q_ref = np.clip(q_ref, q - lead, q + lead)
         q_hold = q_ref + v * jm.HOLD_S
         q_stop = q_ref + jm.coast_displacement(v)
@@ -273,7 +282,7 @@ class Jogger(Node):
                 return self.state(blocked=self.message)
             self._win = [now, q.copy(), np.zeros(7)]
         times, pos, vel = jm.velocity_profile(q_ref, v)
-        self._send(times, pos, vel)
+        self._send(times, pos, vel, backdate_s=jm.BACK_S)
         self._ref, self._v = q_ref, v
         self.last_step = {'ok': True, 'v_deg_s': [round(float(np.degrees(x)), 2) for x in v]}
         with self._lock:

@@ -60,16 +60,31 @@ def test_profile_shape_and_coast_distance():
     v = np.array([0.1, -0.2, 0, 0, 0, 0, 0.0])
     q0 = np.ones(7)
     times, pos, vel = jm.velocity_profile(q0, v)
-    assert np.all(np.diff(times) > 0) and times[-1] == pytest.approx(jm.HOLD_S + jm.RAMP_S)
+    assert times[0] == 0.0 and np.all(np.diff(times) > 0) and times[-1] == pytest.approx(jm.BACK_S + jm.HOLD_S + jm.RAMP_S)
     assert np.allclose(vel[-1], 0) and np.allclose(vel[0], v)
+    # the line passes through q_ref exactly BACK_S after the (back-dated) start: this is what makes consecutive messages join
+    assert np.allclose(pos[0] + v * jm.BACK_S, q0)
     assert np.allclose(pos[-1] - q0, jm.coast_displacement(v))
     # the positions are the integral of the velocities (trapezoid), so the controller sees a consistent spline
-    t = np.r_[0.0, times]
-    p = np.vstack([q0, pos])
-    w = np.vstack([v, vel])
-    est = q0 + np.cumsum(0.5 * (w[1:] + w[:-1]) * np.diff(t)[:, None], axis=0)
+    est = [pos[0]]
+    for i in range(1, len(times)):
+        est.append(est[-1] + 0.5 * (vel[i] + vel[i - 1]) * (times[i] - times[i - 1]))
     assert np.allclose(est[-1], pos[-1], atol=2e-3)
-    assert np.all(np.sign(np.diff(p[:, 0])) >= 0)
+    assert np.all(np.sign(np.diff(pos[:, 0])) >= 0)
+
+
+def test_velocity_changes_gently():
+    v = np.zeros(7)
+    target = np.array([0.3, 0, 0, 0, 0, 0, 0.0])
+    steps = 0
+    while not np.allclose(v, target) and steps < 100:
+        nv = jm.approach_velocity(v, target, 0.08)
+        assert np.max(np.abs(nv - v)) <= jm.ACCEL_RAD_S2 * 0.08 + 1e-12
+        v, steps = nv, steps + 1
+    assert steps == 5                                                # 0.3 / (0.8 * 0.08) = 4.7 ticks
+    # all joints are scaled together: the direction of a Cartesian move is kept while it speeds up
+    nv = jm.approach_velocity(np.zeros(7), np.array([0.3, 0.15, 0, 0, 0, 0, 0.0]), 0.08)
+    assert nv[1] / nv[0] == pytest.approx(0.5)
 
 
 def test_coast_after_commands_stop_is_small():
@@ -251,24 +266,29 @@ def test_joint_command_publishes_a_continuous_velocity_profile(jogger):
     jogger.enable('area clear, hands off')
     st = jogger.command({'mode': 'joint', 'joint': 3, 'dir': -1, 'speed': 1.0})
     assert st['moved'] and len(jogger.pub.sent) == 1
-    pts = jogger.pub.sent[0].points
-    v = -jm.JOINT_MAX_RAD_S
-    assert all(len(p.velocities) == 7 for p in pts)               # position-only points made the arm vibrate at the command rate
-    assert pts[0].positions[2] == pytest.approx(Q[2] + v * jm.FIRST_POINT_S) and pts[0].velocities[2] == pytest.approx(v)
-    assert all(abs(x) < 1e-12 for x in pts[-1].velocities)        # ends at rest (the controller rejects a non-zero end velocity)
+    msg = jogger.pub.sent[0]
+    pts = msg.points
+    v = -jm.ACCEL_RAD_S2 * jm.NOMINAL_TICK_S                          # first tick of a move: only one acceleration step of the full speed
+    assert all(len(p.velocities) == 7 for p in pts)                   # position-only points made the arm vibrate at the command rate
+    assert pts[0].velocities[2] == pytest.approx(v)
+    assert pts[0].positions[2] + v * jm.BACK_S == pytest.approx(Q[2])  # the line passes through the arm's position BACK_S after the stamp
+    assert msg.header.stamp.sec > 0                                   # back-dated
+    assert all(abs(x) < 1e-12 for x in pts[-1].velocities)            # ends at rest (the controller rejects a non-zero end velocity)
     tf = pts[-1].time_from_start
-    assert tf.sec + tf.nanosec / 1e9 == pytest.approx(jm.HOLD_S + jm.RAMP_S, abs=1e-6)
+    assert tf.sec + tf.nanosec / 1e9 == pytest.approx(jm.BACK_S + jm.HOLD_S + jm.RAMP_S, abs=1e-6)
 
 
-def test_consecutive_messages_join_up(jogger):
+def test_consecutive_messages_lie_on_one_line_and_speed_up_gently(jogger):
     jogger.enable('area clear, hands off')
     jogger.command({'mode': 'joint', 'joint': 1, 'dir': 1, 'speed': 1.0})
+    t1, ref1, v1 = jogger.last_tick_t, jogger._ref.copy(), jogger._v.copy()
     time.sleep(0.09)
     jogger.command({'mode': 'joint', 'joint': 1, 'dir': 1, 'speed': 1.0})       # the arm has not moved in this test: the reference must not be reset to it
-    first, second = jogger.pub.sent[0].points[0], jogger.pub.sent[1].points[0]
-    gap = second.positions[0] - first.positions[0]
-    assert 0.0 < gap < jm.JOINT_MAX_RAD_S * 0.15                    # ahead by about one tick of motion, within the lead limit
-    assert second.positions[0] - Q[0] <= jm.JOINT_MAX_RAD_S * (jm.LEAD_MAX_S + jm.FIRST_POINT_S) + 1e-6
+    t2, ref2, v2 = jogger.last_tick_t, jogger._ref, jogger._v
+    assert ref2[0] == pytest.approx(ref1[0] + v1[0] * (t2 - t1), abs=1e-9)     # message 2 starts exactly where message 1's line is at that moment
+    assert v1[0] < v2[0] <= v1[0] + jm.ACCEL_RAD_S2 * (t2 - t1) + 1e-9
+    msg = jogger.pub.sent[1].points[0]
+    assert msg.positions[0] + msg.velocities[0] * jm.BACK_S == pytest.approx(ref2[0])
 
 
 def test_bad_commands_are_rejected_without_motion(jogger):
