@@ -71,3 +71,12 @@ Report per class and per camera: precision, recall, label confusions, and the ra
 * Another COCO YOLO as "the second opinion" (same blind spots), YOLO12m (3/21 here), swapping YOLOv8 for something else before there is a held-out set that shows a winner.
 * Using agreement between COCO models as a hard gate (half the good picks would be refused).
 * A fine-tune of YOLOv8 on 21 images: too few, one mug, one scene; collect first (`scripts/export_training_dataset.py` already writes the dataset; about 30 per class is the threshold in ROADMAP).
+
+## 7. Status 2026-10-26: shadow mode is built (default OFF)
+* `thesis_robot/detector_b_node.py` (dashboard card "Second-opinion detector (shadow)", process id `detector_b`): RT-DETR-L on the camera image, compared with YOLOv8's objects (matched by pixel: the pixel must lie in the
+  box AND near its centre, so a chair box around a mouse is not an opinion about the mouse); CLIP nearest-neighbour verifier on the wrist camera against the robot's verified picks (abstains below similarity 0.80).
+  Consensus by confusion group in `detector_consensus.py` (tested). It publishes `/detector_b_report`, writes `~/.ros/detector_b/log_<date>.jsonl` (+ crops) for every NON-agreeing object (deduplicated 30 s) and
+  `stats.json`; summary: `python3 scripts/detector_b_report.py`. Nothing subscribes to it: no behaviour changes.
+* First live minute on RS1 (operator view): 184 agree, 134 single (RT-DETR found nothing at that pixel), 31 only_b (cups the second detector sees and YOLOv8 does not report: real cups on a desk behind the table), 1 uncertain.
+* Next (doc section 4, step b): collect a few days of normal use, then compare disagreements with the outcome log (did the pick with an `uncertain` label fail more often?). Only then step (c): use the combined label behind a default-off parameter.
+* Start: Node Control card, or `ros2 run`-style: `PYTHONPATH=/mnt/ros_workspace/venv_extra python3 -m thesis_robot.detector_b_node` (needs a detector publishing for the camera: realsense_detection / wrist_detection).

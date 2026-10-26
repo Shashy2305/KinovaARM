@@ -187,6 +187,14 @@ PROCESSES = {
         'cmd': f'{ROS_ENV_CMD} python3 -m thesis_robot.realsense3_detection',
         'signature': 'thesis_robot.realsense3_detection',
     },
+    'detector_b': {
+        'label': 'Second-opinion detector (shadow)',
+        'category': 'perception',
+        'hardware_affecting': False,
+        # RT-DETR + CLIP verifier next to YOLOv8; logs disagreements, changes NOTHING (docs/DETECTOR_SECOND_OPINION.md). open_clip lives in venv_extra.
+        'cmd': f'{ROS_ENV_CMD} export PYTHONPATH=/mnt/ros_workspace/venv_extra:$PYTHONPATH && python3 -m thesis_robot.detector_b_node',
+        'signature': 'thesis_robot.detector_b_node',
+    },
     'wrist_detection': {
         'label': 'Wrist camera detection',
         'category': 'perception',
