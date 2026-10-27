@@ -88,3 +88,13 @@ wrist turn sweeps the fingers around the object. Parameter `tilt_try_wrist_flip`
 
 **Update, same night:** with the flip code loaded the lean went 15, 20, 25 and 30 deg on the cup (azimuth 0), every grip held on the first attempt, `flipped: False` each time - the earlier 20 deg failures were the arm's parked joint configuration, solved by `go home`.
 So the practical rules: lean flat objects (mouse) up to ~10 deg, cups up to the 30 deg cap; start from home; the lean never applies to tall objects.
+
+## 7. Human-like approach: results and changes (2026-10-26)
+* Request: the gripper always came straight down, 90 deg to the table. `approach_tilt_deg` is now 30 in `config/arm_controller_params.yaml` (it was 0 = off); a mouse/remote/book is limited to 10 deg by class, a phone never leans,
+  tall objects never lean (`wrist_servo.TILT_MAX_DEG`, `tilt_limit`). `tilt_cap_deg` (default 30, code limit `TILT_HARD_MAX_DEG` 60) is the ceiling for stepping up: 35, 45.
+* Reach study with fingertips 5 / 8 cm above the table (read-only, `scripts/angled_approach_study.py`, tilt vs sideways azimuth): 30 deg 17-18 of 20 table positions, 45 deg 13-15, 60 deg 10-14, 75 deg 0-9, 90 deg 0-5.
+  Leaning toward -x (fingertips toward the base) is the worst (45 deg: 4-5 of 20). A fully horizontal grasp is not practical with this IK; 45-60 deg sideways is.
+* Live 2026-10-26, cup at (0.32, -0.10) after "go home": the single (30 deg, azimuth chosen) lean found no solution ("3.5 rad single-joint reconfiguration (limit 2.6)", with and without the 180 deg wrist flip) and the pick went straight down.
+  The descent now tries an ORDERED list of options (`_tilt_options`): the asked lean toward the chosen direction, the other sideways direction, +x, then 0.6 x the lean; the first with an IK solution wins; the body must not be over a neighbour
+  (`_body_blocker`); a direction fixed with `tilt_azimuth_deg` is the only one used. The `tilt` event now also logs `asked`.
+* Held object: the arm controller publishes `/gripper_held`; the planner drops a pick of what is already held ("put the cup back on the table" was planned as pick + place, the pick refused).

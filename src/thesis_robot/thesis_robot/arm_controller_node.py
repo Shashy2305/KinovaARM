@@ -101,6 +101,7 @@ class ArmControllerNode(Node):
         self.declare_parameter('approach_tilt_deg', 0.0)
         self.declare_parameter('retry_tilt_deg', 0.0)
         self.declare_parameter('tilt_azimuth_deg', -1.0)
+        self.declare_parameter('tilt_cap_deg', 30.0)             # the highest lean ever asked for, whatever approach_tilt_deg says (30 = the live-tested limit; step up: 35, 45); never above TILT_HARD_MAX_DEG
         self.declare_parameter('collect_training_samples', True)  # save a labelled wrist frame before each descent, keep it if the pick succeeds
         self.declare_parameter('grasp_policy', False)            # bias the ranking by what past outcomes say works (grasp_policy.py)
         self.declare_parameter('use_shape_width', False)         # preshape from the measured width instead of the table
@@ -760,7 +761,7 @@ class ArmControllerNode(Node):
             return False
         return False
 
-    TILT_CAP_DEG = 30.0
+    TILT_HARD_MAX_DEG = 60.0     # code limit: the parameter tilt_cap_deg cannot raise the lean above this
     TILT_STANDOFF_M = 0.10        # the pregrasp sits this far back along the tool axis
 
     def _tilt_for(self, label, centre_xy, object_id):
@@ -768,7 +769,8 @@ class ArmControllerNode(Node):
         t = float(self.get_parameter('approach_tilt_deg').value)
         if int(getattr(self, '_pick_attempt', 1)) >= 2:
             t = max(t, float(self.get_parameter('retry_tilt_deg').value))
-        t = min(max(t, 0.0), self.TILT_CAP_DEG)
+        cap = min(float(self.get_parameter('tilt_cap_deg').value), self.TILT_HARD_MAX_DEG)
+        t = min(max(t, 0.0), cap, ws.tilt_limit(label))
         if t < 5.0 or ws.OBJECT_HEIGHT_M.get(label, ws.DEFAULT_HEIGHT_M) >= ws.TALL_OBJECT_M:
             return None
         az = float(self.get_parameter('tilt_azimuth_deg').value)
@@ -781,6 +783,30 @@ class ArmControllerNode(Node):
                 bearing = min(near)[1]
                 az = min((0.0, 90.0, 270.0), key=lambda c: abs((c - bearing + 180.0) % 360.0 - 180.0))
         return t, az % 360.0
+
+    BODY_CLEARANCE_M = 0.10       # the gripper body (flange, camera, wrist) sweeps about this far from the tool axis
+
+    def _tilt_options(self, tilt, az):
+        """Ordered (lean, azimuth) options for a tilted approach: the asked one first; then the other sideways direction (the study: +-y reach 17-18 of 20 table positions at 30 deg, toward the base
+        only 10-13), then +-y / +x; then a smaller lean (0.6 x, at least 10 deg) in the same order. A direction the operator fixed (tilt_azimuth_deg >= 0) is the only one used."""
+        fixed = float(self.get_parameter('tilt_azimuth_deg').value) >= 0
+        azs = [az]
+        if not fixed:
+            for a in ((az + 180.0) % 360.0 if az in (90.0, 270.0) else None, 90.0, 270.0, 0.0):
+                if a is not None and a not in azs:
+                    azs.append(a)
+            azs = azs[:3]
+        tilts = [tilt] + ([max(10.0, 0.6 * tilt)] if tilt >= 17.0 else [])
+        return [(t, a) for t in tilts for a in azs]
+
+    def _body_blocker(self, pre_flange, grasp_flange, object_id):
+        """Label of a neighbour standing under the gripper body for this approach (the flange at the pregrasp and the grasp), or None."""
+        for lab, x, y in self._scene_obstacles(exclude_id=object_id):
+            r = ws.OBJECT_RADIUS_M.get(lab, ws.DEFAULT_RADIUS_M)
+            for p in (pre_flange, grasp_flange):
+                if math.hypot(x - float(p[0]), y - float(p[1])) < self.BODY_CLEARANCE_M + r:
+                    return lab
+        return None
 
     def _flip_swing_blocker(self, object_id, centre_xy, pre_tip_z, geom):
         """Label of a neighbour the open fingers would hit while the wrist turns 180 deg at the pregrasp (they sweep a circle of half-span
@@ -912,39 +938,54 @@ class ArmControllerNode(Node):
             plan = self._tilt_for(label, centred['xy'], object_id) if not (self.dry_run or self.moveit2 is None) else None
             if plan is None:
                 return descend_vertical()
-            tilt, az = plan
-            tip = np.array([centred['xy'][0], centred['xy'][1], grasp_z - sg.TCP_REACH_M])
-            pre, grasp_fl, axis = self._tilted_pose(tip, tilt, az)
-            inside = all(sg.PLAN_X_RANGE[0] <= p[0] <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= p[1] <= sg.PLAN_Y_RANGE[1]
-                         for p in (pre, grasp_fl))
-            if not inside:
-                self.get_logger().info(f'pick: a {tilt:.0f} deg approach from azimuth {az:.0f} would leave the planner limits - straight down instead')
+            tilt0, az0 = plan
+            quat0 = self._actual_tool_quat()
+            chosen, reasons = None, []
+            # An ordered list of (lean, direction) options, the first that has an IK solution wins: the asked lean toward the chosen direction, then the other directions the reach study found
+            # reachable (+-y first), then a smaller lean (2026-10-26: one fixed (30 deg, +y) failed with a 3.5 rad joint swing and the pick went straight down).
+            for tilt, az in self._tilt_options(tilt0, az0):
+                tip = np.array([centred['xy'][0], centred['xy'][1], grasp_z - sg.TCP_REACH_M])
+                pre, grasp_fl, axis = self._tilted_pose(tip, tilt, az)
+                inside = all(sg.PLAN_X_RANGE[0] <= p[0] <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= p[1] <= sg.PLAN_Y_RANGE[1] for p in (pre, grasp_fl))
+                if not inside:
+                    reasons.append(f'{tilt:.0f} deg/az {az:.0f}: outside the planner limits')
+                    continue
+                if (tilt, az) != (tilt0, az0):
+                    near = self._body_blocker(pre, grasp_fl, object_id)
+                    if near:
+                        reasons.append(f'{tilt:.0f} deg/az {az:.0f}: the gripper body would be over the {near}')
+                        continue
+                quat = aa.tilted_from(quat0, tilt, az)
+                goal, flipped, why = None, False, None
+                try:
+                    goal, _q = self._solve_goal_joints([float(v) for v in pre], quat, False)
+                except Exception as e:
+                    why = e
+                    # The gripper is symmetric: turning the wrist 180 deg about the tool axis gives the same grip and the same lean, in a
+                    # different joint configuration (live 2026-10-09 the 20 deg lean found no solution without it).
+                    if bool(self.get_parameter('tilt_try_wrist_flip').value):
+                        blocker = self._flip_swing_blocker(object_id, centred['xy'], tip[2] + self.TILT_STANDOFF_M * math.cos(math.radians(tilt)), geom)
+                        if blocker:
+                            why = f'{e}; no 180 deg wrist flip: the swinging fingers would pass the {blocker}'
+                        else:
+                            try:
+                                goal, _q = self._solve_goal_joints([float(v) for v in pre], mu.rotate_about_tool_z(quat, 180.0), False)
+                                flipped = True
+                            except Exception as e2:
+                                why = f'{e}; with the 180 deg wrist flip: {e2}'
+                if goal is not None:
+                    chosen = (tilt, az, pre, grasp_fl, goal, flipped)
+                    break
+                reasons.append(f'{tilt:.0f} deg/az {az:.0f}: {why}')
+            if chosen is None:
+                self.get_logger().info('pick: no tilted approach (' + ' | '.join(reasons)[:600] + ') - straight down instead')
                 return descend_vertical()
-            quat = aa.tilted_from(self._actual_tool_quat(), tilt, az)
-            goal, flipped, why = None, False, None
-            try:
-                goal, _q = self._solve_goal_joints([float(v) for v in pre], quat, False)
-            except Exception as e:
-                why = e
-                # The gripper is symmetric: turning the wrist 180 deg about the tool axis gives the same grip and the same lean, in a
-                # different joint configuration. The live solve is locked to the one wrist yaw chosen for the grip, so that is the one
-                # alternative worth trying (the reachability study tried four yaws; live 2026-10-09 the 20 deg lean found no solution without it).
-                if bool(self.get_parameter('tilt_try_wrist_flip').value):
-                    blocker = self._flip_swing_blocker(object_id, centred['xy'], tip[2] + self.TILT_STANDOFF_M * math.cos(math.radians(tilt)), geom)
-                    if blocker:
-                        self.get_logger().info(f'pick: not trying the 180 deg wrist flip: the swinging fingers would pass the {blocker}')
-                    else:
-                        try:
-                            goal, _q = self._solve_goal_joints([float(v) for v in pre], mu.rotate_about_tool_z(quat, 180.0), False)
-                            flipped = True
-                        except Exception as e2:
-                            why = f'{e}; with the 180 deg wrist flip: {e2}'
-            if goal is None:
-                self.get_logger().info(f'pick: no tilted approach ({why}) - straight down instead')
-                return descend_vertical()
+            tilt, az, pre, grasp_fl, goal, flipped = chosen
+            if (tilt, az) != (tilt0, az0):
+                self.get_logger().info(f'pick: the asked lean ({tilt0:.0f} deg, azimuth {az0:.0f}) is not reachable from here; using {tilt:.0f} deg, azimuth {az:.0f}')
             self.get_logger().info(f'pick: coming in at {tilt:.0f} deg leaning toward azimuth {az:.0f} (fingertips lead, the gripper body stays behind)'
                                    + (' - with the wrist turned 180 deg (same grip, other joint configuration)' if flipped else ''))
-            self._log_event('tilt', tilt=round(tilt, 1), az=round(az, 1), flipped=flipped)
+            self._log_event('tilt', tilt=round(tilt, 1), az=round(az, 1), flipped=flipped, asked=round(tilt0, 1))
             if not self._guarded_move(geom, 'tilt in', joint_positions=goal):
                 return False
             tilt_state['on'] = {'tilt': tilt, 'az': az, 'pre': pre, 'grasp': grasp_fl}

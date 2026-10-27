@@ -276,3 +276,8 @@ def test_tracked_object_is_not_replaced_by_a_look_alike_nearby():
     # tracking the real one at 7 cm: the fake is ignored
     assert ws.match_detection([fake], 'bottle', (0.238, -0.232), same_tol=0.07) is None
     assert ws.match_detection([fake, real], 'bottle', (0.238, -0.232), same_tol=0.07) == real
+
+
+def test_tilt_limits_per_class():
+    assert ws.tilt_limit('cup') == 60.0 and ws.tilt_limit('mouse') == 10.0 and ws.tilt_limit('cell phone') == 0.0
+    assert ws.tilt_limit('something unknown') == ws.DEFAULT_TILT_MAX_DEG

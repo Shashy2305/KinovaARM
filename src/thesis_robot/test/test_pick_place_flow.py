@@ -281,6 +281,8 @@ def set_params(node, **kw):
 
 @pytest.fixture
 def tilt_world(node, world, monkeypatch):
+    from thesis_robot import wrist_servo as _ws
+    monkeypatch.setitem(_ws.TILT_MAX_DEG, 'mouse', 60.0)           # these tests are about the lean MECHANICS with a mouse as the sample object, not about the per-class limits
     world.guarded, world.ik_calls = [], []
     monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: list(GRASP_QUAT))
 
@@ -290,7 +292,7 @@ def tilt_world(node, world, monkeypatch):
     monkeypatch.setattr(node, '_solve_goal_joints', fake_ik)
     monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False: (world.guarded.append(label) or True))
     yield world
-    set_params(node, approach_tilt_deg=0.0, retry_tilt_deg=0.0, tilt_azimuth_deg=-1.0)
+    set_params(node, approach_tilt_deg=0.0, retry_tilt_deg=0.0, tilt_azimuth_deg=-1.0, tilt_cap_deg=30.0)
 
 
 def vertical_grasp_move(node, world):
@@ -448,3 +450,73 @@ def test_when_the_flip_has_no_solution_either_it_falls_back_to_straight_down(nod
     set_params(node, approach_tilt_deg=15.0, tilt_azimuth_deg=90.0)
     assert run_pick(node) is True
     assert len(tilt_world.ik_calls) == 2 and tilt_world.guarded == []
+
+
+# ── the lean limits: per object class, a configurable cap (default 30), a hard code limit (60) ──────────────────────────
+def test_the_lean_is_limited_per_class_and_by_the_cap(node, tilt_world, monkeypatch):
+    from thesis_robot import wrist_servo as _ws
+    monkeypatch.setitem(_ws.TILT_MAX_DEG, 'mouse', 10.0)             # the real limit (the fixture relaxed it for the mechanics tests)
+    set_params(node, approach_tilt_deg=45.0, tilt_azimuth_deg=90.0)
+    assert node._tilt_for('cup', (0.4, 0.0), 'cup_00') == (30.0, 90.0)              # the default cap (30) is what was tested live
+    assert node._tilt_for('mouse', (0.4, 0.0), 'mouse_00') == (10.0, 90.0)          # a flat object stays at its own limit whatever is asked
+    assert node._tilt_for('cell phone', (0.4, 0.0), 'p') is None                     # never leaned
+    set_params(node, tilt_cap_deg=45.0)
+    assert node._tilt_for('cup', (0.4, 0.0), 'cup_00') == (45.0, 90.0)              # stepping up: 35, 45, ...
+    assert node._tilt_for('mouse', (0.4, 0.0), 'mouse_00') == (10.0, 90.0)
+    set_params(node, approach_tilt_deg=80.0, tilt_cap_deg=90.0)
+    assert node._tilt_for('cup', (0.4, 0.0), 'cup_00') == (60.0, 90.0)              # the code limit: no parameter goes past it
+
+
+def test_a_tall_object_is_still_never_leaned(node, tilt_world):
+    set_params(node, approach_tilt_deg=45.0, tilt_cap_deg=45.0, tilt_azimuth_deg=90.0)
+    assert node._tilt_for('bottle', (0.4, 0.0), 'bottle_00') is None
+
+
+# ── the ordered (lean, direction) options: another direction, then a smaller lean, before giving up (2026-10-26) ─────────────────────
+def test_the_option_list_prefers_the_asked_lean_then_other_sideways_directions_then_a_smaller_lean(node, tilt_world):
+    set_params(node, tilt_azimuth_deg=-1.0)
+    opts = node._tilt_options(30.0, 90.0)
+    assert opts[:3] == [(30.0, 90.0), (30.0, 270.0), (30.0, 0.0)]                  # the asked direction, the opposite sideways one, then +x
+    assert [o for o in opts[3:]] == [(18.0, 90.0), (18.0, 270.0), (18.0, 0.0)]     # then 0.6 x the lean
+    assert node._tilt_options(12.0, 90.0) == [(12.0, 90.0), (12.0, 270.0), (12.0, 0.0)]       # a small lean has no smaller one to fall back to
+    set_params(node, tilt_azimuth_deg=90.0)
+    assert node._tilt_options(30.0, 90.0) == [(30.0, 90.0), (18.0, 90.0)]           # a direction fixed by the operator is the only one used
+
+
+def test_a_lean_that_has_no_solution_toward_one_side_is_tried_toward_the_other(node, tilt_world, monkeypatch):
+    def ik_only_with_the_body_on_plus_y(position, quat, allow_yaw):
+        tilt_world.ik_calls.append((tuple(round(float(v), 4) for v in position), [round(v, 4) for v in quat], allow_yaw))
+        if position[1] < 0.0:                                                       # azimuth 90 (fingertips lead toward +y) puts the flange behind them at -y: no solution there
+            raise RuntimeError('that pose needs a 3.5 rad single-joint reconfiguration (limit 2.6)')
+        return [0.0] * 7, quat
+    monkeypatch.setattr(node, '_solve_goal_joints', ik_only_with_the_body_on_plus_y)
+    set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=-1.0, tilt_cap_deg=30.0)
+    assert run_pick(node) is True
+    assert tilt_world.guarded == ['tilt in']                                        # it leaned after all, toward another direction
+    tried = [c[0] for c in tilt_world.ik_calls]
+    assert len(tried) >= 2 and tried[0] != tried[-1]                                # more than one pregrasp was tried
+
+
+def test_when_30_degrees_never_works_a_smaller_lean_is_used(node, tilt_world, monkeypatch):
+    from thesis_robot import safety_geometry as _sg
+    sg_reach = _sg.TCP_REACH_M                                                      # the flange sits this far above the fingertips along the tool axis, plus the standoff
+    def ik_small_leans_only(position, quat, allow_yaw):
+        tilt_world.ik_calls.append((tuple(round(float(v), 4) for v in position), [round(v, 4) for v in quat], allow_yaw))
+        # the pregrasp sits TILT_STANDOFF back along the tilted axis: its horizontal offset from the object grows with the lean
+        offset = np.hypot(position[0] - 0.40, position[1])
+        if offset > (sg_reach + 0.10) * np.sin(np.radians(22.0)) + 1e-6:
+            raise RuntimeError('no collision-free IK solution for that pose')
+        return [0.0] * 7, quat
+    monkeypatch.setattr(node, '_solve_goal_joints', ik_small_leans_only)
+    set_params(node, approach_tilt_deg=30.0, tilt_azimuth_deg=90.0, tilt_cap_deg=30.0)
+    assert run_pick(node) is True
+    assert tilt_world.guarded == ['tilt in']                                        # leaned, at the smaller angle (18 deg)
+    offsets = [np.hypot(c[0][0] - 0.40, c[0][1]) for c in tilt_world.ik_calls]
+    assert offsets[0] > offsets[-1]                                                 # the first try was the full lean, the one that worked a smaller one
+
+
+def test_a_neighbour_under_the_gripper_body_rules_out_an_alternative_direction(node, tilt_world):
+    node.latest_scene['bowl_00'] = {'label': 'bowl', 'x': 0.40, 'y': -0.20, 'z': 0.03, 'confidence': 0.9, 'reachable': True, 'stale': False}
+    set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=-1.0, tilt_cap_deg=30.0)
+    pre_blocker = node._body_blocker((0.40, -0.18, 0.40), (0.40, -0.20, 0.30), 'mouse_00')
+    assert pre_blocker == 'bowl'                                                    # the flange would hover over the bowl

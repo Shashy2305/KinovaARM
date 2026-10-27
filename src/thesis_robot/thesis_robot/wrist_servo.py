@@ -19,6 +19,16 @@ OBJECT_HEIGHT_M = {
     'cell phone': 0.01, 'remote': 0.03, 'book': 0.03, 'scissors': 0.02, 'vase': 0.20,
 }
 DEFAULT_HEIGHT_M = 0.06
+# Largest lean of the tool from vertical for a final approach, per object class (deg). Flat objects cannot take a lean: one pad would dip under the table margin (the mouse was refused at 15 deg
+# on 2026-10-09; up to 10 deg held 4/4), a phone is 1 cm thick. A cup body is tall and round: a person holds it from the side, the arm reached 14-15 of 20 table positions at 45-60 deg leaning sideways
+# (docs/ANGLED_APPROACH.md section 7). The global approach_tilt_deg / tilt_cap_deg only LOWER these.
+TILT_MAX_DEG = {'cup': 60.0, 'mug': 60.0, 'bowl': 30.0, 'mouse': 10.0, 'remote': 10.0, 'cell phone': 0.0, 'book': 10.0, 'scissors': 10.0}
+DEFAULT_TILT_MAX_DEG = 15.0
+
+
+def tilt_limit(label):
+    """The most this class may be leaned (deg); 0 = never."""
+    return TILT_MAX_DEG.get(label, DEFAULT_TILT_MAX_DEG)
 MIN_RAY_DOWN = 0.2          # |dir_z| below this: ray almost parallel to the table, reject
 
 
