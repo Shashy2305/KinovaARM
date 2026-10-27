@@ -19,6 +19,7 @@ from thesis_robot import outcome_log as ol
 from thesis_robot import grasp_planner as gp
 from thesis_robot import grasp_policy as gpol
 from thesis_robot import angled_approach as aa
+from thesis_robot import grasp_options as go
 from thesis_robot import safety_geometry as sg
 from thesis_robot import trajectory_smoothing as ts
 from thesis_robot import wrist_servo as ws
@@ -100,6 +101,10 @@ class ArmControllerNode(Node):
         # so the gripper body shifts away from it, +y first: the study found +-y the most reachable).
         self.declare_parameter('approach_tilt_deg', 0.0)           # 0 = straight down. A lean is OFF until the place leans like the pick (2026-10-26: a cup gripped on a 30 deg lean and carried upright was dropped by the straight set-down)
         self.declare_parameter('retry_tilt_deg', 0.0)
+        # Side grasp (grasp_options.py, docs/demonstrations/cup_side_grasp_2026-10-26): the tool horizontal, the pads across the object just under its rim, the object stays upright, like a person
+        # holding a cup. 'off' = never (the default until it has been watched live); 'auto' = ranked against straight-down and the lean by clearance to the neighbours, the handle and past outcomes
+        # (tall enough objects only); 'only' = side or nothing (for testing).
+        self.declare_parameter('side_grasp', 'off')
         self.declare_parameter('tilt_azimuth_deg', -1.0)
         self.declare_parameter('tilt_cap_deg', 30.0)             # the highest lean ever asked for, whatever approach_tilt_deg says (30 = the live-tested limit; step up: 35, 45); never above TILT_HARD_MAX_DEG
         self.declare_parameter('collect_training_samples', True)  # save a labelled wrist frame before each descent, keep it if the pick succeeds
@@ -354,9 +359,17 @@ class ArmControllerNode(Node):
         # is derived from the recorded table height, NOT a fixed 0.08 (which
         # put the fingertips into the table: flange z=0.12 -> tips at ~-0.09).
         geom, _ = sg.load_geometry()
-        rx = max(sg.PLAN_X_RANGE[0], min(sg.PLAN_X_RANGE[1], rx))
-        ry = max(sg.PLAN_Y_RANGE[0], min(sg.PLAN_Y_RANGE[1], ry))
+        x_range, y_range = sg.PLAN_X_RANGE, sg.PLAN_Y_RANGE
         floor_z = sg.flange_floor_z(geom)
+        if cartesian and not (self.dry_run or self.moveit2 is None):
+            # a straight-line move keeps the tool's orientation: with the tool leaning or horizontal (side grasp) the pads hang less far below the flange
+            qx, qy, _qz, _qw = self._actual_tool_quat()
+            axis_z = 1.0 - 2.0 * (qx * qx + qy * qy)
+            floor_z = min(floor_z, sg.flange_floor_for_axis_z(geom, axis_z))
+            if axis_z > -0.5:                      # horizontal-ish tool (side grasp): the flange is ~0.3 m behind the object, which is what the planner ranges are for
+                x_range, y_range = go.FLANGE_X_RANGE, go.FLANGE_Y_RANGE
+        rx = max(x_range[0], min(x_range[1], rx))
+        ry = max(y_range[0], min(y_range[1], ry))
         if min_flange_z is not None:
             floor_z = min(floor_z, min_flange_z)       # only ever LOWERS the floor, for a pick's straight descent
         ceiling = 0.50 if max_flange_z is None else max(0.50, max_flange_z)   # only a pick's hover over a tall object goes higher
@@ -745,6 +758,7 @@ class ArmControllerNode(Node):
         failed step fails the pick; if the wrist cannot see the object the arm does NOT descend. A grip that
         closes on air or loses the object on the lift is retried once (the object is looked up again)."""
         self._tried_rho = []                          # closing directions tried so far, relative to the object
+        self._tried_methods = []                      # grasp methods tried so far (a retry prefers another)
         for attempt in (1, 2):
             pos = self._lookup_object(object_id)
             if pos is None:
@@ -883,7 +897,7 @@ class ArmControllerNode(Node):
                 return True
             return False
 
-        def fingers_clear():
+        def fingers_clear_body():
             """The open fingers span ~19 cm along the closing axis. If a neighbour is in that sweep, first try
             narrowing the opening to the object's width; then turn the wrist 90 degrees (and centre again); if it
             still is blocked, do not descend."""
@@ -933,12 +947,118 @@ class ArmControllerNode(Node):
             return self._move_to(centred['xy'][0], centred['xy'][1], grasp_z, cartesian=True, min_flange_z=low_floor)
 
         tilt_state = {'on': None}                       # {'tilt', 'az', 'pre', 'grasp'} once the tool is leaning
+        plan = {'order': None, 'sweep_skipped_done': False}   # the ranked grasp methods of this attempt (choose_method), best first
+
+        def handle_bearing():
+            """Base-frame bearing (deg) of the object's handle from its centre, from the wrist image, or None (no handle / not measured)."""
+            try:
+                got = self._shape_now(label, centred['xy'])
+                handle = got[0].get('handle') if got else None
+                if not handle:
+                    return None
+                msg = self._wrist_dets[1]
+                R_bc, _ = self._tf_pose(BASE_LINK, msg['frame_id'], msg.get('stamp'))
+                b = math.radians(float(handle['bearing_deg']))
+                v = np.asarray(R_bc) @ [math.cos(b), math.sin(b), 0.0]
+                return math.degrees(math.atan2(v[1], v[0])) % 360.0
+            except Exception:
+                return None
+
+        def choose_method():
+            """Rank the ways to grasp THIS object, here, now: from the side, straight down, leaning. With side_grasp off nothing changes."""
+            mode = str(self.get_parameter('side_grasp').value)
+            if mode == 'off' or self.dry_run or self.moveit2 is None:
+                return True
+            obstacles = self._scene_obstacles(exclude_id=object_id)
+            top_sweep = ws.finger_sweep_blocker(
+                centred['xy'], self._closing_axis_xy() or (1.0, 0.0), self._scene_obstacles(exclude_id=object_id, min_height=max(0.0, tip_over_table)),
+                same_object_m=float(self.get_parameter('sweep_same_object_m').value), half_span=float(self.get_parameter('sweep_half_span_m').value),
+                margin=float(self.get_parameter('sweep_margin_m').value))
+            try:
+                records = ol.read_records(ol.DEFAULT_DIR)
+            except Exception:
+                records = ()
+            hb = handle_bearing()
+            tried = list(getattr(self, '_tried_methods', []))
+            ranked = go.rank_methods(label, centred['xy'], geom['table_top_z'], obstacles, None if top_sweep else 0.05, self._tilt_for(label, centred['xy'], object_id) is not None,
+                                     side_mode=mode, handle_bearing_deg=hb, records=records, same_object_m=float(self.get_parameter('sweep_same_object_m').value),
+                                     width_m=getattr(self, '_shape_width_m', None), avoid_methods=tried[-1:] if int(getattr(self, '_pick_attempt', 1)) >= 2 else ())
+            if not ranked:
+                return self._refuse(f'pick: no way to grasp the {label} here (side grasp only, and none fits)')
+            plan['order'] = ranked
+            self.get_logger().info('pick: grasp methods ranked: ' + ', '.join(
+                f'{o["method"]}' + (f' az {o["az"]:.0f}' if 'az' in o else '') + f' ({o["score"]:.2f})' for o in ranked[:6])
+                + (f'; handle toward {hb:.0f} deg' if hb is not None else '') + (f'; the open fingers would sweep the {top_sweep} from above' if top_sweep else ''))
+            self._log_event('grasp_methods', ranked=[{k: o[k] for k in ('method', 'az', 'score') if k in o} for o in ranked[:8]], handle=None if hb is None else round(hb, 0),
+                            top_sweep=top_sweep)
+            self._log_note(method=ranked[0]['method'])
+            return True
+
+        def check_fingers():
+            return fingers_clear_body()
+
+        def fingers_clear():
+            """The open-finger sweep check of a top-down / leaning approach. Skipped when the best method is the side grasp (the fingers do not come down around the object); it runs
+            later if the pick falls back to top-down."""
+            if plan['order'] and plan['order'][0]['method'] == 'side':
+                return True
+            plan['sweep_skipped_done'] = True
+            return check_fingers()
+
+        def descend_side(az):
+            """Side grasp toward azimuth az. True = done, False = it moved and failed, None = no solution (nothing moved, try the next option)."""
+            pad_z = go.side_pad_z(label, geom['table_top_z'])
+            high, pre, grasp_fl, axis = go.side_poses(centred['xy'], pad_z, az)
+            if not all(go.flange_inside(p) for p in (high, pre, grasp_fl)):
+                self.get_logger().info(f'pick: side grasp toward {az:.0f}: the flange would leave the table side of the base')
+                return None
+            goal, flipped, why = None, False, None
+            for flip in (False, True):
+                try:
+                    goal, _q = self._solve_goal_joints([float(v) for v in high], go.side_quat(az, flip), False)
+                    flipped = flip
+                    break
+                except Exception as e:
+                    why = e
+            if goal is None:
+                self.get_logger().info(f'pick: side grasp toward {az:.0f}: no IK solution ({why})')
+                return None
+            self.get_logger().info(f'pick: side grasp toward azimuth {az:.0f}: pads at z={pad_z:.3f} just under the rim' + (' (wrist turned 180 deg)' if flipped else ''))
+            self._log_event('tilt', tilt=round(go.SIDE_TILT_DEG, 1), az=round(az, 1), flipped=flipped, asked=round(go.SIDE_TILT_DEG, 1), side=True)
+            if not self._guarded_move(geom, 'side: swing to the high pre-pose', joint_positions=goal):
+                return False
+            tilt_state['on'] = {'tilt': go.SIDE_TILT_DEG, 'az': az, 'pre': pre, 'grasp': grasp_fl, 'side': True}
+            return (self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), 'side: down beside the object', min_flange_z=float(pre[2]) - 0.02)
+                    and self._move_verified(float(grasp_fl[0]), float(grasp_fl[1]), float(grasp_fl[2]), 'side: in around the object', min_flange_z=float(grasp_fl[2]) - 0.02))
 
         def descend():
-            plan = self._tilt_for(label, centred['xy'], object_id) if not (self.dry_run or self.moveit2 is None) else None
-            if plan is None:
+            order = plan['order']
+            if not order:
+                return descend_legacy()
+            for opt in order:
+                if opt['method'] == 'side':
+                    got = descend_side(opt['az'])
+                    if got is not None:
+                        self._tried_methods = list(getattr(self, '_tried_methods', [])) + ['side']
+                        self._log_note(method='side', side_az=opt['az'])
+                        return got
+                    continue
+                if plan['order'][0]['method'] == 'side' and not plan['sweep_skipped_done']:
+                    plan['sweep_skipped_done'] = True
+                    if not check_fingers():
+                        return False
+                self._tried_methods = list(getattr(self, '_tried_methods', [])) + [opt['method']]
+                self._log_note(method=opt['method'])
+                return descend_legacy(force_top=opt['method'] == 'top')
+            if str(self.get_parameter('side_grasp').value) == 'only':
+                return self._refuse(f'pick: no side grasp of the {label} is reachable from here')
+            return descend_legacy()
+
+        def descend_legacy(force_top=False):
+            tplan = self._tilt_for(label, centred['xy'], object_id) if not (force_top or self.dry_run or self.moveit2 is None) else None
+            if tplan is None:
                 return descend_vertical()
-            tilt0, az0 = plan
+            tilt0, az0 = tplan
             quat0 = self._actual_tool_quat()
             chosen, reasons = None, []
             # An ordered list of (lean, direction) options, the first that has an IK solution wins: the asked lean toward the chosen direction, then the other directions the reach study found
@@ -996,6 +1116,9 @@ class ArmControllerNode(Node):
             t = tilt_state['on']
             if t is None:
                 return self._move_to(centred['xy'][0], centred['xy'][1], grasp_z + 0.03, cartesian=True)
+            if t.get('side'):                                                       # held at its side: straight UP (backing out along the axis would drag it over the table)
+                _, here = self._tf_pose(BASE_LINK, EE_LINK)
+                return self._move_to(float(here[0]), float(here[1]), float(here[2]) + 0.03, cartesian=True)
             return self._move_to(float(t['pre'][0]), float(t['pre'][1]), float(t['pre'][2]), cartesian=True,
                                  min_flange_z=float(t['grasp'][2]) - 0.02)            # straight back up the tool axis
 
@@ -1015,6 +1138,7 @@ class ArmControllerNode(Node):
             ('hover',        lambda: self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z)),
             ('turn the fingers away from any handle', lambda: self._align_for_handle(label, (ox, oy))),
             ('centre on the object (wrist camera)', center),
+            ('choose how to grasp it', choose_method),
             ('check the open fingers are clear of its neighbours', fingers_clear),
             ('record the grasp direction', lambda: self._record_grasp_axis(label, centred['xy'])),
             ('descend',      descend),
@@ -1609,7 +1733,10 @@ class ArmControllerNode(Node):
         it to the height it stood at when it was picked, open the gripper, back straight up.
         Every move is a guarded cartesian move; any failure stops with the object still held."""
         geom, _ = sg.load_geometry()
-        floor = sg.flange_floor_z(geom)
+        # held with the tool leaning or horizontal (a leaned / side grasp): the pads hang less far below the flange, so the flange may go lower (same as _move_to for a straight-line move)
+        held_tilt = float((self._held or {}).get('tilt', 0.0) or 0.0)
+        cos_t = max(0.0, math.cos(math.radians(held_tilt)))
+        floor = sg.flange_floor_for_axis_z(geom, -cos_t) if held_tilt > 0.0 else sg.flange_floor_z(geom)
         if self.dry_run or self.moveit2 is None:
             where = 'here' if here or x is None else f'({float(x):.3f},{float(y):.3f})'
             self.get_logger().info(f'  [DRY RUN] place {where}')
@@ -1641,7 +1768,7 @@ class ArmControllerNode(Node):
         # A low object was grasped below the normal fingertip floor (low_pick_tip_clearance_m); put it
         # down at the same height, not 2-3 cm above the table.
         tip_clear = float(self.get_parameter('low_pick_tip_clearance_m').value)
-        low_floor = min(floor, geom['table_top_z'] + sg.TCP_REACH_M + tip_clear) if geom else floor
+        low_floor = min(floor, geom['table_top_z'] + sg.TCP_REACH_M * cos_t + tip_clear) if geom else floor
         set_z = max(low_floor, grasp_z + self.SET_DOWN_GAP_M)
         # Closed on the object the pad frames hang lower than they did when the fingers were open at the pick
         # (about 2 cm), so the pick's height can put them under the table margin (it refused by 1 mm with a mouse).

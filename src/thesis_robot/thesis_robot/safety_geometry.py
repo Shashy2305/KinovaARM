@@ -134,6 +134,14 @@ def flange_floor_z(geom):
     return geom['table_top_z'] + TCP_REACH_M + TCP_CLEARANCE_M
 
 
+def flange_floor_for_axis_z(geom, axis_z):
+    """Lowest allowed flange z when the tool axis (flange -> fingertips) has this z component (-1 = straight down, 0 = horizontal): the pad frames must stay LINK_TABLE_CLEARANCE_M over
+    the table, and they hang TCP_REACH_M * (-axis_z) below the flange. Equal to flange_floor_z for a vertical tool."""
+    if geom is None:
+        return FALLBACK_FLANGE_Z_MIN
+    return geom['table_top_z'] + LINK_TABLE_CLEARANCE_M + TCP_REACH_M * max(0.0, -float(axis_z))
+
+
 def collision_boxes(geom):
     """[(id, (dx, dy, dz), (cx, cy, cz))] in base_link for MoveIt's scene."""
     x0 = max(SLAB_X_MIN, geom['x'][0])

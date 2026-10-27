@@ -524,3 +524,112 @@ def test_a_neighbour_under_the_gripper_body_rules_out_an_alternative_direction(n
     set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=-1.0, tilt_cap_deg=30.0)
     pre_blocker = node._body_blocker((0.40, -0.18, 0.40), (0.40, -0.20, 0.30), 'mouse_00')
     assert pre_blocker == 'bowl'                                                    # the flange would hover over the bowl
+
+
+# ---- the side grasp (grasp_options.py) ---------------------------------------------------------------------------------------------------------
+@pytest.fixture
+def side_world(node, tilt_world, monkeypatch):
+    """A cup on the table (the fake wrist sees 'a mouse' whatever the label: only the sequence matters), the side grasp switched on."""
+    from rclpy.parameter import Parameter
+    tilt_world.node.latest_scene = {'cup_00': {'label': 'cup', 'x': 0.40, 'y': 0.0, 'z': 0.045, 'confidence': 0.95, 'reachable': True, 'stale': False}}
+    monkeypatch.setattr(acn.ol, 'read_records', lambda *a, **k: [])
+    node.set_parameters([Parameter('side_grasp', Parameter.Type.STRING, 'auto')])
+    yield tilt_world
+    node.set_parameters([Parameter('side_grasp', Parameter.Type.STRING, 'off')])
+
+
+def run_cup_pick(node):
+    return node._pick('cup_00', 0.35)
+
+
+def test_with_the_side_grasp_off_a_cup_is_picked_exactly_as_before(node, tilt_world, monkeypatch):
+    tilt_world.node.latest_scene = {'cup_00': {'label': 'cup', 'x': 0.40, 'y': 0.0, 'z': 0.045, 'confidence': 0.95, 'reachable': True, 'stale': False}}
+    set_params(node, approach_tilt_deg=0.0)
+    assert run_cup_pick(node) is True
+    assert tilt_world.guarded == [] and tilt_world.ik_calls == [] and tilt_world.verified == []
+
+
+def test_a_side_pick_swings_to_the_high_pre_pose_comes_down_beside_the_cup_and_goes_in(node, side_world):
+    from thesis_robot import grasp_options as go
+    assert run_cup_pick(node) is True
+    assert side_world.guarded == ['side: swing to the high pre-pose']
+    (pos, quat, flip), = side_world.ik_calls
+    az = go.AZIMUTHS and node._held['az']
+    pad_z = go.side_pad_z('cup', TABLE['table_top_z'])
+    high, pre, grasp, a = go.side_poses((0.40, 0.0), pad_z, az)
+    assert np.allclose(pos, high, atol=2e-3) and np.allclose(quat, go.side_quat(az), atol=1e-3)
+    # straight down to the pre pose, then straight in to the grasp (both verified moves)
+    assert [v[3] for v in side_world.verified] == ['side: down beside the object', 'side: in around the object']
+    assert np.allclose(side_world.verified[0][:3], pre, atol=2e-3) and np.allclose(side_world.verified[1][:3], grasp, atol=2e-3)
+    assert np.allclose(side_world.verified[0][:2], high[:2], atol=2e-3)          # the descent is vertical
+
+
+def test_a_side_pick_lifts_straight_up_with_the_tool_still_horizontal_and_records_what_the_place_needs(node, side_world):
+    from thesis_robot import grasp_options as go
+    assert run_cup_pick(node) is True
+    carts = [m for m in side_world.moves if m[3] == 'cart']
+    assert carts and all(m[3] == 'cart' for m in side_world.moves[-2:])           # the lifts are cartesian: they keep the orientation
+    held = node._held
+    assert held['tilt'] == pytest.approx(go.SIDE_TILT_DEG) and held['label'] == 'cup'
+    pad_z = go.side_pad_z('cup', TABLE['table_top_z'])
+    _h, _p, grasp, _a = go.side_poses((0.40, 0.0), pad_z, held['az'])
+    assert held['grasp_z'] == pytest.approx(grasp[2], abs=2e-3) and held['grasp_z'] < 0.15       # the FLANGE height of a horizontal tool: far lower than a vertical grasp (0.26)
+
+
+def test_the_side_azimuth_avoids_a_neighbour_behind_the_cup(node, side_world):
+    # the neighbour stands 14 cm to +y: coming from +y (fingertips toward -y, az 270) would put the gripper on it
+    node.latest_scene['cup_01'] = {'label': 'cup', 'x': 0.40, 'y': 0.14, 'z': 0.045, 'confidence': 0.95, 'reachable': True, 'stale': False}
+    assert run_cup_pick(node) is True
+    assert node._held['az'] != 270.0
+    assert node._held['az'] in (90.0, 270.0, 0.0, 45.0, 135.0, 180.0, 225.0, 315.0)
+
+
+def test_when_the_ik_has_no_solution_for_the_best_direction_the_next_one_is_used(node, side_world, monkeypatch):
+    from thesis_robot import grasp_options as go
+    calls = []
+
+    def ik(position, quat, allow_yaw):
+        calls.append(tuple(round(float(v), 3) for v in position))
+        if len(calls) <= 2:                                       # first direction: both wrist orientations fail
+            raise RuntimeError('no solution')
+        return [0.0] * 7, quat
+    monkeypatch.setattr(node, '_solve_goal_joints', ik)
+    assert run_cup_pick(node) is True
+    assert len(calls) == 3 and node._held['tilt'] == pytest.approx(go.SIDE_TILT_DEG)
+
+
+def test_when_no_side_direction_has_a_solution_auto_falls_back_to_straight_down_and_only_refuses(node, side_world, monkeypatch):
+    from rclpy.parameter import Parameter
+
+    def ik(position, quat, allow_yaw):
+        raise RuntimeError('no solution')
+    monkeypatch.setattr(node, '_solve_goal_joints', ik)
+    set_params(node, approach_tilt_deg=0.0)
+    assert run_cup_pick(node) is True
+    assert node._held['tilt'] == 0.0 and side_world.guarded == []                 # went straight down
+    node._held = None
+    node.set_parameters([Parameter('side_grasp', Parameter.Type.STRING, 'only')])
+    side_world.moves.clear()
+    assert run_cup_pick(node) is False                                            # 'only' never falls back
+    assert not [m for m in side_world.moves if m[3] == 'cart' and m[2] < 0.3]
+
+
+def test_a_side_swing_that_fails_stops_the_pick_before_anything_closes(node, side_world, monkeypatch):
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False: False)
+    side_world.grippers.clear()
+    assert run_cup_pick(node) is False
+    assert 'close_gripper' not in [g[1] for g in side_world.grippers]
+
+
+def test_the_place_after_a_side_grasp_is_allowed_to_go_that_low_and_keeps_the_orientation(node, side_world, monkeypatch):
+    from thesis_robot import grasp_options as go
+    assert run_cup_pick(node) is True
+    held = dict(node._held)
+    side_world.verified.clear()
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.40, held['az'] and 0.2, side_world.z_flange]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    node._held = held
+    node.latest_scene = {}                                                            # the picked cup is in the gripper, not on the table
+    assert node._place(0.40, -0.1) is True
+    lower = [v for v in side_world.verified if v[3] == 'lower'][0]
+    assert lower[2] == pytest.approx(held['grasp_z'] + node.SET_DOWN_GAP_M, abs=2e-3) and lower[2] < 0.15      # not forced up to the vertical-grasp floor (0.27)

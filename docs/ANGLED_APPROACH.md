@@ -105,3 +105,18 @@ A cup picked on a 30 deg lean was lifted by standing the tool upright, which til
 flange height) then released a tilted cup and it fell. Fix: after a leaned grasp the lean is HELD through the lift and the carry (cartesian moves keep the tool orientation, the
 place already corrects for the flange-to-pad offset), `held['grasp_z']` is the real flange height at the grasp, and `held` also records `tilt` / `az`. The lean default is OFF
 (`approach_tilt_deg: 0.0`) until the leaned carry + put-down has been watched live; then 30, 35, 45 in steps.
+
+## 9. The side grasp and the grasp chooser (2026-10-26)
+
+Shown by hand with the cup (docs/demonstrations/cup_side_grasp_2026-10-26): tool horizontal (5.3 deg below), fingers closing across the cup just under the rim, cup upright. `grasp_options.py`
+builds it for any azimuth (the demonstrated orientation turned about the vertical) and ranks every way to grasp an object: **side** (8 azimuths), **top** (straight down), **lean**.
+
+* Score = preference per class (cup/mug: side 0.9, top 0.6, lean 0.5; others top) x learned factor from the outcome log (`method` on each pick record) + room to the neighbours (the gripper's footprint
+  seen from above: fingers, base, wrist, per azimuth) + sideways-to-the-arm bonus + handle rule (fingertips toward the handle best; a pad on the handle refused). A neighbour in the gripper's footprint
+  rejects an azimuth. On a retry the method that just failed is tried last. Only objects >= 7 cm tall that fit between the open fingers get a side grasp.
+* The IK has the last word: the ranked options are tried in order (both wrist orientations); if no side option has a solution `auto` goes on to top-down, `only` refuses.
+* Motion: swing (joint goal) to the HIGH pre-pose (12 cm above and 12 cm back, so the swing passes over the object) -> straight down -> straight in -> close -> straight UP 3 cm -> straight up to the carry
+  height, orientation held. The held record carries the flange height at the grasp, the lean and the azimuth; the place keeps the orientation and lowers to that height (floors are orientation-aware
+  now: `safety_geometry.flange_floor_for_axis_z`; with a horizontal tool the planner's x/y ranges apply to the object, the flange may be up to 0.3 m behind it).
+* Parameter `side_grasp`: `off` (default) / `auto` / `only`. Reach (scripts/side_grasp_study.py, read-only IK, from the upright hover): 13-14 of 20 grid positions have at least one reachable azimuth
+  (+-y and 45/315 deg best); the rest fall back to top-down.
