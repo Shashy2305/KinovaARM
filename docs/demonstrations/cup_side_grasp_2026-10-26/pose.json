@@ -1,0 +1,73 @@
+{
+ "what": "cup held upright from the SIDE, tool horizontal, fingers across the cup just below the rim (hand-guided by the user 2026-10-26)",
+ "joints_rad": {
+  "joint_1": 1.7189,
+  "joint_2": -2.0382,
+  "joint_4": -1.4528,
+  "joint_5": 2.5704,
+  "joint_3": 1.7004,
+  "joint_6": 1.6056,
+  "joint_7": 3.1373
+ },
+ "joints_deg": {
+  "joint_1": 98.5,
+  "joint_2": -116.8,
+  "joint_4": -83.2,
+  "joint_5": 147.3,
+  "joint_3": 97.4,
+  "joint_6": 92.0,
+  "joint_7": 179.8
+ },
+ "finger_joint": 0.31,
+ "flange_pos": [
+  0.3561,
+  0.2056,
+  0.0881
+ ],
+ "flange_quat_xyzw": [
+  0.7387,
+  -0.0282,
+  0.0167,
+  0.6733
+ ],
+ "tool_axis": [
+  -0.013,
+  -0.996,
+  -0.093
+ ],
+ "tool_below_horizontal_deg": 5.3,
+ "tool_azimuth_deg": 269.2,
+ "pad_mid": [
+  0.3535,
+  0.0134,
+  0.0702
+ ],
+ "pad_gap_m": 0.0833,
+ "closing_axis": [
+  0.998,
+  -0.019,
+  0.063
+ ],
+ "pad_mid_in_flange_frame": [
+  0.0,
+  0.0,
+  0.193
+ ],
+ "detected_cups_in_scene": {
+  "cup_04": [
+   0.365,
+   -0.081,
+   -0.057
+  ],
+  "cup_07": [
+   0.379,
+   0.695,
+   0.108
+  ],
+  "cup_02": [
+   0.468,
+   -0.441,
+   0.119
+  ]
+ }
+}
