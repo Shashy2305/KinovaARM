@@ -301,7 +301,8 @@ def vertical_grasp_move(node, world):
     return [m for m in world.moves if m[3] == 'cart'][0]
 
 
-def test_default_is_straight_down_nothing_leans(node, tilt_world):
+def test_with_the_lean_switched_off_nothing_leans(node, tilt_world):
+    set_params(node, approach_tilt_deg=0.0)                                         # the shipped default is 30 since 2026-10-26; 0 is the off switch
     assert run_pick(node) is True
     assert tilt_world.guarded == [] and tilt_world.ik_calls == []
 

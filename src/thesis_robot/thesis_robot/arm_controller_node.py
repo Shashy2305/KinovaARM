@@ -98,7 +98,7 @@ class ArmControllerNode(Node):
         # retry_tilt_deg: the same, but only for a RETRY after a failed grip (a genuinely different entry).
         # tilt_azimuth_deg: which way the fingertips lead (0 = +x, 90 = +y, 270 = -y); -1 = automatic (lean toward the nearest neighbour,
         # so the gripper body shifts away from it, +y first: the study found +-y the most reachable).
-        self.declare_parameter('approach_tilt_deg', 0.0)
+        self.declare_parameter('approach_tilt_deg', 30.0)          # 2026-10-26: cups come in leaning 30 deg (a person's grip) instead of straight down; flat objects are limited by class, tall ones never lean; 0 = off
         self.declare_parameter('retry_tilt_deg', 0.0)
         self.declare_parameter('tilt_azimuth_deg', -1.0)
         self.declare_parameter('tilt_cap_deg', 30.0)             # the highest lean ever asked for, whatever approach_tilt_deg says (30 = the live-tested limit; step up: 35, 45); never above TILT_HARD_MAX_DEG
