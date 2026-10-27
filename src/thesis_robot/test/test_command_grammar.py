@@ -111,3 +111,18 @@ def test_side_check_and_build():
     # coordinates are accepted when they really lie on that side: the bowl is at (0.32, 0.28), left is -y
     assert cg.check(i, [plan[0], {'action': 'place', 'x': 0.32, 'y': 0.12}], SCENE)[0]
     assert not cg.check(i, [plan[0], {'action': 'place', 'x': 0.32, 'y': 0.44}], SCENE)[0]
+
+
+def test_put_the_named_object_back_or_down_is_a_put_down_2026_10_26():
+    """"put the cup back on the table" was not recognised: nothing verified the model's plan and a lone go_home was approved while the cup was still in the gripper."""
+    for text in ('put the cup back on the table', 'put the cup down', 'put the mouse back', 'set the cup down on the table', 'place the cup back on the desk', 'put it back', 'put it down'):
+        intent = cg.parse(text)
+        assert intent is not None and intent['kind'] == 'put_down', text
+    # a put with a destination is still a different intent, and unrelated commands are untouched
+    assert cg.parse('put the cup next to the mouse')['kind'] == 'pick_place_near'
+    assert cg.parse('pick up the cup')['kind'] == 'pick' and cg.parse('go home')['kind'] == 'go_home'
+    # the verifier now rejects what happened live: a lone go_home for a put-back
+    ok, why = cg.check(cg.parse('put the cup back on the table'), [{'action': 'go_home'}], {})
+    assert not ok
+    ok, why = cg.check(cg.parse('put the cup back on the table'), [{'action': 'place', 'here': True}], {})
+    assert ok

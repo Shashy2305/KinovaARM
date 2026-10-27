@@ -53,7 +53,9 @@ def _o(group):
 
 PATTERNS = [
     ('go_home', re.compile(r'^(?:(?:go|return|come|move|send it|bring it|get|take it)(?: it| the arm| back)*(?: to)?(?: the)? )?home(?: position)?$')),
-    ('put_down', re.compile(r"^(?:put|set|place)(?: it| that| this| the object)? (?:down|back)$|^(?:release|let go of)(?: it| that)?$|^drop it$")),
+    # "put it down", "put the cup back on the table" (2026-10-26: the second was not recognised, nothing checked the model's plan and a lone go_home was approved with the cup still in the gripper)
+    ('put_down', re.compile(r"^(?:put|set|place)(?: it| that| this| the object| the [a-z]+(?: [a-z]+)?)? (?:down|back)(?: down)?(?: (?:on|onto|at|in) (?:the )?(?:table|desk|surface|same place|same spot))?$"
+                            r"|^(?:release|let go of)(?: it| that)?$|^drop it$")),
     ('pick_place_side', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + SIDE + r' ' + _o('b') + r'$')),
     ('pick_place_side', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + SIDE + r' ' + _o('b') + r'$')),
     ('pick_place_near', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEXT_TO + r' ' + _o('b') + r'$')),

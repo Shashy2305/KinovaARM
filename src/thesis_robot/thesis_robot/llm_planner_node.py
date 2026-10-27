@@ -684,8 +684,8 @@ class LLMPlannerNode(Node):
                     self.get_logger().warn(f'planner memory failed: {e}')
             held_line = ''
             if self._held:
-                held_line = (f"THE GRIPPER IS HOLDING the {self._held.get('label')} ({self._held.get('object_id')}) RIGHT NOW. Do not pick it up again and do not pick anything else: "
-                             f"use only place steps (or go_home).\n\n")
+                held_line = (f"THE GRIPPER IS HOLDING the {self._held.get('label')} ({self._held.get('object_id')}) RIGHT NOW. Never output a pick step. If the command is to put it down, "
+                             f"put it back or place it somewhere, the plan is the place step the command asks for (put it down or back = one place with here=true). Output go_home only if the command says so.\n\n")
             user_msg = (
                 f"CURRENT WORLD STATE:\n"
                 f"{json.dumps(prompt_scene, indent=2)}\n\n"
