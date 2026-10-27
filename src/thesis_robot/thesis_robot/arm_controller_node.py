@@ -98,7 +98,7 @@ class ArmControllerNode(Node):
         # retry_tilt_deg: the same, but only for a RETRY after a failed grip (a genuinely different entry).
         # tilt_azimuth_deg: which way the fingertips lead (0 = +x, 90 = +y, 270 = -y); -1 = automatic (lean toward the nearest neighbour,
         # so the gripper body shifts away from it, +y first: the study found +-y the most reachable).
-        self.declare_parameter('approach_tilt_deg', 30.0)          # 2026-10-26: cups come in leaning 30 deg (a person's grip) instead of straight down; flat objects are limited by class, tall ones never lean; 0 = off
+        self.declare_parameter('approach_tilt_deg', 0.0)           # 0 = straight down. A lean is OFF until the place leans like the pick (2026-10-26: a cup gripped on a 30 deg lean and carried upright was dropped by the straight set-down)
         self.declare_parameter('retry_tilt_deg', 0.0)
         self.declare_parameter('tilt_azimuth_deg', -1.0)
         self.declare_parameter('tilt_cap_deg', 30.0)             # the highest lean ever asked for, whatever approach_tilt_deg says (30 = the live-tested limit; step up: 35, 45); never above TILT_HARD_MAX_DEG
@@ -1000,9 +1000,13 @@ class ArmControllerNode(Node):
                                  min_flange_z=float(t['grasp'][2]) - 0.02)            # straight back up the tool axis
 
         def lift_full():
-            if tilt_state['on'] is not None:                                        # stand the tool upright over the object, at the lift height
-                tilt_state['on'] = None
-                return self._move_to(centred['xy'][0], centred['xy'][1], lift_z, max_flange_z=ws.HOVER_MAX_Z)
+            t = tilt_state['on']
+            if t is not None:
+                # Keep the lean. Standing the tool upright would tilt the object in the fingers by the same angle (2026-10-26: the cup was carried
+                # 30 deg tilted and the straight set-down dropped it). Straight up from where the grip is, orientation held (cartesian moves hold it),
+                # so the object stays level and the place can put it down the same way it was picked.
+                _, here = self._tf_pose(BASE_LINK, EE_LINK)
+                return self._move_to(float(here[0]), float(here[1]), lift_z + (float(t['grasp'][2]) - grasp_z), cartesian=True, max_flange_z=ws.HOVER_MAX_Z)
             return self._move_to(centred['xy'][0], centred['xy'][1], lift_z, cartesian=True, max_flange_z=ws.HOVER_MAX_Z)
 
         steps = [
@@ -1035,7 +1039,11 @@ class ArmControllerNode(Node):
                 self._training('discard')
                 self._log_end(False, name)
                 return False, name
-        self._set_held({'label': label, 'object_id': object_id, 'grasp_z': grasp_z})
+        lean = tilt_state['on']
+        # grasp_z: the FLANGE height at the grasp. On a lean the flange sits lower than for a straight grasp (the fingertips are TCP_REACH_M along the leaning tool).
+        self._set_held({'label': label, 'object_id': object_id,
+                        'grasp_z': float(lean['grasp'][2]) if lean else grasp_z,
+                        'tilt': float(lean['tilt']) if lean else 0.0, 'az': float(lean['az']) if lean else 0.0})
         self._training('commit', label=label)
         self._log_end(True)
         return True, None

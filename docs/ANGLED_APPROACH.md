@@ -98,3 +98,10 @@ So the practical rules: lean flat objects (mouse) up to ~10 deg, cups up to the 
   The descent now tries an ORDERED list of options (`_tilt_options`): the asked lean toward the chosen direction, the other sideways direction, +x, then 0.6 x the lean; the first with an IK solution wins; the body must not be over a neighbour
   (`_body_blocker`); a direction fixed with `tilt_azimuth_deg` is the only one used. The `tilt` event now also logs `asked`.
 * Held object: the arm controller publishes `/gripper_held`; the planner drops a pick of what is already held ("put the cup back on the table" was planned as pick + place, the pick refused).
+
+## 8. The drop on the put-down (2026-10-26) and the fix
+
+A cup picked on a 30 deg lean was lifted by standing the tool upright, which tilted the cup 30 deg in the fingers; the straight set-down (height taken from the vertical-grasp
+flange height) then released a tilted cup and it fell. Fix: after a leaned grasp the lean is HELD through the lift and the carry (cartesian moves keep the tool orientation, the
+place already corrects for the flange-to-pad offset), `held['grasp_z']` is the real flange height at the grasp, and `held` also records `tilt` / `az`. The lean default is OFF
+(`approach_tilt_deg: 0.0`) until the leaned carry + put-down has been watched live; then 30, 35, 45 in steps.

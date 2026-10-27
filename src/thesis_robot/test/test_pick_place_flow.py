@@ -307,7 +307,7 @@ def test_with_the_lean_switched_off_nothing_leans(node, tilt_world):
     assert tilt_world.guarded == [] and tilt_world.ik_calls == []
 
 
-def test_a_tilted_pick_goes_tilt_in_then_down_the_axis_back_up_it_and_stands_upright(node, tilt_world):
+def test_a_tilted_pick_goes_tilt_in_then_down_the_axis_back_up_it_and_carries_on_leaning(node, tilt_world):
     # reference: where the vertical grasp puts the flange
     set_params(node, approach_tilt_deg=0.0)
     ref = vertical_grasp_move(node, tilt_world)
@@ -322,9 +322,12 @@ def test_a_tilted_pick_goes_tilt_in_then_down_the_axis_back_up_it_and_stands_upr
     # descend along the tool axis: the fingertips arrive exactly where the vertical grasp would have put them
     assert np.allclose(aa.tip_for_flange(carts[0][:3], axis), [0.40, 0.0, tip_z], atol=2e-3)
     assert carts[0][1] < 0.0 < pre[2] and carts[0][2] < ref[2]                      # the flange sits BEHIND the tips, lower than a vertical grasp
-    # after closing: straight back up the axis to the pregrasp, then upright over the object at the lift height (a PTP)
+    # after closing: straight back up the axis to the pregrasp, then straight UP with the lean held (cartesian): standing the tool upright would tilt the object in the fingers
     assert np.allclose(carts[1][:3], pre, atol=2e-3)
-    assert tilt_world.moves[-1][3] == 'ptp' and tilt_world.moves[-1][:2] == (0.4, 0.0)
+    assert tilt_world.moves[-1][3] == 'cart' and tilt_world.moves[-1][2] > pre[2] - 0.05
+    # what the place needs: the FLANGE height at the grasp (lower than a vertical grasp) and the lean
+    assert node._held['grasp_z'] == pytest.approx(grasp[2], abs=2e-3) and node._held['grasp_z'] < ref[2]
+    assert node._held['tilt'] == pytest.approx(20.0) and node._held['az'] == pytest.approx(90.0)
     names = [g[1] for g in tilt_world.grippers]
     assert names.index('close_gripper') > 0 and names[-1] == 'close_gripper'
 

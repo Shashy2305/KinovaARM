@@ -9,7 +9,7 @@ arm_controller:
     grasp_policy: false              # bias that ranking by past outcomes (grasp_policy.py)
     use_shape_width: false           # preshape from the measured width
     # angled approach (docs/ANGLED_APPROACH.md)
-    approach_tilt_deg: 30.0          # lean the tool up to this far from vertical (cups 30, flat objects their own lower limit, never tall objects); 0 = always straight down. Cap: tilt_cap_deg (default 30)
+    approach_tilt_deg: 0.0           # lean the tool up to this far from vertical; 0 = straight down. OFF again 2026-10-26: a cup gripped on a lean is carried upright, i.e. TILTED in the gripper, and the straight set-down dropped it. Back on when the place leans again like the pick
     retry_tilt_deg: 0.0
     tilt_azimuth_deg: -1.0           # -1 = automatic
     # unknown obstacles from depth
