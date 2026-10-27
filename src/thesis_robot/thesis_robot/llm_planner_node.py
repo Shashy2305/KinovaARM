@@ -360,6 +360,10 @@ def check_holding(plan, held, original_plan=None):
     if not held:
         return True, ''
     name = held.get('label') or 'something'
+    # go_home turns the wrist to the home pose (the tool points forward and UP): with a cup in the gripper that is how the cup ended up upside down 63 cm in the air on 2026-10-26, and the place
+    # routine (which expects a tool pointing down) could not finish. Put it down first.
+    if isinstance(plan, list) and any(isinstance(st, dict) and st.get('action') == 'go_home' for st in plan):
+        return False, f'the gripper is holding the {name}: say "put it down" first (going home would turn the {name} upside down)'
     if isinstance(plan, list) and any(isinstance(st, dict) and st.get('action') == 'pick' for st in plan):
         return False, f'the gripper is holding the {name}: say "put it down" first, then pick the other object'
     if isinstance(plan, list) and not plan and original_plan:

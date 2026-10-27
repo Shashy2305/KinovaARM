@@ -41,6 +41,14 @@ def test_a_command_that_was_only_a_pick_of_what_is_held_has_nothing_left():
 
 
 def test_other_steps_are_untouched():
-    plan = [{'action': 'go_home'}, {'action': 'place', 'here': True}]
+    plan = [{'action': 'move_to', 'x': 0.45, 'y': 0.0, 'z': 0.45}, {'action': 'place', 'here': True}]
     assert drop_pick_of_held([dict(s) for s in plan], HELD_CUP, SCENE) == plan
     assert check_holding(plan, HELD_CUP, original_plan=plan) == (True, '')
+
+
+def test_go_home_is_refused_while_something_is_held_2026_10_26():
+    ok, why = check_holding([{'action': 'go_home'}], HELD_CUP, original_plan=[{'action': 'go_home'}])
+    assert not ok and 'put it down' in why and 'upside down' in why
+    assert check_holding([{'action': 'go_home'}], None) == (True, '')                  # nothing held: going home is fine
+    ok, _ = check_holding([{'action': 'place', 'here': True}, {'action': 'go_home'}], HELD_CUP)
+    assert not ok                                                                       # even after a place in the same plan: the place comes first, then say go home
