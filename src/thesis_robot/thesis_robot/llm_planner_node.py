@@ -336,6 +336,37 @@ def plan_covers_command(steps, command):
     return True, ''
 
 
+def drop_pick_of_held(plan, held, scene):
+    """The gripper already holds the object a pick step asks for: the model reads "put the cup back on the table" as "pick the cup, then place it" (2026-10-26: the controller refused the pick
+    because it was holding it, and the whole command failed). Drop such pick steps; the place that follows is exactly what was asked.
+    held: {'label', 'object_id'} or None. scene: the scene snapshot (object id -> dict with 'label')."""
+    if not held or not isinstance(plan, list):
+        return plan
+    hid, hlabel = held.get('object_id'), held.get('label')
+    out = []
+    for st in plan:
+        if isinstance(st, dict) and st.get('action') == 'pick':
+            oid = st.get('object_id')
+            lab = ((scene or {}).get(oid) or {}).get('label') if oid else None
+            if (hid and oid == hid) or (hlabel and lab == hlabel):
+                continue
+        out.append(st)
+    return out
+
+
+def check_holding(plan, held, original_plan=None):
+    """(ok, reason): with something in the gripper a plan may not pick anything else (the controller would refuse it anyway, but only after the planner said OK), and a plan that was ONLY a pick of what
+    is already held has nothing left to do."""
+    if not held:
+        return True, ''
+    name = held.get('label') or 'something'
+    if isinstance(plan, list) and any(isinstance(st, dict) and st.get('action') == 'pick' for st in plan):
+        return False, f'the gripper is holding the {name}: say "put it down" first, then pick the other object'
+    if isinstance(plan, list) and not plan and original_plan:
+        return False, f'the {name} is already in the gripper'
+    return True, ''
+
+
 def normalize_place_here(plan, command):
     """"put it down" / "set it down" / "put it back" with no destination word means: where it was
     picked up. The model tends to invent coordinates for it (it once moved the mug 10 cm), so turn
@@ -523,6 +554,7 @@ class LLMPlannerNode(Node):
         self._scene_time = 0.0
         self.memory = pm.PlannerMemory()
         self._arm_live = None
+        self._held = None            # what the arm controller says the gripper holds ({'label', 'object_id'}) or None
 
         # ── state ────────────────────────────────────────────────────
         self.latest_scene    = {}
@@ -538,6 +570,8 @@ class LLMPlannerNode(Node):
             String, '/voice_command',
             self.command_callback, 10)
         self.create_subscription(String, '/arm_status', self._on_arm_status, 10)
+        from rclpy.qos import DurabilityPolicy, QoSProfile
+        self.create_subscription(String, '/gripper_held', self._on_gripper_held, QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
         # ── publishers ───────────────────────────────────────────────
         self.plan_pub   = self.create_publisher(String, '/action_plan',    10)
@@ -557,6 +591,12 @@ class LLMPlannerNode(Node):
             self._scene_time      = time.time()
         except json.JSONDecodeError:
             pass
+
+    def _on_gripper_held(self, msg):
+        try:
+            self._held = (json.loads(msg.data) or {}).get('held')
+        except ValueError:
+            self._held = None
 
     def _on_arm_status(self, msg):
         """Learn how the last published plan turned out (COMPLETE / FAILED) and whether the arm was live."""
@@ -642,9 +682,14 @@ class LLMPlannerNode(Node):
                     mem_block = self.memory.prompt_block(command, prompt_scene)
                 except Exception as e:
                     self.get_logger().warn(f'planner memory failed: {e}')
+            held_line = ''
+            if self._held:
+                held_line = (f"THE GRIPPER IS HOLDING the {self._held.get('label')} ({self._held.get('object_id')}) RIGHT NOW. Do not pick it up again and do not pick anything else: "
+                             f"use only place steps (or go_home).\n\n")
             user_msg = (
                 f"CURRENT WORLD STATE:\n"
                 f"{json.dumps(prompt_scene, indent=2)}\n\n"
+                + held_line
                 + (f"{mem_block}\n\n" if mem_block else '') +
                 f"ENGINEER COMMAND: \"{command}\"\n\n"
                 f"Reason step by step, then output the JSON."
@@ -738,6 +783,15 @@ class LLMPlannerNode(Node):
             # than trusting the LLM's "z + 0.15" arithmetic (see comment on
             # fix_move_to_heights) — then validate as usual.
             plan = fix_pick_target(plan, self.latest_scene, geom['table_top_z'] if geom else None)
+            plan_before_held = list(plan)
+            plan = drop_pick_of_held(plan, self._held, self.latest_scene)
+            if len(plan) != len(plan_before_held):
+                self.get_logger().info('dropped a pick of the object the gripper already holds')
+            ok_held, why_held = check_holding(plan, self._held, original_plan=plan_before_held)
+            if not ok_held:
+                self.get_logger().warn(f'Plan REJECTED: {why_held}')
+                self._publish_status(f'REJECTED: {why_held}')
+                return
             plan = drop_home_around_pick(plan, command)
             plan = fix_move_to_heights(plan, self.latest_scene, z_floor)
             plan = fix_pick_heights(plan, self.latest_scene, z_floor)

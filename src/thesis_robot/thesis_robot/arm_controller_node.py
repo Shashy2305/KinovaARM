@@ -136,7 +136,7 @@ class ArmControllerNode(Node):
         self.center_max_iter = self.get_parameter('center_max_iter').value
         self.hover_above_m = self.get_parameter('hover_above_m').value
         self.require_wrist_center = self.get_parameter('require_wrist_center').value
-        self._held = None          # {'label', 'object_id', 'grasp_z'} while carrying something
+        self._held = None          # {'label', 'object_id', 'grasp_z'} while carrying something (use _set_held: it tells the planner)
         self._wrist_dets = None    # (monotonic receive time, {frame_id, stamp, detections})
         self._wrist_K = None
         self._tool_quat = list(GRASP_QUAT_XYZW)   # orientation of the last pose move; cartesian moves keep it
@@ -154,6 +154,9 @@ class ArmControllerNode(Node):
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.status_pub    = self.create_publisher(String, '/arm_status',        10)
+        # What the gripper holds, for the planner (it once planned a pick of the cup that was already in the gripper, 2026-10-26). Latched so a planner that starts later still learns it.
+        from rclpy.qos import DurabilityPolicy, QoSProfile
+        self.held_pub = self.create_publisher(String, '/gripper_held', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.pp_status_pub = self.create_publisher(String, '/pick_place_status', 10)
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
         self.create_subscription(String, '/scene_snapshot', self._scene_callback, 10)
@@ -991,7 +994,7 @@ class ArmControllerNode(Node):
                 self._training('discard')
                 self._log_end(False, name)
                 return False, name
-        self._held = {'label': label, 'object_id': object_id, 'grasp_z': grasp_z}
+        self._set_held({'label': label, 'object_id': object_id, 'grasp_z': grasp_z})
         self._training('commit', label=label)
         self._log_end(True)
         return True, None
@@ -1562,7 +1565,7 @@ class ArmControllerNode(Node):
             where = 'here' if here or x is None else f'({float(x):.3f},{float(y):.3f})'
             self.get_logger().info(f'  [DRY RUN] place {where}')
             time.sleep(0.5)
-            self._held = None
+            self._set_held(None)
             return True
         if not self._is_holding():
             return self._refuse('place: the gripper is not holding anything')
@@ -1685,7 +1688,7 @@ class ArmControllerNode(Node):
         self._publish_pp_status('place: release')
         if not self._open_gripper():
             return False
-        self._held = None
+        self._set_held(None)
         self._publish_pp_status('place: retreat')
         return self._move_verified(fx, fy, carry_z, 'retreat')
 
@@ -1737,7 +1740,7 @@ class ArmControllerNode(Node):
     def _open_gripper(self):
         ok = self._gripper(GRIPPER_OPEN, 'open_gripper')
         if ok:
-            self._held = None                 # whatever it held is released
+            self._set_held(None)                 # whatever it held is released
         return ok
 
     def _close_gripper(self):
@@ -1777,6 +1780,15 @@ class ArmControllerNode(Node):
         self._last_status = text
         msg = String(); msg.data = text
         self.status_pub.publish(msg)
+
+    def _set_held(self, held):
+        """The one place that changes self._held: also publishes it on /gripper_held ({"held": null} or {"held": {"label", "object_id"}})."""
+        self._held = held
+        try:
+            payload = None if not held else {'label': held.get('label'), 'object_id': held.get('object_id')}
+            self.held_pub.publish(String(data=json.dumps({'held': payload})))
+        except Exception:
+            pass
 
     def _status_heartbeat(self):
         """Re-publish the current status: a status published once at startup is lost if the
