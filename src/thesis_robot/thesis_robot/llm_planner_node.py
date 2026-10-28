@@ -706,6 +706,13 @@ class LLMPlannerNode(Node):
             parsed_unverified = None
             repaired, hint, last_why = False, '', ''
             intent = cg.parse(command) if bool(self.get_parameter('plan_verification').value) else None
+            # A command about an object nobody can reach (outside the arm's range, stale, not seen): say so now instead of three slow model retries and "Plan is empty or not a list".
+            if intent is not None and intent.get('kind') != 'put_down' and not (self._held and self._held.get('label') == intent.get('a')):    # (the held object is in the gripper, not on the table)
+                gone = cg.no_reachable_reason(intent, self.latest_scene, sg.PLAN_X_RANGE, sg.PLAN_Y_RANGE)
+                if gone:
+                    self.get_logger().warn(f'Plan REJECTED: {gone}')
+                    self._publish_status(f'REJECTED: {gone}')
+                    return
             attempts_used = 0
             for attempt in (1, 2, 3):
                 attempts_used = attempt

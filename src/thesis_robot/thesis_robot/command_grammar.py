@@ -90,6 +90,27 @@ def _objects(scene, label):
             if isinstance(o, dict) and o.get('label') == label and o.get('reachable') and not o.get('stale')]
 
 
+def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.35)):
+    """None when the command can go on to the model; else a plain-language reason it cannot be done: the object it names is not in the scene, is stale, or stands outside what the arm reaches.
+    Without this the model returned an empty plan after three slow retries and the operator only saw "Plan is empty or not a list"."""
+    label = (intent or {}).get('a')
+    if not label or _objects(scene, label):
+        return None
+    mine = [(oid, o) for oid, o in scene.items() if isinstance(o, dict) and o.get('label') == label]
+    if not mine:
+        return f'there is no {label} in the scene (the cameras do not see one)'
+    parts = []
+    for oid, o in mine:
+        x, y = o.get('x'), o.get('y')
+        if o.get('stale'):
+            parts.append(f'{oid} was not seen recently (stale)')
+        elif x is not None and y is not None and not (x_range[0] <= x <= x_range[1] and y_range[0] <= y <= y_range[1]):
+            parts.append(f'{oid} at x={x:.2f} y={y:.2f} is outside the arm\'s range (x {x_range[0]:.2f} to {x_range[1]:.2f}, y {y_range[0]:.2f} to {y_range[1]:.2f}): move it closer')
+        else:
+            parts.append(f'{oid} is not reachable')
+    return f'no {label} the arm can reach: ' + '; '.join(parts)
+
+
 def best_object(scene, label, exclude=None):
     cands = [(oid, o) for oid, o in _objects(scene, label) if oid != exclude]
     if not cands:

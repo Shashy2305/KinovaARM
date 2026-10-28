@@ -126,3 +126,25 @@ def test_put_the_named_object_back_or_down_is_a_put_down_2026_10_26():
     assert not ok
     ok, why = cg.check(cg.parse('put the cup back on the table'), [{'action': 'place', 'here': True}], {})
     assert ok
+
+
+# ---- a command about an object the arm cannot reach (2026-10-28: "pick up mouse and put it aside" -> "Plan is empty or not a list" after 3 slow retries) -----------------
+def _scene(**objs):
+    return {k: dict({'confidence': 0.9, 'stale': False, 'reachable': True, 'z': 0.02}, **v) for k, v in objs.items()}
+
+
+def test_no_reason_when_a_reachable_object_of_that_label_exists():
+    scene = _scene(mouse_00={'label': 'mouse', 'x': 0.4, 'y': 0.0})
+    assert cg.no_reachable_reason(cg.parse('pick up the mouse'), scene) is None
+    assert cg.no_reachable_reason(cg.parse('go home'), scene) is None                       # no object named
+
+
+def test_an_object_outside_the_arms_range_is_explained_with_its_position():
+    scene = _scene(mouse_00={'label': 'mouse', 'x': 0.56, 'y': -0.39, 'reachable': False}, cup_00={'label': 'cup', 'x': 0.4, 'y': 0.1})
+    why = cg.no_reachable_reason(cg.parse('pick up mouse and put it aside'), scene)
+    assert 'mouse_00' in why and '-0.39' in why and 'outside' in why and 'move it closer' in why
+
+
+def test_a_stale_or_missing_object_is_explained_too():
+    assert 'stale' in cg.no_reachable_reason(cg.parse('pick up the cup'), _scene(cup_00={'label': 'cup', 'x': 0.4, 'y': 0.1, 'stale': True, 'reachable': False}))
+    assert 'no cup in the scene' in cg.no_reachable_reason(cg.parse('pick up the cup'), _scene(mouse_00={'label': 'mouse', 'x': 0.4, 'y': 0.0}))
