@@ -63,6 +63,15 @@ SAME_OBJECT_DIST = 0.15  # metres — detections this close are the same object
 MAX_PLAUSIBLE_REACH_M = 2.0
 FUSION_MIN_ALPHA = 0.15  # a single low-confidence reading moves the estimate at least this much
 FUSION_MAX_ALPHA = 0.85  # a single high-confidence reading moves the estimate at most this much
+# Per-source fusion (2026-10-28): with a high alpha the published position was simply the LAST reading, so it jumped between the cameras' slightly different values on every message
+# ("the scene is dancing"). Now each camera's latest reading is kept per object and the estimate is their weighted mean, low-passed.
+SOURCE_WEIGHT = {'realsense': 1.0, 'realsense2': 1.0, 'realsense3': 0.3, 'wrist': 0.4}     # RS3's depth is poor; the wrist's is unreliable close up
+SOURCE_Z_TRUSTED = ('realsense', 'realsense2')                                           # heights come from these when any of them saw the object
+SOURCE_WINDOW_S = 2.0         # a camera's reading counts this long
+SMOOTH_ALPHA = 0.35           # how far the published estimate moves toward the fused one per message
+JUMP_M = 0.06                 # a fused estimate this far from the published one is a moved object: follow at once
+WRIST_MIN_DOWN = 0.7          # the wrist camera only places objects when its axis points at the table (z component of the axis <= -0.7) ...
+WRIST_MIN_RANGE_M = 0.25      # ... and the object is at least this far away (its depth is empty / wrong closer)
 
 
 def _load_workspace(logger):
@@ -102,6 +111,7 @@ class SceneGraphNode(Node):
 
         # ── scene storage ────────────────────────────────────────────
         # { object_id: { label, x, y, z, confidence, last_seen, stale } }
+        self._obs = {}            # object_id -> {source: (t, x, y, z, conf)}: each camera's latest reading
         self.scene = {}
 
         # TF buffer for camera frame -> base_link
@@ -162,6 +172,7 @@ class SceneGraphNode(Node):
 
         now = time.time()
         resolved = []  # [(label, x, y, z, conf), ...]
+        src_of = {}    # id(detection tuple) -> the camera that saw it
         for det in detections:
             label = det.get('label') or det.get('class', 'unknown')
             conf  = float(det.get('confidence', 0.0))
@@ -171,11 +182,15 @@ class SceneGraphNode(Node):
             if pos is None:
                 continue
             x, y, z = pos
+            if det.get('source') == 'wrist' and not self._wrist_usable(det):
+                continue                      # the wrist camera is not looking at the table: its 3D point is not an object on it
             if not self._on_table_region(x, y, z):
                 continue                      # the room: another desk, the people, the floor — not objects on the table
             if z is not None and self._on_robot((x, y, z)):
                 continue                      # a detection of the robot's own arm/gripper, not an object
-            resolved.append((label, x, y, z, conf))
+            tup = (label, x, y, z, conf)
+            src_of[id(tup)] = str(det.get('source', ''))
+            resolved.append(tup)
 
         resolved = self._drop_relabelled_duplicates(resolved)
 
@@ -183,8 +198,9 @@ class SceneGraphNode(Node):
             return
 
         assignments = self._match_batch(resolved)
-        for (label, x, y, z, conf), obj_id in zip(resolved, assignments):
-            x, y, z, conf = self._fuse_position(obj_id, x, y, z, conf, now)
+        for tup, obj_id in zip(resolved, assignments):
+            label, x, y, z, conf = tup
+            x, y, z, conf = self._fuse_position(obj_id, x, y, z, conf, now, src_of.get(id(tup)))
             self.scene[obj_id] = {
                 'label':      label,
                 'x':          round(x, 4),
@@ -406,28 +422,49 @@ class SceneGraphNode(Node):
     def _is_right_of(self, a, b):
         return (a['y'] - b['y']) > 0.08
 
-    def _fuse_position(self, obj_id, x, y, z, conf, now):
-        """Blend a new detection into the existing estimate for obj_id,
-        instead of whichever camera happens to publish last overwriting
-        the others. `alpha` (how much this single reading moves the
-        estimate) scales with its confidence, so a confident detection
-        from one camera can correct a shakier one from another without
-        either source ever fully discarding the other's contribution."""
+    def _fuse_position(self, obj_id, x, y, z, conf, now, source=None):
+        """The published estimate of obj_id after this reading. Each camera's latest reading (within SOURCE_WINDOW_S) is kept per object; the estimate is their weighted mean
+        (weight = confidence x SOURCE_WEIGHT; heights from the cameras whose depth is good when any saw it), then the published value moves SMOOTH_ALPHA of the way toward it
+        (or jumps when it is more than JUMP_M away: the object was moved). So the value no longer flips between the cameras' slightly different readings message by message."""
         existing = self.scene.get(obj_id)
+        src = source or 'unknown'
         if existing is None or existing['stale']:
+            self._obs[obj_id] = {src: (now, x, y, z, conf)}
             return x, y, z, conf
-
-        alpha = min(FUSION_MAX_ALPHA, max(FUSION_MIN_ALPHA, conf))
-        fx = alpha * x + (1 - alpha) * existing['x']
-        fy = alpha * y + (1 - alpha) * existing['y']
-        if z is None:
-            fz = existing['z']
-        elif existing['z'] is None:
-            fz = z
+        obs = self._obs.setdefault(obj_id, {})
+        obs[src] = (now, x, y, z, conf)
+        for k in [k for k, v in obs.items() if now - v[0] > SOURCE_WINDOW_S]:
+            del obs[k]
+        ws_ = {k: max(v[4], 0.05) * SOURCE_WEIGHT.get(k, 0.5) for k, v in obs.items()}
+        tot = sum(ws_.values())
+        mx = sum(ws_[k] * obs[k][1] for k in obs) / tot
+        my = sum(ws_[k] * obs[k][2] for k in obs) / tot
+        zs = {k: v for k, v in obs.items() if v[3] is not None}
+        trusted = {k: v for k, v in zs.items() if k in SOURCE_Z_TRUSTED} or zs
+        if trusted:
+            zt = sum(ws_[k] for k in trusted)
+            mz = sum(ws_[k] * trusted[k][3] for k in trusted) / zt
         else:
-            fz = alpha * z + (1 - alpha) * existing['z']
-        fconf = max(conf, existing['confidence'])
-        return fx, fy, fz, fconf
+            mz = existing['z']
+        if math.hypot(mx - existing['x'], my - existing['y']) > JUMP_M:
+            fx, fy, fz = mx, my, (mz if mz is not None else existing['z'])
+        else:
+            a = SMOOTH_ALPHA
+            fx = existing['x'] + a * (mx - existing['x'])
+            fy = existing['y'] + a * (my - existing['y'])
+            fz = mz if existing['z'] is None else (existing['z'] if mz is None else existing['z'] + a * (mz - existing['z']))
+        return fx, fy, fz, max(conf, existing['confidence'])
+
+    def _wrist_usable(self, det):
+        """The wrist camera's readings are scene evidence only while it looks at the table (its axis points down) and the object is not too close for its depth."""
+        try:
+            if float(det.get('cz_3d', 0.0)) < WRIST_MIN_RANGE_M:
+                return False
+            t = self.tf_buffer.lookup_transform(BASE_FRAME, det['frame_id'], rclpy.time.Time()).transform.rotation
+            axis_z = 1.0 - 2.0 * (t.x * t.x + t.y * t.y)            # z component of the camera's optical (z) axis in base_link
+            return axis_z <= -WRIST_MIN_DOWN
+        except Exception:
+            return False
 
     # ── HELPERS ──────────────────────────────────────────────────────
     def _resolve_base_xyz(self, det, label):
