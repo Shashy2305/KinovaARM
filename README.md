@@ -1,5 +1,7 @@
 # Audio-Visual Spatial Control for a Kinova Gen3 7-DOF Manipulator
 
+> **Current state, restart and startup steps: [docs/START_HERE_LATEST.md](docs/START_HERE_LATEST.md)** (newer than the status text below).
+
 Master's thesis project, UC Riverside (advisor: Prof. Mingyu Cai).
 
 A person speaks a command — *"pick up the cup and put it on the right side"* — and the
