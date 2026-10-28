@@ -353,3 +353,34 @@ def test_stop_holds_position_and_disables(jogger):
     jogger.stop('test')
     assert not jogger.enabled and len(jogger.pub.sent) == 1
     assert jogger.pub.sent[0].points[0].positions == pytest.approx(list(Q))
+
+
+# ---- the gripper buttons --------------------------------------------------------------------------------------------------------------------
+def test_the_gripper_is_refused_while_the_jog_is_off_faulted_or_the_arm_is_busy(jogger):
+    from std_msgs.msg import Bool, String
+    goals = []
+    jogger._gripper_goal = lambda t: (goals.append(t) or (True, 'ok'))
+    assert not jogger.gripper('open')['ok'] and goals == []                   # jog off
+    assert jogger.enable('area clear, hands off')['ok']
+    jogger._on_status(String(data='EXECUTING: pick the cup'))
+    assert 'busy' in jogger.gripper('open')['message'] and goals == []
+    jogger._on_status(String(data='READY'))
+    jogger._on_fault(Bool(data=True))
+    assert 'fault' in jogger.gripper('open')['message'] and goals == []
+
+
+def test_open_close_and_set_send_the_right_finger_positions_and_clamp(jogger):
+    goals = []
+    jogger._gripper_goal = lambda t: (goals.append(t) or (True, 'ok'))
+    assert jogger.enable('area clear, hands off')['ok']
+    assert jogger.gripper('open')['ok'] and jogger.gripper('close')['ok']
+    assert jogger.gripper('set', 0.3)['ok'] and jogger.gripper('set', 5.0)['ok'] and jogger.gripper('set', -1)['ok']
+    assert goals == [0.0, 0.695, 0.3, 0.695, 0.0]
+    for bad in (None, 'x', float('nan')):
+        assert not jogger.gripper('set', bad)['ok']
+    assert not jogger.gripper('squeeze')['ok']
+    assert len(goals) == 5                                                    # nothing was sent for the bad requests
+
+
+def test_the_state_reports_the_finger_position(jogger):
+    assert jogger.state()['finger'] == 0.0

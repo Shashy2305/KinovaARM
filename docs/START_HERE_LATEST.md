@@ -96,3 +96,14 @@ Known limitations: the carry check only covers the held object's footprint plus 
 * Docs: `docs/RUNBOOK.md` (full procedures), `docs/ANGLED_APPROACH.md`, `docs/FUSION.md`, `docs/DETECTOR_SECOND_OPINION.md`, `docs/TEST_PLAN_2026-10-20.md`, `TESTING.md`, `HANDOFF_REAL1.md` (older status).
 * Claude's memory notes (context for a new session): `~/.claude/projects/-mnt-ros-workspace/memory/` (index MEMORY.md).
 * Commit style: `git -c user.name="Shashwat Shah" -c user.email="sshah260@ucr.edu" commit --author="Shashwat Shah <sshah260@ucr.edu>"`, message ends with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
+
+## 7. Added 2026-10-28 (after the first version of this file)
+
+* **Gripper stuck half closed** (finger 0.31 on nothing, e.g. after the object was taken out by hand) used to refuse every pick ("already holding something") and place ("do not know how the object
+  is held"). Now (arm_controller): a half-closed gripper with nothing held and no scene object within 12 cm of the pads is opened automatically before a pick/place (`auto_release_empty_gripper`,
+  default true; needs a fresh, non-empty scene), and the held-object record is forgotten once the fingers have been open for 1 s (so the planner stops refusing). Manual way out:
+  type `open the gripper`, or the Gripper buttons in the "Jog the arm" tab.
+* **"Jog the arm" tab** now also has the multi-camera view and a Gripper panel (Open / Close / go to a position; needs the jog ON = the typed phrase `area clear, hands off`; gamepad: hold LB, A closes, Y opens).
+  Backend: `POST /api/jog/gripper {"action": "open"|"close"|"set", "position": 0..0.695}`.
+* **Mic**: the voice node uses the system default input (`-p input_device:=pulse`; the external USB mic "Jieli USB Composite Device" is the PulseAudio default). Check: `pactl info | grep "Default Source"`.
+* **RS3 detection** publishes bad heights (z -0.02 .. -0.19) and creates ghost objects; the full bringup starts it anyway: stop it with `curl -X POST localhost:8000/api/nodes/realsense3_detection/stop` until RS3 depth is fixed.

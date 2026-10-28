@@ -39,6 +39,10 @@ FOLLOW_MIN_RAD = 0.03
 TOPIC = '/joint_trajectory_controller/joint_trajectory'
 URDF_CACHE = os.path.expanduser('~/.ros/arm_model_cache.urdf')
 URDF_RETRY_S = 15.0
+GRIPPER_ACTION = '/robotiq_gripper_controller/gripper_cmd'
+GRIPPER_OPEN, GRIPPER_CLOSED = 0.0, 0.695          # finger_joint values (same as arm_controller_node)
+GRIPPER_MAX_EFFORT = 50.0                          # same as the pick's grip
+GRIPPER_WAIT_S = 6.0
 
 
 class Jogger(Node):
@@ -189,6 +193,68 @@ class Jogger(Node):
             self._publish(q, 0.3)
         self.disable(why)
 
+    def gripper(self, action, position=None):
+        """Open / close / move the gripper from the dashboard. Needs the jog to be ON (the typed phrase), no driver fault and an idle arm controller. Opening drops whatever is held,
+        so the UI says so. Returns {'ok', 'message', 'finger'}."""
+        with self._lock:
+            enabled, fault, status = self.enabled, self._fault, self._arm_status
+        if not enabled:
+            return {'ok': False, 'message': 'switch the jog on first (type the phrase): the gripper moves the real hardware'}
+        if fault:
+            return {'ok': False, 'message': 'the driver reports a fault: restart robot bringup first'}
+        if status.startswith('EXECUTING'):
+            return {'ok': False, 'message': f'the arm controller is busy ({status})'}
+        if action == 'open':
+            target = GRIPPER_OPEN
+        elif action == 'close':
+            target = GRIPPER_CLOSED
+        elif action == 'set':
+            try:
+                target = float(position)
+            except (TypeError, ValueError):
+                return {'ok': False, 'message': 'position must be a number'}
+            if not np.isfinite(target):
+                return {'ok': False, 'message': 'position must be a number'}
+            target = float(np.clip(target, GRIPPER_OPEN, GRIPPER_CLOSED))
+        else:
+            return {'ok': False, 'message': "action must be 'open', 'close' or 'set'"}
+        ok, msg = self._gripper_goal(target)
+        js, _age = self.feed.latest()
+        with self._lock:
+            self.message = f'gripper: {msg}'
+        return {'ok': ok, 'message': msg, 'finger': js.get('finger_joint')}
+
+    def _gripper_goal(self, target):
+        """Send one GripperCommand goal and wait for it (the Robotiq reports 'stalled' when it closes on an object, which counts as done)."""
+        from control_msgs.action import GripperCommand as GC
+        from rclpy.action import ActionClient
+        if not hasattr(self, '_gripper_client'):
+            self._gripper_client = ActionClient(self, GC, GRIPPER_ACTION)
+        if not self._gripper_client.wait_for_server(timeout_sec=3.0):
+            return False, 'the gripper controller is not available (is robot bringup running?)'
+        goal = GC.Goal()
+        goal.command.position = float(target)
+        goal.command.max_effort = GRIPPER_MAX_EFFORT
+        fut = self._gripper_client.send_goal_async(goal)
+        t0 = time.time()
+        while not fut.done() and time.time() - t0 < 3.0:
+            time.sleep(0.02)
+        handle = fut.result() if fut.done() else None
+        if handle is None or not handle.accepted:
+            return False, 'the gripper did not accept the command'
+        rfut = handle.get_result_async()
+        t0 = time.time()
+        while not rfut.done() and time.time() - t0 < GRIPPER_WAIT_S:
+            time.sleep(0.02)
+        if not rfut.done():
+            return False, f'the gripper did not finish within {GRIPPER_WAIT_S:.0f} s'
+        res = rfut.result().result
+        if res.reached_goal:
+            return True, f'at {res.position:.2f}'
+        if res.stalled:
+            return True, f'closed on something (stopped at {res.position:.2f})'
+        return False, f'stopped short at {res.position:.2f}'
+
     def _publish(self, q_target, t_s):
         """One waypoint to q_target in t_s seconds (used for 'hold here' on Stop / fault)."""
         self._send([t_s], [np.asarray(q_target, float)], None)
@@ -314,6 +380,8 @@ class Jogger(Node):
                     out['lowest_link_above_limit_cm'] = round(float((min(zs) - geom['table_top_z'] - sg.LINK_TABLE_CLEARANCE_M) * 100), 1)
             except Exception:
                 pass
+        if grip is not None:
+            out['finger'] = round(float(grip['finger_joint']), 3)
         with self._lock:
             out['fault'] = self._fault
             out['arm_status'] = self._arm_status

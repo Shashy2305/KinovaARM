@@ -231,7 +231,7 @@ PROCESSES = {
         'hardware_affecting': False,
         # dashboard mode: idle until the mic button / hands-free toggle is used;
         # transcripts are shown for confirmation, never auto-sent to the arm.
-        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot audio_node --ros-args -p mode:=dashboard',
+        'cmd': f'{ROS_ENV_CMD} ros2 run thesis_robot audio_node --ros-args -p mode:=dashboard -p input_device:=pulse',   # pulse = the system default source (the external USB mic since 2026-10-28; was 'ALC897 Analog')
         'signature': 'thesis_robot/lib/thesis_robot/audio_node',
     },
     'arm_controller': {

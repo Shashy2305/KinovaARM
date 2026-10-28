@@ -38,6 +38,12 @@ async def jog_stop():
     return {'ok': True}
 
 
+@router.post('/jog/gripper')
+async def jog_gripper(body: dict = Body(...)):
+    """{'action': 'open' | 'close' | 'set', 'position': 0..0.695}. Needs the jog to be ON."""
+    return await asyncio.to_thread(_jogger().gripper, body.get('action'), body.get('position'))
+
+
 @router.websocket('/ws/jog')
 async def ws_jog(websocket: WebSocket):
     """The browser sends one JSON command per tick while a button/stick is held (see Jogger.command) and gets the state back. When the socket closes the arm

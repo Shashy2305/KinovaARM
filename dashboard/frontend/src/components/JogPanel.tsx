@@ -38,6 +38,11 @@ export function JogPanel({ compact = false }: { compact?: boolean }) {
   const dpad = useRef({ l: false, r: false })
   const stick = useRef<HTMLDivElement>(null)
   const [stickPos, setStickPos] = useState<[number, number]>([0, 0])
+  const [gripMsg, setGripMsg] = useState<string | null>(null)
+  const [gripBusy, setGripBusy] = useState(false)
+  const [gripTarget, setGripTarget] = useState(0.3)
+  const gripBusyRef = useRef(false)
+  const padBtn = useRef({ a: false, y: false })
 
   const isEnabled = !!st?.enabled
   useEffect(() => { live.current = { mode, frame, speed, padJoint, enabled: isEnabled } }, [mode, frame, speed, padJoint, isEnabled])
@@ -89,6 +94,12 @@ export function JogPanel({ compact = false }: { compact?: boolean }) {
           if (d) gj = { joint: { j: L.padJoint, dir: Math.sign(d) } }
         }
       }
+      if (gp && (gp.buttons[4]?.pressed || gp.buttons[5]?.pressed) && L.enabled) {
+        const a = !!gp.buttons[0]?.pressed, y = !!gp.buttons[3]?.pressed          // hold LB: A closes the gripper, Y opens it (one press = one command)
+        if (a && !padBtn.current.a) gripperRef.current('close')
+        if (y && !padBtn.current.y) gripperRef.current('open')
+        padBtn.current = { a, y }
+      } else padBtn.current = { a: false, y: false }
       if (gp) {
         const r = !!gp.buttons[15]?.pressed, l = !!gp.buttons[14]?.pressed
         if (r && !dpad.current.r) setPadJoint((j) => Math.min(7, j + 1))
@@ -137,6 +148,23 @@ export function JogPanel({ compact = false }: { compact?: boolean }) {
     refresh()
   }
   const stop = async () => { releaseAll(); await api.jogStop(); refresh() }
+  const gripper = useCallback(async (action: 'open' | 'close' | 'set', position?: number) => {
+    if (gripBusyRef.current) return
+    gripBusyRef.current = true
+    setGripBusy(true)
+    setGripMsg(`gripper ${action}…`)
+    try {
+      const r = await api.jogGripper(action, position)
+      setGripMsg(`${r.ok ? '' : 'REFUSED: '}${r.message}`)
+    } catch (e) {
+      setGripMsg(`failed: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      gripBusyRef.current = false
+      setGripBusy(false)
+    }
+  }, [])
+  const gripperRef = useRef(gripper)
+  useEffect(() => { gripperRef.current = gripper }, [gripper])
 
   const enabled = !!st?.enabled
   const btn = 'btn select-none touch-none'
@@ -176,6 +204,19 @@ export function JogPanel({ compact = false }: { compact?: boolean }) {
             <span>pad: {pad ?? 'none (press a button on it)'}</span>
           </div>
         )}
+
+        <div className="flex flex-wrap gap-3 items-center border border-(--color-border) p-2">
+          <span className="font-semibold">Gripper</span>
+          <span className="font-mono text-(--color-text-dim)">{st?.finger !== undefined ? `finger ${st.finger.toFixed(2)} (${st.finger < 0.05 ? 'open' : st.finger > 0.65 ? 'closed' : 'partly closed'})` : 'finger —'}</span>
+          <button className="btn" disabled={!enabled || gripBusy} onClick={() => gripper('open')}>Open</button>
+          <button className="btn" disabled={!enabled || gripBusy} onClick={() => gripper('close')}>Close</button>
+          <label className="flex items-center gap-2">to {gripTarget.toFixed(2)}
+            <input type="range" min={0} max={0.695} step={0.005} value={gripTarget} disabled={!enabled || gripBusy} onChange={(e) => setGripTarget(Number(e.target.value))} />
+            <button className="btn" disabled={!enabled || gripBusy} onClick={() => gripper('set', gripTarget)}>Go</button>
+          </label>
+          {gripMsg && <span className="font-mono text-(--color-text-dim)">{gripMsg}</span>}
+          <span className="text-(--color-text-faint) basis-full">Opening drops whatever is held. Needs the jog ON. Gamepad (hold LB): A closes, Y opens.</span>
+        </div>
 
         <div className="flex flex-wrap gap-3 items-center">
           <div className="flex">

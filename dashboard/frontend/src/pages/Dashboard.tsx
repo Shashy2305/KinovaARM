@@ -90,7 +90,12 @@ export function Dashboard() {
           {tab === 'fusion' && <FusionView />}
           {tab === 'calibration' && <CalibrationWizard />}
           {tab === 'armcal' && <ArmCalibration />}
-          {tab === 'jog' && <JogPanel />}
+          {tab === 'jog' && (
+            <>
+              <MultiCameraView />
+              <JogPanel />
+            </>
+          )}
           {tab === 'boundary' && <WorkspaceBoundary />}
           {tab === 'table' && <TableRecorder />}
         </main>

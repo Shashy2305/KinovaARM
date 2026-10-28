@@ -633,3 +633,72 @@ def test_the_place_after_a_side_grasp_is_allowed_to_go_that_low_and_keeps_the_or
     assert node._place(0.40, -0.1) is True
     lower = [v for v in side_world.verified if v[3] == 'lower'][0]
     assert lower[2] == pytest.approx(held['grasp_z'] + node.SET_DOWN_GAP_M, abs=2e-3) and lower[2] < 0.15      # not forced up to the vertical-grasp floor (0.27)
+
+
+# ---- a gripper left half closed on nothing (2026-10-28) --------------------------------------------------------------------------------------
+@pytest.fixture
+def orphan(node, world, monkeypatch):
+    """Fingers half closed (0.31), nothing known to be held, a fresh scene whose objects are far from the pads."""
+    opened = []
+    node.latest_scene = {'cup_00': {'label': 'cup', 'x': 0.40, 'y': 0.30, 'z': 0.045, 'confidence': 0.95, 'reachable': True, 'stale': False}}
+    node._scene_time = acn.time.monotonic()
+    node._held = None
+    node._js = {'finger_joint': 0.31}
+    monkeypatch.setattr(node, '_is_holding', lambda: 0.08 < node._js['finger_joint'] < 0.65)
+    monkeypatch.setattr(node, '_pad_midpoint_xy', lambda default: (0.30, -0.20))
+    monkeypatch.setattr(node, '_open_gripper', lambda: (opened.append(1) or node._js.update(finger_joint=0.0) or True))
+    yield opened
+    node._js = {'finger_joint': 0.007}
+
+
+def test_a_half_closed_empty_gripper_is_opened_instead_of_refusing_the_pick(node, orphan):
+    assert node._pick('cup_00', 0.35) is True
+    assert len(orphan) >= 1                                                  # opened before the pick started (the pick's own first step opens it again)
+
+
+def test_nothing_is_opened_when_an_object_is_near_the_pads(node, orphan):
+    node.latest_scene['cup_00'].update(x=0.31, y=-0.15)                    # 5 cm from the pads: it may be in the gripper
+    assert node._release_if_empty_unknown() is False and orphan == []
+
+
+def test_nothing_is_opened_while_a_held_object_is_known_or_the_scene_is_stale_or_empty_or_the_switch_is_off(node, orphan):
+    node._held = {'label': 'cup', 'object_id': 'cup_00', 'grasp_z': 0.25}
+    assert node._release_if_empty_unknown() is False
+    node._held = None
+    node._scene_time = acn.time.monotonic() - 10.0                          # perception silent: cannot tell
+    assert node._release_if_empty_unknown() is False
+    node._scene_time = acn.time.monotonic()
+    node.latest_scene = {}
+    assert node._release_if_empty_unknown() is False
+    node.latest_scene = {'cup_00': {'label': 'cup', 'x': 0.40, 'y': 0.30, 'z': 0.045, 'confidence': 0.95, 'stale': False}}
+    from rclpy.parameter import Parameter
+    node.set_parameters([Parameter('auto_release_empty_gripper', Parameter.Type.BOOL, False)])
+    assert node._release_if_empty_unknown() is False and orphan == []
+    node.set_parameters([Parameter('auto_release_empty_gripper', Parameter.Type.BOOL, True)])
+    assert node._release_if_empty_unknown() is True and orphan == [1]
+
+
+def test_a_place_with_a_half_closed_empty_gripper_opens_it_and_says_so_without_moving(node, orphan):
+    node.latest_scene['cup_00'].update(x=0.40, y=0.30)
+    assert node._place(0.40, 0.0) is False
+    assert orphan == [1]
+
+
+def test_the_held_record_is_forgotten_once_the_fingers_have_been_open_for_a_second(node, world, monkeypatch):
+    from sensor_msgs.msg import JointState
+    now = [1000.0]
+    monkeypatch.setattr(acn.time, 'time', lambda: now[0])
+    node._held = {'label': 'cup', 'object_id': 'cup_00', 'grasp_z': 0.25}
+    node._open_since = None
+    msg = JointState(name=['finger_joint'], position=[0.0])
+    node._on_joint_state(msg)
+    assert node._held is not None                                         # just opened
+    now[0] += 1.5
+    node._on_joint_state(msg)
+    assert node._held is None
+    node._held = {'label': 'cup', 'object_id': 'cup_00', 'grasp_z': 0.25}
+    now[0] += 5.0
+    node._on_joint_state(JointState(name=['finger_joint'], position=[0.31]))   # closed on the cup: kept
+    now[0] += 5.0
+    node._on_joint_state(JointState(name=['finger_joint'], position=[0.31]))
+    assert node._held is not None

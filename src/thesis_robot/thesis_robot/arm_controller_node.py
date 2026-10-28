@@ -105,6 +105,7 @@ class ArmControllerNode(Node):
         # holding a cup. 'off' = never (the default until it has been watched live); 'auto' = ranked against straight-down and the lean by clearance to the neighbours, the handle and past outcomes
         # (tall enough objects only); 'only' = side or nothing (for testing).
         self.declare_parameter('side_grasp', 'off')
+        self.declare_parameter('auto_release_empty_gripper', True)   # open a gripper left half closed on nothing (nothing held, no object near the pads) instead of refusing every pick
         self.declare_parameter('tilt_azimuth_deg', -1.0)
         self.declare_parameter('tilt_cap_deg', 30.0)             # the highest lean ever asked for, whatever approach_tilt_deg says (30 = the live-tested limit; step up: 35, 45); never above TILT_HARD_MAX_DEG
         self.declare_parameter('collect_training_samples', True)  # save a labelled wrist frame before each descent, keep it if the pick succeeds
@@ -237,6 +238,7 @@ class ArmControllerNode(Node):
             return
         if isinstance(scene, dict):
             self.latest_scene = scene
+            self._scene_time = time.monotonic()
 
     def plan_callback(self, msg):
         with self._lock:
@@ -489,6 +491,18 @@ class ArmControllerNode(Node):
     def _on_joint_state(self, msg):
         self._js = dict(zip(msg.name, msg.position))
         self._js_time = time.time()
+        # A held-object record is wrong once the fingers are open (someone opened the gripper from the dashboard / by hand, or the object fell): it would keep the planner
+        # refusing picks ("put it down first") for something that is no longer there.
+        f = self._js.get('finger_joint')
+        if getattr(self, '_held', None) is not None and f is not None:
+            if f < self.OPEN_FINGER_MAX:
+                self._open_since = getattr(self, '_open_since', None) or self._js_time
+                if self._js_time - self._open_since > 1.0:
+                    self.get_logger().info('the gripper is open: forgetting the held object')
+                    self._open_since = None
+                    self._set_held(None)
+            else:
+                self._open_since = None
 
     def _current_joint_vector(self):
         """Arm joint angles from OUR OWN /joint_states subscription (the
@@ -839,6 +853,7 @@ class ArmControllerNode(Node):
         return aa.approach_poses(tip_xyz, tilt, az, standoff=self.TILT_STANDOFF_M)
 
     def _pick_once(self, object_id, pos, approach_z):
+        self._release_if_empty_unknown()
         if not (self.dry_run or self.moveit2 is None) and self._is_holding():
             self._refuse('pick: the gripper is already holding something — put it down first '
                          '("put it down"); opening it now would drop it from the air')
@@ -1650,6 +1665,35 @@ class ArmControllerNode(Node):
             return False
         return 0.08 < f < 0.65
 
+    OPEN_FINGER_MAX = 0.05           # finger_joint below this = fully open
+    ORPHAN_PAD_CLEARANCE_M = 0.12    # an object this close (x, y) to the pads may be IN the gripper
+
+    def _gripper_empty_unknown(self):
+        """True when the fingers are partly closed (so _is_holding() reads True) but nothing is known to be held and no object is near the pads: a gripper left half closed after the
+        object was taken out by hand, dropped, or the controller was restarted (2026-10-28: it refused every pick and place until opened by hand). Needs a fresh, non-empty scene,
+        so a blind perception never makes it open on something real; switch off with auto_release_empty_gripper:=false."""
+        if self.dry_run or self.moveit2 is None or self._held is not None or not self._is_holding():
+            return False
+        if not bool(self.get_parameter('auto_release_empty_gripper').value):
+            return False
+        if not self.latest_scene or time.monotonic() - getattr(self, '_scene_time', 0.0) > 3.0:
+            return False
+        pad = self._pad_midpoint_xy(default=None)
+        if pad is None:
+            return False
+        near = [lab for lab, x, y in self._scene_obstacles(min_conf=0.0) if math.hypot(x - pad[0], y - pad[1]) < self.ORPHAN_PAD_CLEARANCE_M]
+        if near or self._unknown_near(pad, self.ORPHAN_PAD_CLEARANCE_M):
+            return False
+        return True
+
+    def _release_if_empty_unknown(self):
+        """Open a gripper that is closed on nothing (see _gripper_empty_unknown). True if it was opened."""
+        if not self._gripper_empty_unknown():
+            return False
+        f = (self._js or {}).get('finger_joint')
+        self.get_logger().warn(f'the gripper is partly closed (finger {f:.2f}) with nothing held and no object near the pads: opening it')
+        return bool(self._open_gripper())
+
     def _on_unknown_obstacles(self, msg):
         try:
             self._unknown = (time.monotonic(), json.loads(msg.data).get('obstacles', []))
@@ -1743,6 +1787,8 @@ class ArmControllerNode(Node):
             time.sleep(0.5)
             self._set_held(None)
             return True
+        if self._release_if_empty_unknown():
+            return self._refuse('place: the gripper was closed on nothing; it is open now, so there is nothing to place')
         if not self._is_holding():
             return self._refuse('place: the gripper is not holding anything')
         if self._held is None and z is None:
