@@ -393,7 +393,17 @@ class ArmControllerNode(Node):
             # With the tool horizontal (side grasp) MoveIt's straight-line planner flipped the wrist mid-path on a 5 cm lift (2026-10-29: a waypoint 12 cm lower, refused by the path check).
             # A SHORT move is done in joint space instead: the IK solution nearest the current joints for the same orientation, so the path is a few mm from the line and nothing flips.
             here = self._tf_pose(BASE_LINK, EE_LINK)[1]
-            if math.dist((rx, ry, rz), (float(here[0]), float(here[1]), float(here[2]))) <= self.SHORT_MOVE_M:
+            dist = math.dist((rx, ry, rz), (float(here[0]), float(here[1]), float(here[2])))
+            if dist > self.SHORT_MOVE_M:
+                # a long straight line with a horizontal tool: chained short joint-space steps (each IK seeded from where the last ended), so the orientation is held and the wrist cannot flip
+                n = int(math.ceil(dist / (0.75 * self.SHORT_MOVE_M)))
+                for i in range(1, n + 1):
+                    f = i / n
+                    if not self._move_to(float(here[0]) + (rx - float(here[0])) * f, float(here[1]) + (ry - float(here[1])) * f, float(here[2]) + (rz - float(here[2])) * f,
+                                         cartesian=True, min_flange_z=min_flange_z, max_flange_z=max_flange_z):
+                        return False
+                return True
+            if dist <= self.SHORT_MOVE_M:
                 try:
                     goal, _q = self._solve_goal_joints([rx, ry, rz], self._actual_tool_quat(), False)
                 except Exception as e:
@@ -1966,7 +1976,13 @@ class ArmControllerNode(Node):
             # back out along the tool axis, the way the fingers came in: they slide off the cup sideways, nothing lifts or drags it
             a = go.side_axis(held_az if held_az_known else 0.0) if held_az_known else None
             if a is not None:
-                return self._move_verified(fx - go.STANDOFF_M * a[0], fy - go.STANDOFF_M * a[1], set_z - go.STANDOFF_M * a[2], 'retreat (back along the tool axis)', min_flange_z=low_floor)
+                bx, by, bz = fx - go.STANDOFF_M * a[0], fy - go.STANDOFF_M * a[1], set_z - go.STANDOFF_M * a[2]
+                if not self._move_verified(bx, by, bz, 'retreat (back along the tool axis)', min_flange_z=low_floor):
+                    return False
+                # then up to the high pose the pick came down from (the mirror of its approach): leaving the arm parked low with the tool horizontal left it against its joint limits (2026-10-29)
+                if not self._move_verified(bx, by, bz + go.HIGH_CLEAR_M, 'rise after the retreat'):
+                    self.get_logger().warn('place: the object is down and the gripper is clear; rising after the retreat was not possible from here')
+                return True
         return self._move_verified(fx, fy, carry_z, 'retreat')
 
     def _gripper(self, position, label):

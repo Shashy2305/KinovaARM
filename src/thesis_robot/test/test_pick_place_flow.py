@@ -737,8 +737,16 @@ def test_a_short_straight_move_with_a_horizontal_tool_goes_through_joint_space(n
     assert node._move_to(0.247, 0.001, 0.207, cartesian=True) is True
     assert calls[0] == ('ik', (0.247, 0.001, 0.207)) and calls[1][2] is True and calls[1][3] is False
     calls.clear()
-    assert node._move_to(0.247, 0.001, 0.60, cartesian=True, max_flange_z=0.6) is True                              # 45 cm: stays a straight line
-    assert calls == [('move', 'move_to (0.247,0.001,0.600)', False, True)]
+    calls.clear()
+    pos = {'z': 0.153}
+
+    def tf(*a, **k):
+        return np.eye(3), [0.247, 0.001, pos['z']]
+    monkeypatch.setattr(node, '_tf_pose', tf)
+    monkeypatch.setattr(node, '_solve_goal_joints', lambda p_, quat, yaw: (pos.update(z=p_[2]) or calls.append(('ik', round(p_[2], 3))) or [0.1] * 7, quat))
+    assert node._move_to(0.247, 0.001, 0.60, cartesian=True, max_flange_z=0.6) is True                              # 45 cm: chained short joint-space steps, each <= 15 cm
+    zs = [c[1] for c in calls if c[0] == 'ik']
+    assert len(zs) >= 3 and zs[-1] == pytest.approx(0.60, abs=1e-3) and all(b - a <= 0.16 for a, b in zip([0.153] + zs, zs))
 
 
 def test_a_place_after_a_restart_uses_the_restored_lean_for_its_floors(node, side_world, monkeypatch, tmp_path):
@@ -789,6 +797,8 @@ def test_a_side_held_cup_over_its_spot_is_lowered_without_a_lift_and_backed_out_
     back = [v for v in side_world.verified if v[3].startswith('retreat')][0]
     a = go.side_axis(held['az'])
     assert back[0] == pytest.approx(0.247 - go.STANDOFF_M * a[0], abs=2e-3) and back[1] == pytest.approx(0.001 - go.STANDOFF_M * a[1], abs=2e-3)
+    rise = [v for v in side_world.verified if v[3] == 'rise after the retreat']
+    assert rise and rise[0][2] == pytest.approx(back[2] + go.HIGH_CLEAR_M, abs=2e-3)
 
 
 def test_the_place_turns_the_wrist_back_to_where_it_gripped_a_side_held_object(node, side_world, monkeypatch):
