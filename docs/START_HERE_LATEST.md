@@ -107,3 +107,9 @@ Known limitations: the carry check only covers the held object's footprint plus 
   Backend: `POST /api/jog/gripper {"action": "open"|"close"|"set", "position": 0..0.695}`.
 * **Mic**: the voice node uses the system default input (`-p input_device:=pulse`; the external USB mic "Jieli USB Composite Device" is the PulseAudio default). Check: `pactl info | grep "Default Source"`.
 * **RS3 detection** publishes bad heights (z -0.02 .. -0.19) and creates ghost objects; the full bringup starts it anyway: stop it with `curl -X POST localhost:8000/api/nodes/realsense3_detection/stop` until RS3 depth is fixed.
+
+## 8. Added 2026-10-29
+
+* **Planner workspace widened** (`safety_geometry.PLAN_X_RANGE` 0.07..0.65, `PLAN_Y_RANGE` -0.50..0.50; was 0.10..0.60 / +-0.35; `~/.ros/workspace_bounds.yaml` x max 0.65). The horizontal reach circle (0.85 m) still applies. The planner prompt now takes the limits from there. Restart scene_graph_node, llm_planner_node and arm_controller after changing them. These limits are in the ROBOT frame: moving a camera does not move them (only the camera's calibration decides where it SEES an object).
+* **Live 3D robot** (dashboard Overview and Jog tabs, `RobotView.tsx`): the arm and gripper move as the real arm does, over the table, the planner workspace rectangle and the scene objects. Backend: `GET /api/robot/pose`, websocket `/api/ws/robot` (read-only, forward kinematics of the live joints, ~15 Hz). The finger position comes from the arm controller on `/gripper_finger` (5 Hz); without the arm controller the gripper is drawn open.
+* **Side grasp is live-tested** (see ANGLED_APPROACH.md 8-9 and the memory note): `side_grasp: only` picks and puts back the cup. Fixes found live: joint-space short moves with a horizontal tool, whole-motion IK check, place without lift and retreat along the tool axis, never turn the wrist of a side-held object, held record in `~/.ros/held_object.json`.

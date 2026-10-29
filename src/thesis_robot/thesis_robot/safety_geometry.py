@@ -58,8 +58,9 @@ DEFAULT_FOOTPRINT_Y = (-0.80, 0.85)
 # definition, used by llm_planner (validation + prompt), arm_controller
 # (clamp) and scene_graph_node (what counts as "reachable"), so the scene
 # never offers the LLM an object the planner would then reject.
-PLAN_X_RANGE = (0.10, 0.60)
-PLAN_Y_RANGE = (-0.35, 0.35)
+# Widened 2026-10-29 (was x 0.10..0.60, y +-0.35): a mouse 4 cm past the old side limit, in plain view of three cameras, was 'unreachable'. The horizontal reach circle (MAX_REACH_XY_M) still applies.
+PLAN_X_RANGE = (0.07, 0.65)
+PLAN_Y_RANGE = (-0.50, 0.50)
 # Conservative horizontal reach limit for the 'reachable' flag (true max ~0.9 m).
 MAX_REACH_XY_M = 0.85
 # An object whose height is more than this far below the recorded table

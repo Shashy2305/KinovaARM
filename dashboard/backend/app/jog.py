@@ -141,7 +141,8 @@ class Jogger(Node):
         js, age = self.feed.latest()
         if not all(j in js for j in kin.ARM_JOINTS):
             return None, None, age
-        grip = {'finger_joint': js['finger_joint']} if 'finger_joint' in js else None
+        finger = js['finger_joint'] if 'finger_joint' in js else self.feed.finger()
+        grip = {'finger_joint': finger} if finger is not None else None
         return np.array([js[j] for j in kin.ARM_JOINTS]), grip, age
 
     # ── state machine ─────────────────────────────────────────────────
@@ -354,6 +355,27 @@ class Jogger(Node):
         with self._lock:
             self.message = 'moving'
         return self.state(moved=True)
+
+    ROBOT_LINKS = ['base_link', 'shoulder_link', 'half_arm_1_link', 'half_arm_2_link', 'forearm_link', 'spherical_wrist_1_link', 'spherical_wrist_2_link', 'bracelet_link',
+                   'end_effector_link', 'robotiq_140_base_link', 'left_outer_finger', 'right_outer_finger', 'left_inner_finger_pad', 'right_inner_finger_pad']
+
+    def robot_pose(self):
+        """What the 3D robot view draws: the base_link position of every link of the arm and gripper from forward kinematics of the live joints, plus the planner's workspace limits.
+        {'ok': False, ...} when there are no live joint states."""
+        q, grip, age = self._q()
+        if q is None or age > 2.0:
+            return {'ok': False, 'reason': 'no live joint states', 'age_s': round(age, 1) if age < 1e8 else None}
+        try:
+            k = self._kinematics()
+            poses = k.pose_for(self.ROBOT_LINKS, q, grip)
+        except Exception as e:
+            return {'ok': False, 'reason': f'cannot compute the pose: {e}'}
+        geom, _ = sg.load_geometry()
+        return {'ok': True, 'age_s': round(age, 2), 'joints_deg': [round(float(np.degrees(v)), 1) for v in q],
+                'finger': None if grip is None else round(float(grip['finger_joint']), 3),
+                'links': {n: [round(float(v), 4) for v in T[:3, 3]] for n, T in poses.items()},
+                'workspace': {'x': list(sg.PLAN_X_RANGE), 'y': list(sg.PLAN_Y_RANGE)},
+                'table_top_z': None if not geom else geom['table_top_z']}
 
     def tick_idle(self):
         """Called by the router's housekeeping: switch off after a long idle."""

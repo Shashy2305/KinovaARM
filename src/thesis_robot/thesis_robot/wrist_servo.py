@@ -287,7 +287,7 @@ def carry_path_blocker(start_xy, end_xy, obstacles, avoid=0.12, own_radius=0.08)
 
 
 def carry_detour(start_xy, end_xy, obstacles, avoid=0.12, own_radius=0.08, extra=0.03,
-                 x_range=(0.12, 0.58), y_range=(-0.34, 0.34)):
+                 x_range=(0.12, 0.62), y_range=(-0.48, 0.48)):
     """One via-point that routes the carry AROUND the obstacles it would pass within `avoid` of, or None.
     Candidates sit beside each blocking obstacle, perpendicular to the path, `avoid + extra` away from it; a
     candidate is used only if both legs are clear of every obstacle and it is inside the reachable table area.

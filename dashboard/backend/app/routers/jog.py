@@ -44,6 +44,25 @@ async def jog_gripper(body: dict = Body(...)):
     return await asyncio.to_thread(_jogger().gripper, body.get('action'), body.get('position'))
 
 
+@router.get('/robot/pose')
+async def robot_pose():
+    """One sample of the arm's link positions (base_link) for the 3D view."""
+    return await asyncio.to_thread(_jogger().robot_pose)
+
+
+@router.websocket('/ws/robot')
+async def ws_robot(websocket: WebSocket):
+    """Streams robot_pose() ~15 times a second while the page is open: the dashboard's live robot animation. Read-only: nothing here can move the arm."""
+    await websocket.accept()
+    j = _jogger()
+    try:
+        while True:
+            await websocket.send_json(await asyncio.to_thread(j.robot_pose))
+            await asyncio.sleep(0.066)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+
+
 @router.websocket('/ws/jog')
 async def ws_jog(websocket: WebSocket):
     """The browser sends one JSON command per tick while a button/stick is held (see Jogger.command) and gets the state back. When the socket closes the arm

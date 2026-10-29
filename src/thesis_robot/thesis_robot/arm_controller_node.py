@@ -164,6 +164,9 @@ class ArmControllerNode(Node):
         self.status_pub    = self.create_publisher(String, '/arm_status',        10)
         # What the gripper holds, for the planner (it once planned a pick of the cup that was already in the gripper, 2026-10-26). Latched so a planner that starts later still learns it.
         from rclpy.qos import DurabilityPolicy, QoSProfile
+        from std_msgs.msg import Float32
+        self.finger_pub = self.create_publisher(Float32, '/gripper_finger', 5)          # the finger position at 5 Hz for the dashboard (its joint feed has no gripper)
+        self.create_timer(0.2, self._publish_finger)
         self.held_pub = self.create_publisher(String, '/gripper_held', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.pp_status_pub = self.create_publisher(String, '/pick_place_status', 10)
         self.create_subscription(String, '/action_plan', self.plan_callback, 10)
@@ -2081,6 +2084,15 @@ class ArmControllerNode(Node):
             return float(self._current_joint_vector()[6])
         except Exception:
             return None
+
+    def _publish_finger(self):
+        try:
+            f = (self._js or {}).get('finger_joint')
+            if f is not None:
+                from std_msgs.msg import Float32
+                self.finger_pub.publish(Float32(data=float(f)))
+        except Exception:
+            pass
 
     def _restore_held(self):
         """After a restart the record of what the gripper holds (label, grasp height, lean) is read back from disk, but only while the fingers are still closed on something."""

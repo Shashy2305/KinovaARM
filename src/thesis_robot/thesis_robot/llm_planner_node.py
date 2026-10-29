@@ -30,7 +30,7 @@ SAFETY RULES — every action must obey ALL of these without exception:
   RULE 2: approach_z in pick >= {Z_FLOOR} (approach from well above object)
   RULE 3: place z >= {Z_FLOOR} (place gently, never at table level)
   RULE 4: Speed always exactly 0.20 (20% of maximum — safety requirement)
-  RULE 5: x must be in [0.10, 0.60]  y must be in [-0.35, 0.35]
+  RULE 5: x must be in [{X_RANGE}]  y must be in [{Y_RANGE}]
   RULE 6: Never command picking a stale object (stale=true in world state)
 
 AVAILABLE ACTIONS — use only these, no others:
@@ -63,7 +63,7 @@ WHICH ACTION FOR WHICH COMMAND:
     instance of it is stale, say so in "reasoning" and return an empty
     plan rather than guessing a position.
 
-WORKSPACE BOUNDS: x=[0.10, 0.60]  y=[-0.35, 0.35]  z=[{Z_FLOOR}, 0.50]
+WORKSPACE BOUNDS: x=[{X_RANGE}]  y=[{Y_RANGE}]  z=[{Z_FLOOR}, 0.50]
 
 RESPOND WITH EXACTLY THIS JSON STRUCTURE — no other format:
 {
@@ -648,7 +648,8 @@ class LLMPlannerNode(Node):
                 self.get_logger().warn(
                     f'No table geometry ({geom_err}) — using conservative flange floor '
                     f'z={z_floor:.2f}. Record the table in the dashboard.')
-            system_prompt = SYSTEM_PROMPT.replace('{Z_FLOOR}', f'{z_floor:.2f}')
+            system_prompt = (SYSTEM_PROMPT.replace('{Z_FLOOR}', f'{z_floor:.2f}')
+                             .replace('{X_RANGE}', f'{sg.PLAN_X_RANGE[0]:.2f}, {sg.PLAN_X_RANGE[1]:.2f}').replace('{Y_RANGE}', f'{sg.PLAN_Y_RANGE[0]:.2f}, {sg.PLAN_Y_RANGE[1]:.2f}'))
 
             scene_age = time.time() - self._scene_time
             if self._scene_time and scene_age > self.max_scene_age:

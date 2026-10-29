@@ -83,7 +83,8 @@ WS = {'x': (0.05, 0.60), 'y': (-0.55, 0.55), 'z': (-0.40, 2.0)}
 
 def test_reachable_matches_planner_limits_not_just_the_workspace_box():
     assert sg.is_reachable(0.30, 0.10, -0.03, WS, -0.06)
-    assert not sg.is_reachable(0.23, 0.43, -0.03, WS, -0.06)     # inside the box, outside the planner's |y|<=0.35
+    assert not sg.is_reachable(0.23, 0.53, -0.03, WS, -0.06)     # inside the box, outside the planner's |y|<=0.50
+    assert sg.is_reachable(0.56, -0.39, 0.01, WS, -0.0125)         # the mouse that was 'unreachable' at the old +-0.35 limit (2026-10-29)
     assert not sg.is_reachable(0.05, 0.0, -0.03, WS, -0.06)      # x below the planner minimum
     assert not sg.is_reachable(0.30, 0.10, None, WS, -0.06)
 

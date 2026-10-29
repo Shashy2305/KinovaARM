@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { CalibrationWizard } from '../components/CalibrationWizard'
 import { CommandConsole } from '../components/CommandConsole'
 import { FusionView } from '../components/FusionView'
+import { RobotView } from '../components/RobotView'
 import { MultiCameraView } from '../components/MultiCameraView'
 import { NodeControlGrid } from '../components/NodeControlGrid'
 import { SceneView } from '../components/SceneView'
@@ -77,6 +78,7 @@ export function Dashboard() {
           {tab === 'overview' && (
             <>
               <MultiCameraView />
+              <RobotView scene={(status?.ros.scene_snapshot as never) ?? null} />
               <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
                 <CommandConsole events={events} scene={status?.ros.scene_snapshot ?? null} />
                 <SceneView scene={status?.ros.scene_snapshot ?? null} unknown={status?.ros.unknown_obstacles?.obstacles ?? null} />
@@ -93,6 +95,7 @@ export function Dashboard() {
           {tab === 'jog' && (
             <>
               <MultiCameraView />
+              <RobotView scene={(status?.ros.scene_snapshot as never) ?? null} />
               <JogPanel />
             </>
           )}

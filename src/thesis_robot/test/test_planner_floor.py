@@ -273,8 +273,8 @@ def test_place_with_a_side_becomes_a_spot_on_that_side_and_unsatisfiable_sides_a
     plan = fix_place_targets([{'action': 'pick', 'object_id': 'cup_01'},
                               {'action': 'place', 'near': 'bowl_00', 'side': 'left'}], scene)
     assert plan[1]['y'] < -0.08 and 'side' not in plan[1] and 'near' not in plan[1]
-    # a bowl at the right-hand workspace edge has no free spot on its right
-    edge = {'bowl_00': {'label': 'bowl', 'x': 0.40, 'y': 0.33, 'z': 0.03, 'reachable': True, 'stale': False, 'confidence': 0.9},
+    # a bowl at the right-hand workspace edge (y limit 0.50 since 2026-10-29) has no free spot on its right
+    edge = {'bowl_00': {'label': 'bowl', 'x': 0.40, 'y': 0.48, 'z': 0.03, 'reachable': True, 'stale': False, 'confidence': 0.9},
             'cup_01': scene['cup_01']}
     plan = fix_place_targets([{'action': 'pick', 'object_id': 'cup_01'},
                               {'action': 'place', 'near': 'bowl_00', 'side': 'right'}], edge)

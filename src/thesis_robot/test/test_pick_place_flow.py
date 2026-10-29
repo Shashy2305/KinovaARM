@@ -343,8 +343,8 @@ def test_no_tilted_approach_falls_back_to_straight_down_when_ik_fails(node, tilt
 
 
 def test_leaving_the_planner_limits_falls_back_to_straight_down(node, tilt_world):
-    node.latest_scene['mouse_00'].update(x=0.55)
-    set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=180.0)             # leaning toward -x pushes the flange to x > 0.6
+    node.latest_scene['mouse_00'].update(x=0.62)
+    set_params(node, approach_tilt_deg=20.0, tilt_azimuth_deg=180.0)             # leaning toward -x pushes the flange to x > 0.65
     assert run_pick(node) is True
     assert tilt_world.guarded == []
 
