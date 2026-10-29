@@ -5,7 +5,7 @@ Subscribes to:  /action_plan
                 /scene_snapshot  (object positions for `pick`, base_link)
 Publishes to:   /arm_status, /pick_place_status
 """
-import rclpy, json, math, time, threading
+import os, rclpy, json, math, time, threading
 import numpy as np
 import tf2_ros
 import tf2_geometry_msgs
@@ -41,6 +41,7 @@ HOME_JOINTS = [0.0, -0.35, 3.14, -2.27, 0.0, 0.96, 1.57]
 # closed. The previous 0.14/0.02 values were backwards — 0.14 mostly
 # closes the gripper and 0.02 leaves it nearly fully open, so a pick
 # sequence would never actually grip anything.
+HELD_FILE = os.path.expanduser('~/.ros/held_object.json')     # what the gripper holds, kept across a controller restart
 GRIPPER_OPEN   = 0.0
 CARRY_CEILING_Z = 0.50       # highest flange height a carry is raised to (the same ceiling the hover uses)
 GRIPPER_CLOSED = 0.695
@@ -362,6 +363,7 @@ class ArmControllerNode(Node):
         # put the fingertips into the table: flange z=0.12 -> tips at ~-0.09).
         geom, _ = sg.load_geometry()
         x_range, y_range = sg.PLAN_X_RANGE, sg.PLAN_Y_RANGE
+        horizontal_tool = False
         floor_z = sg.flange_floor_z(geom)
         if cartesian and not (self.dry_run or self.moveit2 is None):
             # a straight-line move keeps the tool's orientation: with the tool leaning or horizontal (side grasp) the pads hang less far below the flange
@@ -370,6 +372,7 @@ class ArmControllerNode(Node):
             floor_z = min(floor_z, sg.flange_floor_for_axis_z(geom, axis_z))
             if axis_z > -0.5:                      # horizontal-ish tool (side grasp): the flange is ~0.3 m behind the object, which is what the planner ranges are for
                 x_range, y_range = go.FLANGE_X_RANGE, go.FLANGE_Y_RANGE
+                horizontal_tool = True
         rx = max(x_range[0], min(x_range[1], rx))
         ry = max(y_range[0], min(y_range[1], ry))
         if min_flange_z is not None:
@@ -383,9 +386,22 @@ class ArmControllerNode(Node):
                 f'{" cartesian" if cartesian else ""}')
             time.sleep(0.5)
             return True
+        if cartesian and horizontal_tool:
+            # With the tool horizontal (side grasp) MoveIt's straight-line planner flipped the wrist mid-path on a 5 cm lift (2026-10-29: a waypoint 12 cm lower, refused by the path check).
+            # A SHORT move is done in joint space instead: the IK solution nearest the current joints for the same orientation, so the path is a few mm from the line and nothing flips.
+            here = self._tf_pose(BASE_LINK, EE_LINK)[1]
+            if math.dist((rx, ry, rz), (float(here[0]), float(here[1]), float(here[2]))) <= self.SHORT_MOVE_M:
+                try:
+                    goal, _q = self._solve_goal_joints([rx, ry, rz], self._actual_tool_quat(), False)
+                except Exception as e:
+                    self.get_logger().error(f'move_to ({rx:.3f},{ry:.3f},{rz:.3f}): {e}')
+                    return False
+                return self._guarded_move(geom, f'move_to ({rx:.3f},{ry:.3f},{rz:.3f}) [joint space, orientation kept]', joint_positions=goal)
         return self._guarded_move(
             geom, f'move_to ({rx:.3f},{ry:.3f},{rz:.3f})',
             position=[rx, ry, rz], cartesian=cartesian)
+
+    SHORT_MOVE_M = 0.20              # longer straight lines with a horizontal tool stay cartesian
 
     # ── SAFETY: planning scene + trajectory check ────────────────────
     def _move_group_count(self):
@@ -853,6 +869,7 @@ class ArmControllerNode(Node):
         return aa.approach_poses(tip_xyz, tilt, az, standoff=self.TILT_STANDOFF_M)
 
     def _pick_once(self, object_id, pos, approach_z):
+        self._restore_held()
         self._release_if_empty_unknown()
         if not (self.dry_run or self.moveit2 is None) and self._is_holding():
             self._refuse('pick: the gripper is already holding something — put it down first '
@@ -1030,11 +1047,24 @@ class ArmControllerNode(Node):
             goal, flipped, why = None, False, None
             for flip in (False, True):
                 try:
-                    goal, _q = self._solve_goal_joints([float(v) for v in high], go.side_quat(az, flip), False)
+                    goal, q_used = self._solve_goal_joints([float(v) for v in high], go.side_quat(az, flip), False)
                     flipped = flip
-                    break
                 except Exception as e:
                     why = e
+                    continue
+                # The whole motion must be reachable, not only the first pose: down to the pre pose, in to the grasp, and 10 cm UP again (2026-10-29 the first direction with a solution left the
+                # arm against two joint limits and the cup could not be lifted any higher).
+                seed, bad = goal, None
+                for name, pos in (('pre pose', pre), ('grasp pose', grasp_fl), ('lift', grasp_fl + np.array([0.0, 0.0, 0.10]))):
+                    sol = self._ik(seed, [float(v) for v in pos], q_used, 0.3)
+                    if sol is None:
+                        bad = name
+                        break
+                    seed = sol
+                if bad:
+                    why, goal = f'the {bad} has no IK solution from there', None
+                    continue
+                break
             if goal is None:
                 self.get_logger().info(f'pick: side grasp toward {az:.0f}: no IK solution ({why})')
                 return None
@@ -1182,7 +1212,8 @@ class ArmControllerNode(Node):
         # grasp_z: the FLANGE height at the grasp. On a lean the flange sits lower than for a straight grasp (the fingertips are TCP_REACH_M along the leaning tool).
         self._set_held({'label': label, 'object_id': object_id,
                         'grasp_z': float(lean['grasp'][2]) if lean else grasp_z,
-                        'tilt': float(lean['tilt']) if lean else 0.0, 'az': float(lean['az']) if lean else 0.0})
+                        'tilt': float(lean['tilt']) if lean else 0.0, 'az': float(lean['az']) if lean else 0.0,
+                        'j7': self._wrist_angle_now()})
         self._training('commit', label=label)
         self._log_end(True)
         return True, None
@@ -1776,6 +1807,7 @@ class ArmControllerNode(Node):
         """Put the held object down: carry it (object ~12 cm above the table) to the target, lower
         it to the height it stood at when it was picked, open the gripper, back straight up.
         Every move is a guarded cartesian move; any failure stops with the object still held."""
+        self._restore_held()                              # (after a restart: the grasp height and lean come back from disk BEFORE the floors below are worked out)
         geom, _ = sg.load_geometry()
         # held with the tool leaning or horizontal (a leaned / side grasp): the pads hang less far below the flange, so the flange may go lower (same as _move_to for a straight-line move)
         held_tilt = float((self._held or {}).get('tilt', 0.0) or 0.0)
@@ -1794,6 +1826,16 @@ class ArmControllerNode(Node):
         if self._held is None and z is None:
             return self._refuse('place: do not know how the object is held (no pick in this run) — '
                                 'give a z, or open the gripper by hand')
+        if held_tilt >= 45.0 and self._held and self._held.get('j7') is not None:
+            # A side-held object stays upright only while the wrist is where it was at the grasp (turning the wrist about a horizontal tool rolls it onto its side).
+            try:
+                dq = float(self._held['j7']) - float(self._current_joint_vector()[6])
+            except Exception as e:
+                return self._refuse(f'place: cannot read the wrist angle ({e})')
+            if abs(dq) > 0.15:
+                self.get_logger().warn(f'place: the wrist is {math.degrees(-dq):+.0f} deg from where it gripped the object: turning it back so the object is upright')
+                if not self._rotate_wrist(dq):
+                    return False
         try:
             _, g = self._tf_pose(BASE_LINK, EE_LINK)
             pad = self._pad_midpoint_xy(default=(g[0], g[1]))
@@ -1860,7 +1902,10 @@ class ArmControllerNode(Node):
         except Exception:
             pass
         steps = []
-        if g[2] < carry_z - 0.005:
+        horizontal_hold = held_tilt >= 45.0
+        if g[2] < carry_z - 0.005 and (far or not horizontal_hold):
+            # (a side-held cup that is already over its spot is simply lowered: the lift is only to clear things on the way, and with the tool horizontal the arm can be too close to a joint
+            # limit to go up at all, 2026-10-29)
             steps.append(('lift', lambda: self._move_verified(g[0], g[1], carry_z, 'lift')))
         if far:
             if via is not None:
@@ -1877,7 +1922,7 @@ class ArmControllerNode(Node):
                          if math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) > ws.SAME_OBJECT_M
                          and math.hypot(o[1] - tx, o[2] - ty) > ws.SAME_OBJECT_M    # (the carried object is over the target)
                          # the carried object's own scene entry (lifted, so it can sit 6-7 cm off the pad midpoint)
-                         and not (o[0] == held_label and math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) < 0.12)]
+                         and not (o[0] == held_label and math.hypot(o[1] - held_xy[0], o[2] - held_xy[1]) < (0.20 if held_tilt >= 45.0 else 0.12))]
             for turned in (False, True):
                 axis = self._closing_axis_xy()
                 blocker = ws.finger_sweep_blocker(
@@ -1887,7 +1932,7 @@ class ArmControllerNode(Node):
                     margin=float(self.get_parameter('sweep_margin_m').value)) if axis else None
                 if blocker is None:
                     return True
-                if turned:
+                if turned or held_tilt >= 45.0:                  # (never turn the wrist of a side-held object: it would roll onto its side)
                     return self._refuse(f'place: the opening fingers would hit the {blocker} next to the target spot')
                 self.get_logger().info(f'place: the opening fingers would sweep the {blocker} — turning the wrist 90 degrees')
                 try:
@@ -1908,10 +1953,17 @@ class ArmControllerNode(Node):
                 self._log_note(failed_in=name)
                 return False
         self._publish_pp_status('place: release')
+        held_az_known = bool(self._held) and 'az' in self._held          # (opening the gripper forgets the held record: read it first)
+        held_az = float(self._held['az']) if held_az_known else 0.0
         if not self._open_gripper():
             return False
         self._set_held(None)
         self._publish_pp_status('place: retreat')
+        if horizontal_hold:
+            # back out along the tool axis, the way the fingers came in: they slide off the cup sideways, nothing lifts or drags it
+            a = go.side_axis(held_az if held_az_known else 0.0) if held_az_known else None
+            if a is not None:
+                return self._move_verified(fx - go.STANDOFF_M * a[0], fy - go.STANDOFF_M * a[1], set_z - go.STANDOFF_M * a[2], 'retreat (back along the tool axis)', min_flange_z=low_floor)
         return self._move_verified(fx, fy, carry_z, 'retreat')
 
     def _gripper(self, position, label):
@@ -2007,10 +2059,40 @@ class ArmControllerNode(Node):
         """The one place that changes self._held: also publishes it on /gripper_held ({"held": null} or {"held": {"label", "object_id"}})."""
         self._held = held
         try:
+            if 'PYTEST_CURRENT_TEST' in os.environ:                 # the tests must never touch the real record
+                pass
+            elif held:
+                os.makedirs(os.path.dirname(HELD_FILE), exist_ok=True)
+                with open(HELD_FILE, 'w') as f:
+                    json.dump(held, f)
+            elif os.path.exists(HELD_FILE):
+                os.remove(HELD_FILE)
+        except Exception:
+            pass
+        try:
             payload = None if not held else {'label': held.get('label'), 'object_id': held.get('object_id')}
             self.held_pub.publish(String(data=json.dumps({'held': payload})))
         except Exception:
             pass
+
+    def _wrist_angle_now(self):
+        """Joint 7 (rad) now, or None: recorded at the grasp so a side-held object can be turned back upright if the wrist is ever turned."""
+        try:
+            return float(self._current_joint_vector()[6])
+        except Exception:
+            return None
+
+    def _restore_held(self):
+        """After a restart the record of what the gripper holds (label, grasp height, lean) is read back from disk, but only while the fingers are still closed on something."""
+        if self.dry_run or self._held is not None or not self._is_holding() or not os.path.exists(HELD_FILE) or 'PYTEST_CURRENT_TEST' in os.environ:
+            return
+        try:
+            held = json.load(open(HELD_FILE))
+            if isinstance(held, dict) and held.get('label') and held.get('grasp_z') is not None:
+                self.get_logger().info(f'the gripper is closed on something: restored the held record from the last run ({held.get("label")})')
+                self._set_held(held)
+        except Exception as e:
+            self.get_logger().warn(f'could not read the saved held record: {e}')
 
     def _status_heartbeat(self):
         """Re-publish the current status: a status published once at startup is lost if the

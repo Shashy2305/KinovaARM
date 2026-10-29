@@ -533,6 +533,8 @@ def side_world(node, tilt_world, monkeypatch):
     from rclpy.parameter import Parameter
     tilt_world.node.latest_scene = {'cup_00': {'label': 'cup', 'x': 0.40, 'y': 0.0, 'z': 0.045, 'confidence': 0.95, 'reachable': True, 'stale': False}}
     monkeypatch.setattr(acn.ol, 'read_records', lambda *a, **k: [])
+    tilt_world.iks = []
+    monkeypatch.setattr(node, '_ik', lambda seed, pos, quat, timeout_s=0.15: (tilt_world.iks.append(tuple(round(float(v), 3) for v in pos)) or [0.0] * 7))
     node.set_parameters([Parameter('side_grasp', Parameter.Type.STRING, 'auto')])
     yield tilt_world
     node.set_parameters([Parameter('side_grasp', Parameter.Type.STRING, 'off')])
@@ -702,3 +704,117 @@ def test_the_held_record_is_forgotten_once_the_fingers_have_been_open_for_a_seco
     now[0] += 5.0
     node._on_joint_state(JointState(name=['finger_joint'], position=[0.31]))
     assert node._held is not None
+
+
+# ---- the held record survives a restart; a short move with a horizontal tool is done in joint space ----------------------------------------------------------
+def test_the_held_record_is_restored_from_disk_only_while_the_fingers_are_closed(node, world, monkeypatch, tmp_path):
+    f = tmp_path / 'held.json'
+    f.write_text('{"label": "cup", "object_id": "cup_00", "grasp_z": 0.087, "tilt": 84.7, "az": 45.0}')
+    monkeypatch.setattr(acn, 'HELD_FILE', str(f))
+    monkeypatch.delenv('PYTEST_CURRENT_TEST')
+    node._held = None
+    node._js = {'finger_joint': 0.007}                                     # open: nothing to restore
+    node._restore_held()
+    assert node._held is None
+    node._js = {'finger_joint': 0.30}
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    node._restore_held()
+    assert node._held['label'] == 'cup' and node._held['az'] == 45.0 and node._held['grasp_z'] == 0.087
+    node._set_held(None)                                                     # released: the file goes too
+    assert not f.exists()
+
+
+def test_a_short_straight_move_with_a_horizontal_tool_goes_through_joint_space(node, monkeypatch):
+    from thesis_robot import arm_controller_node as m
+    calls = []
+    node.dry_run, node.moveit2 = False, object()
+    monkeypatch.setattr(m.sg, 'load_geometry', lambda *a, **k: (TABLE, None))
+    monkeypatch.setattr(node, '_transform_to_robot_frame', lambda x, y, z: (x, y, z))
+    monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: [0.7387, -0.0282, 0.0167, 0.6733])      # the side-grasp orientation (axis nearly horizontal)
+    monkeypatch.setattr(node, '_tf_pose', lambda *a, **k: (np.eye(3), [0.247, 0.001, 0.153]))
+    monkeypatch.setattr(node, '_solve_goal_joints', lambda pos, quat, yaw: (calls.append(('ik', tuple(round(v, 3) for v in pos))) or [0.1] * 7, quat))
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False: (calls.append(('move', label, joint_positions is not None, cartesian)) or True))
+    assert node._move_to(0.247, 0.001, 0.207, cartesian=True) is True
+    assert calls[0] == ('ik', (0.247, 0.001, 0.207)) and calls[1][2] is True and calls[1][3] is False
+    calls.clear()
+    assert node._move_to(0.247, 0.001, 0.60, cartesian=True, max_flange_z=0.6) is True                              # 45 cm: stays a straight line
+    assert calls == [('move', 'move_to (0.247,0.001,0.600)', False, True)]
+
+
+def test_a_place_after_a_restart_uses_the_restored_lean_for_its_floors(node, side_world, monkeypatch, tmp_path):
+    from thesis_robot import grasp_options as go
+    f = tmp_path / 'held.json'
+    f.write_text('{"label": "cup", "object_id": "cup_00", "grasp_z": 0.087, "tilt": 84.7, "az": 45.0}')
+    monkeypatch.setattr(acn, 'HELD_FILE', str(f))
+    monkeypatch.delenv('PYTEST_CURRENT_TEST')
+    node._held = None
+    node.latest_scene = {}
+    node._js = {'finger_joint': 0.30}
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.247, 0.001, side_world.z_flange]))
+    side_world.z_flange = 0.153
+    assert node._place(here=True) is True
+    lower = [v for v in side_world.verified if v[3] == 'lower'][0]
+    assert lower[2] < 0.15                                                       # 0.09, not the upright 0.23
+    assert go.SIDE_TILT_DEG == pytest.approx(84.7)
+
+
+def test_a_side_direction_whose_lift_has_no_solution_is_skipped_for_the_next_one(node, side_world, monkeypatch):
+    """2026-10-29: the first direction with an IK solution for the first pose left the arm against its joint limits; the cup could not be lifted. All of pre / grasp / lift must have solutions."""
+    from thesis_robot import grasp_options as go
+    state = {'n': 0}
+
+    def ik(seed, pos, quat, timeout_s=0.15):
+        state['n'] += 1
+        return None if state['n'] % 3 == 0 and state['n'] <= 3 else [0.0] * 7           # the 3rd call (the lift of the first direction) fails once
+    monkeypatch.setattr(node, '_ik', ik)
+    assert run_cup_pick(node) is True
+    assert state['n'] >= 6                                                              # the first direction was abandoned, the second validated in full
+    assert node._held['tilt'] == pytest.approx(go.SIDE_TILT_DEG)
+
+
+def test_a_side_held_cup_over_its_spot_is_lowered_without_a_lift_and_backed_out_along_the_axis(node, side_world, monkeypatch):
+    from thesis_robot import grasp_options as go
+    assert run_cup_pick(node) is True
+    held = dict(node._held)
+    side_world.verified.clear()
+    side_world.z_flange = 0.153
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.247, 0.001, side_world.z_flange]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    node._held = held
+    node.latest_scene = {}
+    assert node._place(here=True) is True
+    names = [v[3] for v in side_world.verified]
+    assert 'lift' not in names and names[0] == 'lower'
+    back = [v for v in side_world.verified if v[3].startswith('retreat')][0]
+    a = go.side_axis(held['az'])
+    assert back[0] == pytest.approx(0.247 - go.STANDOFF_M * a[0], abs=2e-3) and back[1] == pytest.approx(0.001 - go.STANDOFF_M * a[1], abs=2e-3)
+
+
+def test_the_place_turns_the_wrist_back_to_where_it_gripped_a_side_held_object(node, side_world, monkeypatch):
+    assert run_cup_pick(node) is True
+    assert node._held['j7'] == 0.0                                           # recorded at the grasp (the fake arm reports 0)
+    held = dict(node._held)
+    side_world.verified.clear(); side_world.rotations.clear()
+    side_world.z_flange = 0.153
+    monkeypatch.setattr(node, '_current_joint_vector', lambda: np.array([0, 0, 0, 0, 0, 0, math.radians(90.0)]))      # the wrist got turned 90 deg
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.247, 0.001, side_world.z_flange]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    node._held = held
+    node.latest_scene = {}
+    assert node._place(here=True) is True
+    assert side_world.rotations[:1] == [-90.0]                               # first thing: back to the grasp angle
+
+
+def test_a_neighbour_beside_a_side_held_cups_target_refuses_instead_of_turning_the_wrist(node, side_world, monkeypatch):
+    assert run_cup_pick(node) is True
+    held = dict(node._held)
+    side_world.verified.clear(); side_world.rotations.clear()
+    side_world.z_flange = 0.153
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.247, 0.001, side_world.z_flange]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_closing_axis_xy', lambda: (1.0, 0.0))
+    node._held = held
+    node.latest_scene = {'bottle_00': {'label': 'bottle', 'x': 0.247 + 0.12, 'y': 0.001, 'z': 0.10, 'confidence': 0.95, 'stale': False}}
+    assert node._place(here=True) is False
+    assert side_world.rotations == [] and side_world.verified == []
