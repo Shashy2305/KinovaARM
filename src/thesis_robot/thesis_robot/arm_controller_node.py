@@ -1796,6 +1796,8 @@ class ArmControllerNode(Node):
                 continue
             if not (-0.05 <= x <= 0.85 and -0.95 <= y <= 0.95 and -0.03 <= z <= 0.32):
                 continue
+            if str(o.get('label', '')).endswith('_obj'):
+                continue                          # an HSV colour blob (red_obj, blue_obj ...): clutter and parts of the robot, not an object; it blocked a put-down next to the base
             if ws.OBJECT_HEIGHT_M.get(o.get('label'), ws.DEFAULT_HEIGHT_M) < min_height:
                 continue
             out.append((o.get('label', oid), x, y))

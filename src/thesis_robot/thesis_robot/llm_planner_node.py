@@ -202,6 +202,8 @@ def _scene_points(scene, skip=()):
     for oid, o in (scene or {}).items():
         if oid in skip or not isinstance(o, dict) or o.get('stale'):
             continue
+        if str(o.get('label', '')).endswith('_obj'):
+            continue                                  # an HSV colour blob (red_obj ...): clutter or a part of the robot, never an obstacle
         if _is_number(o.get('confidence')) and o['confidence'] < 0.65:
             continue                                  # phantoms read 0.5-0.62; real objects 0.9+
         if not (_is_number(o.get('x')) and _is_number(o.get('y')) and _is_number(o.get('z'))):

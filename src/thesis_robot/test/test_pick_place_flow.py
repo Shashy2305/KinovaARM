@@ -907,3 +907,9 @@ def test_go_home_from_a_horizontal_tool_rises_first_and_from_an_upright_one_goes
     monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: list(GRASP_QUAT))                           # upright
     assert node._safe_home() is True
     assert calls == [('home', 'go_home')]
+
+
+def test_colour_blob_detections_do_not_block_a_place_in_the_arm_controller(node, world):
+    node.latest_scene = {'red_obj_00': {'label': 'red_obj', 'x': 0.23, 'y': 0.13, 'z': 0.0, 'confidence': 0.95, 'stale': False},
+                         'cup_00': {'label': 'cup', 'x': 0.4, 'y': 0.0, 'z': 0.04, 'confidence': 0.95, 'stale': False}}
+    assert [lab for lab, _x, _y in node._scene_obstacles()] == ['cup']

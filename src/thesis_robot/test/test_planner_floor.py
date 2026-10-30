@@ -301,3 +301,10 @@ def test_free_spots_stay_within_the_reach_even_at_the_far_edge():
     scene = {'cup_01': {'label': 'cup', 'x': 0.533, 'y': -0.24, 'z': 0.04, 'reachable': True, 'stale': False, 'confidence': 0.9}}
     spot = find_free_spot((0.533, -0.24), scene, (0.533, -0.24), skip=('cup_01',))
     assert spot is not None and math.hypot(*spot) <= PLACE_MAX_RADIUS_M + 1e-6              # 0.612, -0.362 (0.71 m out) is no longer chosen
+
+
+def test_colour_blob_detections_are_not_obstacles_for_placing():
+    from thesis_robot.llm_planner_node import _scene_points
+    scene = {'cup_01': {'label': 'cup', 'x': 0.4, 'y': 0.0, 'z': 0.04, 'confidence': 0.95, 'stale': False},
+             'red_obj_00': {'label': 'red_obj', 'x': 0.23, 'y': 0.13, 'z': -0.04, 'confidence': 0.9, 'stale': False}}
+    assert [oid for oid, _x, _y in _scene_points(scene)] == ['cup_01']
