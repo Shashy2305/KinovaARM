@@ -38,6 +38,16 @@ export interface JogState {
   lowest_link_above_limit_cm?: number; fault: boolean; arm_status: string; finger?: number
 }
 
+export interface LearningMap {
+  label: string; labels: string[]; x: number[]; y: number[]
+  grid: Record<string, [number, number][][]>          // method -> [x][y] -> [local success rate, evidence]
+  side_allowed: boolean[][]
+  dots: { method: string; x: number; y: number; ok: boolean }[]
+  totals: Record<string, { trials: number; successes: number }>
+  seed_zone: { x: number[]; y: number[] }
+  params: { sigma_m: number; trust_radius_m: number; trust_min_rate: number; block_rate: number }
+}
+
 export interface TableStatus {
   pose: { x: number; y: number; z: number } | null
   pose_message: string
@@ -64,6 +74,7 @@ async function request<T = unknown>(path: string, init?: RequestInit): Promise<T
 export const api = {
   status: () => request<StatusPayload>('/status'),
   outcomes: (liveOnly = true) => request<OutcomeSummary>(`/outcomes/summary?live_only=${liveOnly}`),
+  learning: (label = 'cup') => request<LearningMap>(`/outcomes/learning?label=${encodeURIComponent(label)}`),
   nodes: () => request<Record<string, ProcessInfo>>('/nodes'),
   startNode: (id: string) => request<ActionResult>(`/nodes/${id}/start`, { method: 'POST' }),
   stopNode: (id: string) => request<ActionResult>(`/nodes/${id}/stop`, { method: 'POST' }),

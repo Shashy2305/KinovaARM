@@ -3,6 +3,7 @@ import { CalibrationWizard } from '../components/CalibrationWizard'
 import { CommandConsole } from '../components/CommandConsole'
 import { FusionView } from '../components/FusionView'
 import { RobotView } from '../components/RobotView'
+import { LearningPanel } from '../components/LearningPanel'
 import { MultiCameraView } from '../components/MultiCameraView'
 import { NodeControlGrid } from '../components/NodeControlGrid'
 import { SceneView } from '../components/SceneView'
@@ -84,6 +85,7 @@ export function Dashboard() {
                 <SceneView scene={status?.ros.scene_snapshot ?? null} unknown={status?.ros.unknown_obstacles?.obstacles ?? null} />
               </div>
               <OutcomesPanel />
+              <LearningPanel />
               <NodeControlGrid processes={processes} onRefresh={noopRefresh} />
               <SystemLog processes={processes} />
             </>
