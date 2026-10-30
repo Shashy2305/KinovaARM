@@ -890,3 +890,20 @@ def test_a_cup_with_a_detected_handle_is_aligned_from_the_handle_and_one_without
     monkeypatch.setattr(node, '_wrist_match', lambda label, xy, timeout=3.0, after=None: base)
     node._align_for_handle('cup', (0.4, 0.0))
     assert used == []                                                                               # no handle found: the old short-side rule
+
+
+def test_go_home_from_a_horizontal_tool_rises_first_and_from_an_upright_one_goes_straight_home(node, world, monkeypatch):
+    from thesis_robot import arm_controller_node as m
+    calls = []
+    node.dry_run, node.moveit2 = False, object()
+    monkeypatch.setattr(m.sg, 'load_geometry', lambda *a, **k: (TABLE, None))
+    monkeypatch.setattr(node, '_tf_pose', lambda *a, **k: (np.eye(3), [0.185, 0.151, 0.226]))
+    monkeypatch.setattr(node, '_move_to', lambda x, y, z, **kw: (calls.append(('rise', round(z, 2), kw.get('cartesian'))) or True))
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None: (calls.append(('home', label)) or True))
+    monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: [0.7387, -0.0282, 0.0167, 0.6733])          # the side-grasp orientation
+    assert node._safe_home() is True
+    assert calls == [('rise', 0.5, True), ('home', 'go_home')]
+    calls.clear()
+    monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: list(GRASP_QUAT))                           # upright
+    assert node._safe_home() is True
+    assert calls == [('home', 'go_home')]

@@ -414,6 +414,7 @@ class ArmControllerNode(Node):
             geom, f'move_to ({rx:.3f},{ry:.3f},{rz:.3f})',
             position=[rx, ry, rz], cartesian=cartesian)
 
+    HOME_RISE_Z = 0.50               # go_home from a horizontal tool first rises to this flange height
     SHORT_MOVE_M = 0.20              # longer straight lines with a horizontal tool stay cartesian
 
     # ── SAFETY: planning scene + trajectory check ────────────────────
@@ -2070,6 +2071,18 @@ class ArmControllerNode(Node):
         # Retry up to 5 times waiting for zero velocity -- but never retry
         # a move that was refused on safety grounds.
         geom, _ = sg.load_geometry()
+        # From the horizontal pose of a side grasp the joint-space swing home dips a finger pad under the table margin (2026-10-29: refused by 1 mm, and the arm was stuck there). Rise first, with the
+        # tool kept horizontal (short joint-space steps), so the swing starts high.
+        try:
+            qx, qy = self._actual_tool_quat()[:2]
+            if 1.0 - 2.0 * (qx * qx + qy * qy) > -0.5:
+                _, g = self._tf_pose(BASE_LINK, EE_LINK)
+                if g[2] < self.HOME_RISE_Z - 0.02:
+                    self.get_logger().info(f'go_home: the tool is horizontal: rising to z={self.HOME_RISE_Z:.2f} first')
+                    if not self._move_to(float(g[0]), float(g[1]), self.HOME_RISE_Z, cartesian=True, max_flange_z=self.HOME_RISE_Z + 0.02):
+                        self.get_logger().warn('go_home: could not rise first; trying the direct swing')
+        except Exception as e:
+            self.get_logger().warn(f'go_home: the pre-rise failed ({e}); trying the direct swing')
         for attempt in range(5):
             try:
                 if not self._guarded_move(geom, 'go_home', joint_positions=HOME_JOINTS):
