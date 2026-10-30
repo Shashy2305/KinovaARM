@@ -103,9 +103,9 @@ class ArmControllerNode(Node):
         self.declare_parameter('approach_tilt_deg', 0.0)           # 0 = straight down. A lean is OFF until the place leans like the pick (2026-10-26: a cup gripped on a 30 deg lean and carried upright was dropped by the straight set-down)
         self.declare_parameter('retry_tilt_deg', 0.0)
         # Side grasp (grasp_options.py, docs/demonstrations/cup_side_grasp_2026-10-26): the tool horizontal, the pads across the object just under its rim, the object stays upright, like a person
-        # holding a cup. 'off' = never (the default until it has been watched live); 'auto' = ranked against straight-down and the lean by clearance to the neighbours, the handle and past outcomes
+        # holding a cup. 'off' = never; 'auto' (the default since 2026-10-29) = ranked against straight-down and the lean by clearance to the neighbours, the handle and past outcomes, ONLY inside grasp_options.SIDE_ZONE and with the swing gate
         # (tall enough objects only); 'only' = side or nothing (for testing).
-        self.declare_parameter('side_grasp', 'off')
+        self.declare_parameter('side_grasp', 'auto')
         self.declare_parameter('auto_release_empty_gripper', True)   # open a gripper left half closed on nothing (nothing held, no object near the pads) instead of refusing every pick
         self.declare_parameter('tilt_azimuth_deg', -1.0)
         self.declare_parameter('tilt_cap_deg', 30.0)             # the highest lean ever asked for, whatever approach_tilt_deg says (30 = the live-tested limit; step up: 35, 45); never above TILT_HARD_MAX_DEG

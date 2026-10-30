@@ -68,7 +68,8 @@ class World:
         # /training_sample requests reached the REAL wrist detector and saved fake samples. Off here; the tests that need it re-enable
         # it with the publisher patched.
         node.set_parameters([rclpy.parameter.Parameter('outcome_log', rclpy.Parameter.Type.BOOL, False),
-                             rclpy.parameter.Parameter('collect_training_samples', rclpy.Parameter.Type.BOOL, False)])
+                             rclpy.parameter.Parameter('collect_training_samples', rclpy.Parameter.Type.BOOL, False),
+                             rclpy.parameter.Parameter('side_grasp', rclpy.Parameter.Type.STRING, 'off')])     # (the shipped default is 'auto'; the legacy flow tests are about the top-down / lean code)
 
     # fake hardware ------------------------------------------------------------------------------------------------
     def move_to(self, x, y, z, cartesian=False, min_flange_z=None, max_flange_z=None, **kw):

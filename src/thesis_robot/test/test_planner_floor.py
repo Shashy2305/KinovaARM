@@ -293,3 +293,11 @@ def test_a_place_near_the_robot_base_becomes_a_free_spot_just_outside_the_base_c
     assert PLACE_MIN_RADIUS_M <= r <= 0.40                                       # just outside the column, near the base
     assert math.hypot(st['x'] - 0.30, st['y'] - 0.05) >= 0.12                    # clear of the mouse
     assert st['y'] > -0.1                                                        # on the side the cup came from (shortest carry)
+
+
+def test_free_spots_stay_within_the_reach_even_at_the_far_edge():
+    from thesis_robot.llm_planner_node import find_free_spot, PLACE_MAX_RADIUS_M
+    import math
+    scene = {'cup_01': {'label': 'cup', 'x': 0.533, 'y': -0.24, 'z': 0.04, 'reachable': True, 'stale': False, 'confidence': 0.9}}
+    spot = find_free_spot((0.533, -0.24), scene, (0.533, -0.24), skip=('cup_01',))
+    assert spot is not None and math.hypot(*spot) <= PLACE_MAX_RADIUS_M + 1e-6              # 0.612, -0.362 (0.71 m out) is no longer chosen

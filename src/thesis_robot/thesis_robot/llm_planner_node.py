@@ -186,6 +186,7 @@ PLACE_RINGS_M = (0.15, 0.18, 0.22)      # distance from the target object's cent
 PLACE_MIN_CLEAR_M = 0.12                # centre-to-centre distance to any OTHER object (mug r~0.045 + object r~0.05 + margin)
 PLACE_EDGE_MARGIN_M = 0.03              # stay this far inside the planner's x/y limits
 PLACE_MIN_RADIUS_M = 0.25               # keep away from the robot's own base column
+PLACE_MAX_RADIUS_M = 0.66               # and away from the far edge of the reach: a spot 0.71 m out made the carry stop 4 cm short (2026-10-29)
 BASE_RINGS_M = (0.27, 0.31, 0.36)        # 'near the robot base': distance from the base axis to try (just outside the base column), the spot nearest to where the object was picked wins
 
 
@@ -242,7 +243,7 @@ def find_free_spot(target_xy, scene, prefer_xy, skip=(), rings=PLACE_RINGS_M, mi
                 off = 0.0
             a = math.radians(deg)
             x, y = target_xy[0] + r * math.cos(a), target_xy[1] + r * math.sin(a)
-            if not (xlo <= x <= xhi and ylo <= y <= yhi) or math.hypot(x, y) < PLACE_MIN_RADIUS_M:
+            if not (xlo <= x <= xhi and ylo <= y <= yhi) or not (PLACE_MIN_RADIUS_M <= math.hypot(x, y) <= PLACE_MAX_RADIUS_M):
                 continue
             if any(math.hypot(x - ox, y - oy) < min_clear for _, ox, oy in others):
                 continue
