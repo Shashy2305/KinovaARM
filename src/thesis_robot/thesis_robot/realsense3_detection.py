@@ -18,6 +18,7 @@ from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2, numpy as np
+from thesis_robot import object_colour as oc
 
 try:
     from ultralytics import YOLO
@@ -185,7 +186,7 @@ class RealSense3Detection(Node):
                         x1,y1,x2,y2 = map(int, box.xyxy[0])
                         u = (x1+x2)//2
                         v = (y1+y2)//2
-                        raw_detections.append((cls_name, conf, u, v))
+                        raw_detections.append((cls_name, conf, u, v, (x1, y1, x2, y2)))
             except Exception as e:
                 self.get_logger().warn(f'YOLO error: {e}')
 
@@ -199,7 +200,7 @@ class RealSense3Detection(Node):
         detections = []
         display = bgr.copy()
 
-        for label, conf, u, v in raw_detections:
+        for label, conf, u, v, *rest in raw_detections:
             depth_m = self._get_depth(u, v)
             if depth_m < 0.1:
                 continue
@@ -207,9 +208,11 @@ class RealSense3Detection(Node):
             if coords is None:
                 continue
             cx3, cy3, cz3 = coords
+            colour = oc.colour_name(bgr, rest[0]) if rest else oc.fallback_colour(label)
 
             detections.append({
                 'label':      label,
+                'color':      colour,
                 'confidence': round(conf, 3),
                 'cx_3d':      round(cx3, 4),
                 'cy_3d':      round(cy3, 4),

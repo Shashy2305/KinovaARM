@@ -38,6 +38,7 @@ AVAILABLE ACTIONS — use only these, no others:
   {"action":"pick",         "object_id":"str", "approach_z":float}
   {"action":"place",        "near":"object_id"}     (put the held object down next to that object)
   {"action":"place",        "near":"object_id", "side":"left|right|front|behind"}   (on that side of it)
+  {"action":"place",        "near":"base"}          (put the held object down near the robot's own base)
   {"action":"place",        "x":float, "y":float}   (put the held object down at that table position)
   {"action":"place",        "here":true}            (put the held object down where the arm is now)
   {"action":"open_gripper"}
@@ -59,6 +60,9 @@ WHICH ACTION FOR WHICH COMMAND:
     {"action":"place","near":"<B's object_id>"}. Do not compute coordinates for a place
     next to an object, give the object_id. "put it down" -> {"action":"place","here":true}.
     Never add go_home or open_gripper unless the command asks for it.
+  - Objects may carry a "color" (white, blue, black, ...) in the world state. "the white cup" means the cup whose color is white: use THAT object_id,
+    never a cup of another color. If no object has the color asked for, say so in "reasoning" and return an empty plan.
+    "near the robot base" / "next to the base" -> {"action":"place","near":"base"}.
   - If the named object isn't in the world state below, or every
     instance of it is stale, say so in "reasoning" and return an empty
     plan rather than guessing a position.
@@ -182,6 +186,7 @@ PLACE_RINGS_M = (0.15, 0.18, 0.22)      # distance from the target object's cent
 PLACE_MIN_CLEAR_M = 0.12                # centre-to-centre distance to any OTHER object (mug r~0.045 + object r~0.05 + margin)
 PLACE_EDGE_MARGIN_M = 0.03              # stay this far inside the planner's x/y limits
 PLACE_MIN_RADIUS_M = 0.25               # keep away from the robot's own base column
+BASE_RINGS_M = (0.27, 0.31, 0.36)        # 'near the robot base': distance from the base axis to try (just outside the base column), the spot nearest to where the object was picked wins
 
 
 OBSTACLE_X_RANGE = (-0.05, 0.85)       # where the table is, in base_link: objects here are physically on it
@@ -284,7 +289,13 @@ def fix_place_targets(plan, scene, current_xy=None):
         side = str(step.pop('side', '') or '').lower() or None
         if side not in SIDE_DIRECTION_DEG:
             side = None
-        if near:
+        if near and str(near).lower() in ('base', 'robot base', 'the base', 'robot_base'):
+            spot = find_free_spot((0.0, 0.0), scene, prefer, skip=(picked,), rings=BASE_RINGS_M)
+            if spot is None:
+                step['unplaceable'] = 'no free spot near the robot base'
+                continue
+            step['x'], step['y'] = spot
+        elif near:
             tid = _resolve_object(near, scene)
             if tid is None:
                 step['unplaceable'] = f"object '{near}' is not in the scene"

@@ -279,3 +279,17 @@ def test_place_with_a_side_becomes_a_spot_on_that_side_and_unsatisfiable_sides_a
     plan = fix_place_targets([{'action': 'pick', 'object_id': 'cup_01'},
                               {'action': 'place', 'near': 'bowl_00', 'side': 'right'}], edge)
     assert 'unplaceable' in plan[1] and 'to the right of' in plan[1]['unplaceable']
+
+
+def test_a_place_near_the_robot_base_becomes_a_free_spot_just_outside_the_base_column():
+    from thesis_robot.llm_planner_node import fix_place_targets, PLACE_MIN_RADIUS_M
+    import math
+    scene = {'cup_01': {'label': 'cup', 'x': 0.45, 'y': 0.20, 'z': 0.05, 'reachable': True, 'stale': False, 'confidence': 0.9},
+             'mouse_00': {'label': 'mouse', 'x': 0.30, 'y': 0.05, 'z': 0.02, 'reachable': True, 'stale': False, 'confidence': 0.9}}
+    plan = fix_place_targets([{'action': 'pick', 'object_id': 'cup_01'}, {'action': 'place', 'near': 'base'}], scene)
+    st = plan[1]
+    assert 'near' not in st and 'unplaceable' not in st
+    r = math.hypot(st['x'], st['y'])
+    assert PLACE_MIN_RADIUS_M <= r <= 0.40                                       # just outside the column, near the base
+    assert math.hypot(st['x'] - 0.30, st['y'] - 0.05) >= 0.12                    # clear of the mouse
+    assert st['y'] > -0.1                                                        # on the side the cup came from (shortest carry)

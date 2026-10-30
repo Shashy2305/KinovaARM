@@ -71,6 +71,7 @@ SOURCE_Z_TRUSTED = ('realsense', 'realsense2')                                  
 SOURCE_WINDOW_S = 2.0         # a camera's reading counts this long
 SMOOTH_ALPHA = 0.35           # how far the published estimate moves toward the fused one per message
 JUMP_M = 0.06                 # a fused estimate this far from the published one is a moved object: follow at once
+COLOUR_VOTE_DECAY = 0.97
 STATIC_SOURCES = ('realsense', 'realsense2', 'realsense3', 'oakd')
 SURFACE_CENTRE_FACTOR = 1.0   # 1.0 = move static-camera points away from the camera by the object's radius (surface -> centre); 0 = off
 WRIST_MIN_DOWN = 0.7          # the wrist camera only places objects when its axis points at the table (z component of the axis <= -0.7) ...
@@ -115,6 +116,7 @@ class SceneGraphNode(Node):
         # ── scene storage ────────────────────────────────────────────
         # { object_id: { label, x, y, z, confidence, last_seen, stale } }
         self._obs = {}            # object_id -> {source: (t, x, y, z, conf)}: each camera's latest reading
+        self._colour_votes = {}   # object_id -> {colour name: weight}: what the cameras say its colour is (a cast makes one frame lie; the vote does not)
         self.scene = {}
 
         # TF buffer for camera frame -> base_link
@@ -176,6 +178,7 @@ class SceneGraphNode(Node):
         now = time.time()
         resolved = []  # [(label, x, y, z, conf), ...]
         src_of = {}    # id(detection tuple) -> the camera that saw it
+        col_of = {}    # id(detection tuple) -> the colour name the camera gave it
         for det in detections:
             label = det.get('label') or det.get('class', 'unknown')
             conf  = float(det.get('confidence', 0.0))
@@ -195,6 +198,7 @@ class SceneGraphNode(Node):
                 continue                      # a detection of the robot's own arm/gripper, not an object
             tup = (label, x, y, z, conf)
             src_of[id(tup)] = str(det.get('source', ''))
+            col_of[id(tup)] = det.get('color')
             resolved.append(tup)
 
         resolved = self._drop_relabelled_duplicates(resolved)
@@ -215,6 +219,7 @@ class SceneGraphNode(Node):
                 'last_seen':  now,
                 'stale':      False,
                 'reachable':  self._is_reachable(x, y, z),
+                'color':      self._vote_colour(obj_id, col_of.get(id(tup)), conf),
             }
 
         # Once per 10 s, not once per detection message: this line alone wrote ~660,000 lines
@@ -351,6 +356,8 @@ class SceneGraphNode(Node):
                 'reachable':  obj['reachable'],
                 'stale':      obj['stale'],
             }
+            if obj.get('color') and obj['color'] != 'unknown':
+                entry['color'] = obj['color']
             if table_top is not None and obj['z'] is not None \
                     and obj['z'] < table_top - sg.BELOW_TABLE_TOL_M:
                 entry['below_table'] = True     # phantom: lower than the table it should be on
@@ -399,6 +406,8 @@ class SceneGraphNode(Node):
         for obj_id in to_drop:
             self.get_logger().info(f'Dropping {obj_id} — unseen for {GC_THRESHOLD:.0f}s+')
             del self.scene[obj_id]
+            self._colour_votes.pop(obj_id, None)
+            self._obs.pop(obj_id, None)
 
     # ── SPATIAL PREDICATES ───────────────────────────────────────────
     def _table_top(self):
@@ -459,6 +468,17 @@ class SceneGraphNode(Node):
             fy = existing['y'] + a * (my - existing['y'])
             fz = mz if existing['z'] is None else (existing['z'] if mz is None else existing['z'] + a * (mz - existing['z']))
         return fx, fy, fz, max(conf, existing['confidence'])
+
+    def _vote_colour(self, obj_id, colour, conf):
+        """The colour of track obj_id: every detection votes with its confidence, older votes fade (x0.97 per detection), the winner is published. A single frame under a colour cast cannot flip it."""
+        votes = self._colour_votes.setdefault(obj_id, {})
+        for k in list(votes):
+            votes[k] *= COLOUR_VOTE_DECAY
+            if votes[k] < 1e-3:
+                del votes[k]
+        if colour and colour != 'unknown':
+            votes[colour] = votes.get(colour, 0.0) + max(float(conf), 0.05)
+        return max(votes, key=votes.get) if votes else None
 
     def _to_object_centre(self, det, label, x, y):
         """A static depth camera measures the NEAR surface of an object, but the arm needs its centre. Move the point horizontally away from the camera by the object's radius

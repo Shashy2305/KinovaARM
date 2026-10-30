@@ -148,3 +148,69 @@ def test_an_object_outside_the_arms_range_is_explained_with_its_position():
 def test_a_stale_or_missing_object_is_explained_too():
     assert 'stale' in cg.no_reachable_reason(cg.parse('pick up the cup'), _scene(cup_00={'label': 'cup', 'x': 0.4, 'y': 0.1, 'stale': True, 'reachable': False}))
     assert 'no cup in the scene' in cg.no_reachable_reason(cg.parse('pick up the cup'), _scene(mouse_00={'label': 'mouse', 'x': 0.4, 'y': 0.0}))
+
+
+# ---- colours and "near the robot base" (2026-10-29) ---------------------------------------------------------------------------------------------------------
+def _cups():
+    return {
+        'cup_00': {'label': 'cup', 'x': 0.45, 'y': 0.04, 'z': 0.05, 'confidence': 0.9, 'color': 'blue', 'reachable': True, 'stale': False},
+        'cup_01': {'label': 'cup', 'x': 0.30, 'y': 0.20, 'z': 0.05, 'confidence': 0.8, 'color': 'white', 'reachable': True, 'stale': False},
+        'mouse_00': {'label': 'mouse', 'x': 0.37, 'y': -0.12, 'z': 0.02, 'confidence': 0.9, 'color': 'black', 'reachable': True, 'stale': False},
+    }
+
+
+def test_colour_words_are_parsed_into_the_intent():
+    i = cg.parse('pick up the white cup')
+    assert i['kind'] == 'pick' and i['a'] == 'cup' and i['a_color'] == 'white'
+    assert cg.parse('grab the dark blue mug')['a_color'] == 'blue'
+    assert cg.parse('pick up the teal cup')['a_color'] == 'blue' and cg.parse('pick up the silver mouse')['a_color'] == 'grey'
+    assert cg.parse('pick up the cup')['a_color'] is None
+    both = cg.parse('put the white cup next to the blue cup')
+    assert both['kind'] == 'pick_place_near' and both['a_color'] == 'white' and both['b_color'] == 'blue'
+
+
+def test_a_colour_request_picks_the_object_of_that_colour():
+    scene = _cups()
+    assert cg.best_object(scene, 'cup', colour='white') == 'cup_01'
+    assert cg.best_object(scene, 'cup', colour='blue') == 'cup_00'
+    assert cg.best_object(scene, 'cup', colour='red') is None
+    assert cg.best_object(scene, 'cup') == 'cup_00'                                            # no colour asked: the most confident
+
+
+def test_the_check_rejects_a_plan_that_picks_the_wrong_colour():
+    scene = _cups()
+    intent = cg.parse('pick up the white cup')
+    ok, why = cg.check(intent, [{'action': 'pick', 'object_id': 'cup_00', 'approach_z': 0.35}], scene)
+    assert not ok and 'blue' in why and 'white' in why
+    assert cg.check(intent, [{'action': 'pick', 'object_id': 'cup_01', 'approach_z': 0.35}], scene)[0]
+    assert cg.build_plan(intent, scene)[0]['object_id'] == 'cup_01'
+
+
+def test_an_object_of_unknown_colour_never_matches_a_colour_request_and_the_reason_lists_what_is_seen():
+    scene = _cups()
+    scene['cup_00']['color'] = None
+    scene['cup_01']['color'] = None
+    why = cg.no_reachable_reason(cg.parse('pick up the white cup'), scene)
+    assert 'no white cup' in why and 'cup_00' in why and 'cup_01' in why
+    scene2 = _cups()
+    assert cg.no_reachable_reason(cg.parse('pick up the red cup'), scene2).startswith('no red cup')
+    assert cg.no_reachable_reason(cg.parse('pick up the white cup'), scene2) is None
+
+
+def test_near_the_robot_base_is_its_own_intent_with_a_base_place():
+    for text in ('pick up the white cup and put it near the robot base', 'move the white cup to the robot base', 'put the white cup next to the base'):
+        i = cg.parse(text)
+        assert i['kind'] == 'pick_place_base' and i['a_color'] == 'white', text
+    plan = cg.build_plan(cg.parse('pick up the white cup and put it near the robot base'), _cups())
+    assert plan[0]['object_id'] == 'cup_01' and plan[1] == {'action': 'place', 'near': 'base'}
+    assert cg.check(cg.parse('pick up the white cup and put it near the robot base'), plan, _cups())[0]
+    bad = [plan[0], {'action': 'place', 'x': 0.5, 'y': 0.3}]
+    assert not cg.check(cg.parse('pick up the white cup and put it near the robot base'), bad, _cups())[0]
+
+
+def test_next_to_a_coloured_object_checks_the_colour_of_the_reference():
+    scene = _cups()
+    intent = cg.parse('pick up the mouse and put it next to the white cup')
+    assert cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00', 'approach_z': 0.35}, {'action': 'place', 'near': 'cup_01'}], scene)[0]
+    assert not cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00', 'approach_z': 0.35}, {'action': 'place', 'near': 'cup_00'}], scene)[0]
+    assert cg.build_plan(intent, scene)[1] == {'action': 'place', 'near': 'cup_01'}

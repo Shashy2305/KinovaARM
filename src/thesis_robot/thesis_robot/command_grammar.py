@@ -8,7 +8,8 @@ a simple command is not a harmless miss on a real arm. The model stays the plann
 does not recognise); the grammar is the check and the safety net.
 
 Intents (dict): {'kind', 'a', 'b'} with kind one of
-  go_home | put_down | pick | pick_place_near | pick_aside | go_near
+  go_home | put_down | pick | pick_place_near | pick_place_side | pick_place_base | pick_aside | go_near
+plus a_color / b_color (white, blue, ...) when the operator named a colour, and a place 'near the robot base'
 and a, b = object labels (cup, bowl, bottle, mouse, ...), or None.
 """
 import math
@@ -17,12 +18,18 @@ import re
 SYNONYMS = {'cup': 'cup', 'mug': 'cup', 'bowl': 'bowl', 'bottle': 'bottle', 'mouse': 'mouse',
             'phone': 'cell phone', 'remote': 'remote', 'book': 'book', 'scissors': 'scissors', 'vase': 'vase'}
 _NAMES = '|'.join(sorted(SYNONYMS, key=len, reverse=True))
-OBJ = r'(?:the |a |an |that |this )?(?:[a-z]+ )??(?P<{g}>' + _NAMES + r')'
+# colour words an operator may use for an object ("the white cup", "the blue mug"); the value is the name the cameras' classifier (object_colour.py) reports
+COLOURS = {'white': 'white', 'black': 'black', 'grey': 'grey', 'gray': 'grey', 'silver': 'grey', 'blue': 'blue', 'teal': 'blue', 'navy': 'blue', 'red': 'red', 'green': 'green',
+           'yellow': 'yellow', 'orange': 'orange', 'purple': 'purple', 'pink': 'pink', 'brown': 'brown'}
+_COLOUR_WORDS = '|'.join(sorted(COLOURS, key=len, reverse=True))
+OBJ = r'(?:the |a |an |that |this )?(?:(?:dark|light|bright|pale|small|big|large|little) )?(?:(?P<{g}_c>' + _COLOUR_WORDS + r') )?(?:[a-z]+ )??(?P<{g}>' + _NAMES + r')'
 PICK_VERB = r'(?:pick up|pick|grab|take|get|lift|fetch|grasp)'
 PUT_VERB = r'(?:put|place|set|move|bring|drop|shift)'
 NEXT_TO = r'(?:next to|beside|besides|by|near|close to|alongside|adjacent to)'
 SIDE = r'(?P<side>(?:to the |on the |at the )?(?:left|right)(?: side)?(?: of)?|in front of|in the front of|behind|in back of|at the back of|to the back of)'
 ASIDE = r'(?:aside|away|out of the way|to the side|somewhere else|off to the side|over there)'
+BASE = r'(?:the )?(?:robot(?:s|\'s)? |arm(?:s|\'s)? )?base(?: of the (?:robot|arm))?'
+NEAR_BASE = r'(?:next to|beside|near|by|close to|at|to|towards|toward|around)'
 FILLER = re.compile(r'\b(please|can you|could you|would you|robot|now|kindly|just)\b')
 
 
@@ -58,6 +65,8 @@ PATTERNS = [
                             r"|^(?:release|let go of)(?: it| that)?$|^drop it$")),
     ('pick_place_side', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + SIDE + r' ' + _o('b') + r'$')),
     ('pick_place_side', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + SIDE + r' ' + _o('b') + r'$')),
+    ('pick_place_base', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEAR_BASE + r' ' + BASE + r'$')),
+    ('pick_place_base', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + NEAR_BASE + r' ' + BASE + r'$')),
     ('pick_place_near', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEXT_TO + r' ' + _o('b') + r'$')),
     ('pick_place_near', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + NEXT_TO + r' ' + _o('b') + r'$')),
     ('pick_aside', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + ASIDE + r'$')),
@@ -77,6 +86,8 @@ def parse(command):
             g = m.groupdict()
             return {'kind': kind, 'a': SYNONYMS.get(g.get('a')) if g.get('a') else None,
                     'b': SYNONYMS.get(g.get('b')) if g.get('b') else None,
+                    'a_color': COLOURS.get(g.get('a_c')) if g.get('a_c') else None,
+                    'b_color': COLOURS.get(g.get('b_c')) if g.get('b_c') else None,
                     'side': _side_word(g.get('side'))}
     return None
 
@@ -85,20 +96,32 @@ def _label(scene, oid):
     return (scene.get(oid) or {}).get('label')
 
 
-def _objects(scene, label):
+def _objects(scene, label, colour=None):
+    """Reachable, fresh objects of this class; with `colour` only those the cameras call that colour (an object whose colour is not known never matches a colour request)."""
     return [(oid, o) for oid, o in scene.items()
-            if isinstance(o, dict) and o.get('label') == label and o.get('reachable') and not o.get('stale')]
+            if isinstance(o, dict) and o.get('label') == label and o.get('reachable') and not o.get('stale')
+            and (colour is None or o.get('color') == colour)]
+
+
+def _describe(label, colour):
+    return f'{colour} {label}' if colour else label
 
 
 def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.35)):
     """None when the command can go on to the model; else a plain-language reason it cannot be done: the object it names is not in the scene, is stale, or stands outside what the arm reaches.
     Without this the model returned an empty plan after three slow retries and the operator only saw "Plan is empty or not a list"."""
     label = (intent or {}).get('a')
-    if not label or _objects(scene, label):
+    colour = (intent or {}).get('a_color')
+    if not label or _objects(scene, label, colour):
         return None
     mine = [(oid, o) for oid, o in scene.items() if isinstance(o, dict) and o.get('label') == label]
     if not mine:
         return f'there is no {label} in the scene (the cameras do not see one)'
+    if colour:
+        others = [(oid, o) for oid, o in mine if o.get('reachable') and not o.get('stale')]
+        if others:
+            seen = ', '.join(f'{o.get("color") or "unknown colour"} ({oid})' for oid, o in others)
+            return f'no {colour} {label} that the arm can reach: the {label}s I see are {seen}'
     parts = []
     for oid, o in mine:
         x, y = o.get('x'), o.get('y')
@@ -108,22 +131,22 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
             parts.append(f'{oid} at x={x:.2f} y={y:.2f} is outside the arm\'s range (x {x_range[0]:.2f} to {x_range[1]:.2f}, y {y_range[0]:.2f} to {y_range[1]:.2f}): move it closer')
         else:
             parts.append(f'{oid} is not reachable')
-    return f'no {label} the arm can reach: ' + '; '.join(parts)
+    return f'no {_describe(label, colour)} the arm can reach: ' + '; '.join(parts)
 
 
-def best_object(scene, label, exclude=None):
-    cands = [(oid, o) for oid, o in _objects(scene, label) if oid != exclude]
+def best_object(scene, label, exclude=None, colour=None):
+    cands = [(oid, o) for oid, o in _objects(scene, label, colour) if oid != exclude]
     if not cands:
         return None
     return max(cands, key=lambda c: float(c[1].get('confidence', 0) or 0))[0]
 
 
-def _near(step, scene, label, tol=0.30):
+def _near(step, scene, label, tol=0.30, colour=None):
     if step.get('near'):
-        return _label(scene, step['near']) == label
+        return _label(scene, step['near']) == label and (colour is None or (scene.get(step['near']) or {}).get('color') == colour)
     if 'x' in step and 'y' in step:
         return any(math.hypot(o['x'] - step['x'], o['y'] - step['y']) <= tol
-                   for oid, o in _objects(scene, label) if o.get('x') is not None)
+                   for oid, o in _objects(scene, label, colour) if o.get('x') is not None)
     return False
 
 
@@ -162,13 +185,20 @@ def check(intent, steps, scene):
         return False, f'expected one pick step, got {len(picks)}'
     if _label(scene, picks[0].get('object_id')) != intent['a']:
         return False, f'picked a {_label(scene, picks[0].get("object_id"))}, the command says {intent["a"]}'
+    want = intent.get('a_color')
+    if want and (scene.get(picks[0].get('object_id')) or {}).get('color') != want:
+        return False, f'picked the {(scene.get(picks[0].get("object_id")) or {}).get("color") or "unknown colour"} {intent["a"]}, the command says the {want} one'
     if k == 'pick':
         # extra go_home / open_gripper steps are trimmed later by the planner (trim_pick_extras); a place is not
         return res(not places, 'a plain pick must not include a place step')
     if len(places) != 1:
         return False, f'expected one place step, got {len(places)}'
+    if k == 'pick_place_base':
+        st = places[0]
+        ok = str(st.get('near', '')).lower() == 'base' or ('x' in st and math.hypot(st['x'], st['y']) <= 0.45)
+        return res(ok, 'the place must be near the robot base ({"action":"place","near":"base"})')
     if k == 'pick_place_near':
-        return res(_near(places[0], scene, intent['b']), f'the place is not next to the {intent["b"]}')
+        return res(_near(places[0], scene, intent['b'], colour=intent.get('b_color')), f'the place is not next to the {_describe(intent["b"], intent.get("b_color"))}')
     if k == 'pick_place_side':
         st = places[0]
         if st.get('near'):
@@ -186,15 +216,17 @@ def build_plan(intent, scene):
         return [{'action': 'go_home'}]
     if k == 'put_down':
         return [{'action': 'place', 'here': True}]
-    a = best_object(scene, intent['a'])
+    a = best_object(scene, intent['a'], colour=intent.get('a_color'))
     if a is None:
         return None
     if k == 'pick':
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}]
     if k == 'pick_aside':
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'x': 0.45, 'y': 0.0}]
+    if k == 'pick_place_base':
+        return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'near': 'base'}]
     if k in ('pick_place_near', 'pick_place_side'):
-        b = best_object(scene, intent['b'], exclude=a)
+        b = best_object(scene, intent['b'], exclude=a, colour=intent.get('b_color'))
         if b is None:
             return None
         place = {'action': 'place', 'near': b}
