@@ -8,6 +8,7 @@ export interface SceneObject {
   confidence: number
   reachable: boolean
   stale: boolean
+  color?: string | null
   relations?: string[]
 }
 

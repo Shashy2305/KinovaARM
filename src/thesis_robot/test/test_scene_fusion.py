@@ -143,3 +143,23 @@ def test_no_shift_when_the_camera_position_is_unknown_or_the_point_is_at_the_cam
 
 def test_the_wrist_camera_is_not_in_the_static_sources():
     assert 'wrist' not in sgn.STATIC_SOURCES and 'realsense2' in sgn.STATIC_SOURCES
+
+
+# ---- the colour vote ---------------------------------------------------------------------------------------------------------------------------------------
+def test_a_clear_colour_from_one_camera_beats_black_from_another():
+    vote = SceneGraphNode._colour_from_votes
+    assert vote({'blue': 0.4, 'black': 1.0}) == 'blue'                 # RS1 sees blue, RS2 (underexposed) says black, RS2 reports more often
+    assert vote({'blue': 0.4, 'black': 2.0}) == 'blue'                 # even when RS2 reports 2.5x as often (live 2026-10-30: 14 Hz black against 6 Hz blue)
+    assert vote({'black': 2.0, 'blue': 0.2}) == 'black'                # a stray blue frame is not 15 % of the weight
+    assert vote({'white': 1.0, 'grey': 0.5}) == 'white'
+    assert vote({'grey': 0.8, 'black': 1.0}) == 'grey'                 # among neutrals black counts 0.6
+    assert vote({'white': 0.9}) == 'white' and vote({}) is None
+
+
+def test_the_vote_keeps_a_stable_colour_for_a_track():
+    node = SimpleNamespace(_colour_votes={})
+    node._colour_from_votes = SceneGraphNode._colour_from_votes
+    out = []
+    for i in range(60):
+        out.append(SceneGraphNode._vote_colour(node, 'cup_00', 'blue' if i % 2 == 0 else 'black', 0.94 if i % 2 == 0 else 0.82))
+    assert set(out[10:]) == {'blue'}

@@ -65,3 +65,19 @@ def test_the_corners_of_the_box_do_not_decide_the_colour():
 
 def test_fallback_colour_from_blob_labels():
     assert oc.fallback_colour('red_obj') == 'red' and oc.fallback_colour('blue_obj') == 'blue' and oc.fallback_colour('cup') == 'unknown'
+
+
+def test_a_very_dark_teal_cup_is_blue_and_a_black_object_stays_black():
+    img, box = scene((60, 45, 8))                                  # the lab's blue cup in shadow: dark, the blue channel clearly ahead
+    assert oc.colour_name(img, box) == 'blue'
+    img, box = scene((22, 22, 22))
+    assert oc.colour_name(img, box) == 'black'
+    img, box = scene((18, 20, 17))                                 # a black mouse: channels within a few counts
+    assert oc.colour_name(img, box) == 'black'
+
+
+def test_an_underexposed_object_is_unknown_not_black():
+    img, box = scene((9, 7, 5))                                    # RS2's view of the blue cup: brightness ~12
+    assert oc.colour_name(img, box) == 'unknown'
+    img, box = scene((35, 35, 35))                                 # a real black mouse in normal exposure stays black
+    assert oc.colour_name(img, box) == 'black'

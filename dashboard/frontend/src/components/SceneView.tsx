@@ -1,3 +1,4 @@
+import { colourHex, objectName } from '../lib/colours'
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api'
 import type { RosStatus, SceneObject, UnknownObstacle } from '../lib/types'
@@ -85,11 +86,12 @@ export function SceneView({ scene, unknown }: { scene: RosStatus['scene_snapshot
           {objects.map(([id, obj]: [string, SceneObject]) => {
             const [px, py] = toPx(obj.x, obj.y)
             const color = obj.reachable ? 'var(--color-green)' : 'var(--color-text-faint)'
+            const fill = colourHex(obj.color)
             return (
               <g key={id} opacity={obj.stale ? 0.35 : 1}>
-                <circle cx={px} cy={py} r={obj.reachable ? 5 : 3.5} fill={color} />
-                <text x={px + 6} y={py + 3} fontSize="8" fill={color} fontFamily="monospace">
-                  {obj.label}
+                <circle cx={px} cy={py} r={obj.reachable ? 5.5 : 4} fill={fill ?? color} stroke={obj.reachable ? 'var(--color-green)' : 'var(--color-text-faint)'} strokeWidth={1.5} />
+                <text x={px + 7} y={py + 3} fontSize="8" fill={color} fontFamily="monospace">
+                  {objectName(obj.label, obj.color)}
                 </text>
               </g>
             )

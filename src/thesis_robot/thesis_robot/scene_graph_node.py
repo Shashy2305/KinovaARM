@@ -478,7 +478,25 @@ class SceneGraphNode(Node):
                 del votes[k]
         if colour and colour != 'unknown':
             votes[colour] = votes.get(colour, 0.0) + max(float(conf), 0.05)
-        return max(votes, key=votes.get) if votes else None
+        return self._colour_from_votes(votes)
+
+    NEUTRAL_COLOURS = ('white', 'grey', 'black')
+
+    @staticmethod
+    def _colour_from_votes(votes):
+        """The published colour from the weighted votes. A dark reading can HIDE a colour (RS2 saw a dark teal cup at brightness 12 and said black) but a clear colour cannot come from a black object, so
+        a coloured name with 15 % of the weight beats the neutrals; among neutrals black counts 0.6. Otherwise the strongest wins."""
+        if not votes:
+            return None
+        total = sum(votes.values())
+        chroma = {k: w for k, w in votes.items() if k not in SceneGraphNode.NEUTRAL_COLOURS}
+        if chroma:
+            best = max(chroma, key=chroma.get)
+            if chroma[best] >= 0.15 * total:
+                return best
+        neutral = {k: w * (0.6 if k == 'black' else 1.0) for k, w in votes.items() if k in SceneGraphNode.NEUTRAL_COLOURS}
+        pool = neutral or votes
+        return max(pool, key=pool.get)
 
     def _to_object_centre(self, det, label, x, y):
         """A static depth camera measures the NEAR surface of an object, but the arm needs its centre. Move the point horizontally away from the camera by the object's radius

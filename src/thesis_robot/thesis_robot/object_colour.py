@@ -18,6 +18,8 @@ CHROMATIC_SHARE = 0.22          # this share of the usable pixels must be one co
 SAT_MIN = 105                   # OpenCV scale 0..255. A camera's colour cast makes white and grey read as saturation 60-90 (RS1: a white cup at S=84), a real blue cup is 130-245
 SAT_MIN_BRIGHT = 150            # bright pixels (V >= BRIGHT_V) must be even more saturated to count as coloured: the cast shows most there
 VAL_MIN = 45
+DARK_UNKNOWN_V = 15             # median brightness (0..255) of the object's pixels below which a neutral name is not trusted
+DARK_CHROMA_MIN = 22            # max-min of the B,G,R channels for a dark pixel to count as coloured (a black object's channels are within ~10 of each other)
 BRIGHT_V = 150
 DARK_V = 70
 NEUTRAL_S = 100                 # neutrals may carry a cast too
@@ -63,11 +65,20 @@ def colour_stats(bgr, box, mask=None):
         n = int(np.count_nonzero(chroma & (h >= lo) & (h < hi)))
         if n:
             stats[name] = stats.get(name, 0) + n
+    # a dark coloured object (a dark teal cup) has pixels below VAL_MIN whose HUE is unreliable but whose channels still differ: count them as coloured when the spread between the channels is clear
+    mx, mn = bgr.max(axis=2).astype(int), bgr.min(axis=2).astype(int)
+    dark_chroma = use & (v < VAL_MIN) & ((mx - mn) >= DARK_CHROMA_MIN) & (s >= SAT_MIN)
+    for lo, hi, name in HUE_RANGES:
+        n = int(np.count_nonzero(dark_chroma & (h >= lo) & (h < hi)))
+        if n:
+            stats[name] = stats.get(name, 0) + n
+    chroma = chroma | dark_chroma
     neutral = use & ~chroma
     stats['white'] = int(np.count_nonzero(neutral & (v >= BRIGHT_V) & (s < NEUTRAL_S)))
     stats['black'] = int(np.count_nonzero(neutral & (v < DARK_V)))
     stats['grey'] = int(np.count_nonzero(neutral & (v >= DARK_V) & (v < BRIGHT_V) & (s < NEUTRAL_S)))
     stats['_usable'] = int(np.count_nonzero(use))
+    stats['_vmed'] = float(np.median(v[use])) if np.any(use) else 0.0          # how bright the object is in this image (underexposed -> no colour can be told)
     return stats
 
 
@@ -78,6 +89,7 @@ def colour_name(bgr, box, mask=None):
     except Exception:
         return 'unknown'
     usable = st.pop('_usable', 0)
+    vmed = st.pop('_vmed', 255.0)
     if usable < MIN_PIXELS:
         return 'unknown'
     coloured = {k: v for k, v in st.items() if k not in ('white', 'black', 'grey')}
@@ -85,6 +97,8 @@ def colour_name(bgr, box, mask=None):
         best = max(coloured, key=coloured.get)
         if coloured[best] / usable >= CHROMATIC_SHARE:
             return best
+    if vmed < DARK_UNKNOWN_V:
+        return 'unknown'                 # RS2 saw a dark teal cup at brightness 12: that is not 'black', it is too dark to tell
     white, black, grey = st['white'], st['black'], st['grey']
     # a cup's inside is in shadow: bright pixels count double against dark ones unless dark clearly dominates
     if white * 2 >= max(black, grey) and white / usable >= 0.12:
