@@ -188,3 +188,11 @@ def test_a_tube_already_low_at_the_start_may_leave_but_not_go_lower():
     floors = sg.start_floors(start, GEOM_TUBES)
     assert sg.check_link_positions(_pos(forearm_link=(0.3, 0.0, 0.05)), GEOM_TUBES, floors)[0]        # moving up out of it: allowed
     assert not sg.check_link_positions(_pos(forearm_link=(0.3, 0.0, 0.02)), GEOM_TUBES, floors)[0]    # going lower: refused
+
+
+def test_the_arms_tubes_may_swing_behind_the_base_but_the_gripper_may_not():
+    top = GEOM_TUBES['table_top_z']
+    ok_pos = _pos(forearm_link=(-0.144, 0.0, top + 0.3), half_arm_2_link=(-0.12, 0.0, top + 0.3), spherical_wrist_1_link=(-0.11, 0.0, top + 0.3))    # elbow behind the base: normal when hovering at x 0.58
+    assert sg.check_link_positions(ok_pos, GEOM_TUBES)[0]
+    assert not sg.check_link_positions(_pos(left_inner_finger_pad=(-0.15, 0.0, 0.3)), GEOM_TUBES)[0]
+    assert not sg.check_link_positions(_pos(bracelet_link=(-0.15, 0.0, 0.3)), GEOM_TUBES)[0]

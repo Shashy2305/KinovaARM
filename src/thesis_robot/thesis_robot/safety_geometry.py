@@ -181,7 +181,7 @@ def check_link_positions(positions, geom, floors=None):
         if z < (floors or {}).get(link, min_z):
             return False, (f'{link} would be at z={z:.3f}, below the table limit '
                            f'{min_z:.3f} (table top {geom["table_top_z"]:.3f})')
-        if x < REAR_KEEP_OUT_X:
+        if x < REAR_KEEP_OUT_X and link not in LINK_CLEARANCE_M:      # (the arm's tubes swing behind the base in normal poses; the planner's collision scene has the wall)
             return False, (f'{link} would be at x={x:.3f}, behind the rear limit '
                            f'{REAR_KEEP_OUT_X:.2f}')
     return True, 'ok'

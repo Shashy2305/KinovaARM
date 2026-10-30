@@ -96,7 +96,7 @@ def check_pose(kinematics, q_now, q_new, geom, gripper=None):
         if z < floors[link]:
             return False, (f'{link} would be at z={z:.3f}, below its limit {floors[link]:.3f} '
                            f'(table top {geom["table_top_z"]:.3f} + {sg.LINK_TABLE_CLEARANCE_M:.2f})')
-        if x < sg.REAR_KEEP_OUT_X and x <= now[link][0] + 1e-4:
+        if x < sg.REAR_KEEP_OUT_X and x <= now[link][0] + 1e-4 and link not in sg.LINK_CLEARANCE_M:
             return False, f'{link} would be at x={x:.3f}, behind the rear limit {sg.REAR_KEEP_OUT_X:.2f}'
     return True, 'ok'
 
