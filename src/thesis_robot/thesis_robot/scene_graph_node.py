@@ -37,6 +37,7 @@ import tf2_geometry_msgs  # noqa: F401 — registers PointStamped with tf2
 
 from thesis_robot import camera_calibration_files as ccf
 from thesis_robot import safety_geometry as sg
+from thesis_robot import wrist_servo as ws
 
 # Every coordinate stored in the scene (and therefore every coordinate the
 # LLM plans with and arm_controller executes) is in this frame.
@@ -70,6 +71,8 @@ SOURCE_Z_TRUSTED = ('realsense', 'realsense2')                                  
 SOURCE_WINDOW_S = 2.0         # a camera's reading counts this long
 SMOOTH_ALPHA = 0.35           # how far the published estimate moves toward the fused one per message
 JUMP_M = 0.06                 # a fused estimate this far from the published one is a moved object: follow at once
+STATIC_SOURCES = ('realsense', 'realsense2', 'realsense3', 'oakd')
+SURFACE_CENTRE_FACTOR = 1.0   # 1.0 = move static-camera points away from the camera by the object's radius (surface -> centre); 0 = off
 WRIST_MIN_DOWN = 0.7          # the wrist camera only places objects when its axis points at the table (z component of the axis <= -0.7) ...
 WRIST_MIN_RANGE_M = 0.25      # ... and the object is at least this far away (its depth is empty / wrong closer)
 
@@ -182,6 +185,8 @@ class SceneGraphNode(Node):
             if pos is None:
                 continue
             x, y, z = pos
+            if det.get('source') in STATIC_SOURCES:
+                x, y = self._to_object_centre(det, label, x, y)
             if det.get('source') == 'wrist' and not self._wrist_usable(det):
                 continue                      # the wrist camera is not looking at the table: its 3D point is not an object on it
             if not self._on_table_region(x, y, z):
@@ -454,6 +459,20 @@ class SceneGraphNode(Node):
             fy = existing['y'] + a * (my - existing['y'])
             fz = mz if existing['z'] is None else (existing['z'] if mz is None else existing['z'] + a * (mz - existing['z']))
         return fx, fy, fz, max(conf, existing['confidence'])
+
+    def _to_object_centre(self, det, label, x, y):
+        """A static depth camera measures the NEAR surface of an object, but the arm needs its centre. Move the point horizontally away from the camera by the object's radius
+        (2026-10-29: against the wrist camera, RS2 read cups, mice and a bowl 6-9 cm too close to itself = radius + 2 cm; its y was off by that, and RS1's x likewise). Height is left alone."""
+        try:
+            t = self.tf_buffer.lookup_transform(BASE_FRAME, det['frame_id'], rclpy.time.Time()).transform.translation
+            dx, dy = x - t.x, y - t.y
+            n = math.hypot(dx, dy)
+            if n < 0.2:
+                return x, y
+            r = ws.OBJECT_RADIUS_M.get(label, ws.DEFAULT_RADIUS_M) * SURFACE_CENTRE_FACTOR
+            return x + dx / n * r, y + dy / n * r
+        except Exception:
+            return x, y
 
     def _wrist_usable(self, det):
         """The wrist camera's readings are scene evidence only while it looks at the table (its axis points down) and the object is not too close for its depth."""

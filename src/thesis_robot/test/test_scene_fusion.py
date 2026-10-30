@@ -110,3 +110,36 @@ def test_the_wrist_camera_counts_only_when_it_looks_down_at_something_not_too_cl
 def test_constants_are_sane():
     assert 0.0 < sgn.SMOOTH_ALPHA < 1.0 and sgn.JUMP_M > 0.03 and sgn.SOURCE_WINDOW_S >= 1.0
     assert sgn.SOURCE_WEIGHT['realsense3'] < sgn.SOURCE_WEIGHT['realsense']
+
+
+# ---- surface point -> object centre (2026-10-29) ---------------------------------------------------------------------------------------------------------
+def tf_at_position(x, y, z=0.2):
+    buf = tf2_ros.Buffer()
+    m = TransformStamped()
+    m.header.frame_id, m.child_frame_id = 'base_link', 'rs_cam'
+    m.transform.translation.x, m.transform.translation.y, m.transform.translation.z = x, y, z
+    m.transform.rotation.w = 1.0
+    buf.set_transform_static(m, 'test')
+    return SimpleNamespace(tf_buffer=buf)
+
+
+def test_a_static_camera_point_moves_away_from_the_camera_by_the_object_radius():
+    cam = tf_at_position(0.25, -1.19)                                              # RS2-like: looks along +y
+    x, y = SceneGraphNode._to_object_centre(cam, {'frame_id': 'rs_cam'}, 'cup', 0.404, 0.063)
+    from thesis_robot import wrist_servo as ws
+    r = ws.OBJECT_RADIUS_M['cup']
+    assert math.hypot(x - 0.404, y - 0.063) == pytest.approx(r, abs=1e-6)
+    assert y > 0.063 and (y - 0.063) > abs(x - 0.404)                              # mostly along +y, away from the camera
+    # a bigger object moves further; an unknown label uses the default radius
+    xb, yb = SceneGraphNode._to_object_centre(cam, {'frame_id': 'rs_cam'}, 'bowl', 0.404, 0.063)
+    assert math.hypot(xb - 0.404, yb - 0.063) > math.hypot(x - 0.404, y - 0.063)
+
+
+def test_no_shift_when_the_camera_position_is_unknown_or_the_point_is_at_the_camera():
+    cam = tf_at_position(0.25, -1.19)
+    assert SceneGraphNode._to_object_centre(cam, {'frame_id': 'nope'}, 'cup', 0.4, 0.06) == (0.4, 0.06)
+    assert SceneGraphNode._to_object_centre(tf_at_position(0.4, 0.06), {'frame_id': 'rs_cam'}, 'cup', 0.4, 0.06) == (0.4, 0.06)
+
+
+def test_the_wrist_camera_is_not_in_the_static_sources():
+    assert 'wrist' not in sgn.STATIC_SOURCES and 'realsense2' in sgn.STATIC_SOURCES
