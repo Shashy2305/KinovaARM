@@ -172,3 +172,61 @@ def test_the_side_grasp_is_only_ranked_inside_the_proven_zone():
         assert [o['method'] for o in out] == ['top'], far                                  # straight down outside it
     only = go.rank_methods('cup', (0.58, 0.065), TABLE_TOP, [], 0.05, False, side_mode='only')   # 'only' is the operator's explicit test switch
     assert only and all(o['method'] == 'side' for o in only)
+
+
+# ---- position-aware learning ----------------------------------------------------------------------------------------------------------------------------
+def rec(method, x, y, ok, label='cup'):
+    return {'kind': 'pick', 'label': label, 'method': method, 'xy': [x, y], 'ok': ok, 'live': True}
+
+
+def test_a_method_that_works_here_but_failed_over_there_is_rated_differently_in_the_two_places():
+    records = [rec('side', 0.40, 0.0, True)] * 5 + [rec('side', 0.58, 0.06, False)] * 4
+    here = go.method_factor('cup', 'side', records, (0.40, 0.0))
+    there = go.method_factor('cup', 'side', records, (0.58, 0.06))
+    assert here > 1.1 and there < 0.8 and here > there
+    assert go.method_factor('cup', 'side', records) == pytest.approx(go.method_factor('cup', 'side', records, None))        # without a place: the overall rate
+
+
+def test_far_from_every_past_pick_the_overall_rate_is_used():
+    records = [rec('top', 0.40, 0.0, True)] * 6
+    far = go.method_factor('cup', 'top', records, (0.20, -0.30))
+    overall = go.method_factor('cup', 'top', records)
+    assert abs(far - overall) < 0.05
+
+
+def test_records_without_a_place_still_count_toward_the_overall_rate():
+    records = [{'kind': 'pick', 'label': 'cup', 'method': 'top', 'ok': True, 'live': True}] * 6
+    assert go.method_factor('cup', 'top', records, (0.4, 0.0)) > 1.2
+
+
+def test_the_side_grasp_trust_region_grows_around_a_success_outside_the_seed_zone():
+    assert not go.in_side_zone((0.56, 0.0))
+    assert go.side_allowed('cup', (0.56, 0.0), [])[0] is False                           # nothing known: outside, not allowed
+    win = [rec('side', 0.56, 0.0, True)] * 2
+    assert go.side_allowed('cup', (0.56, 0.0), win)[0] is True                           # worked right there
+    assert go.side_allowed('cup', (0.62, 0.05), win)[0] is True                          # within 12 cm of it
+    assert go.side_allowed('cup', (0.62, 0.20), win)[0] is False                         # too far from any success
+    assert go.side_allowed('cup', (0.56, 0.0), [rec('top', 0.56, 0.0, True)] * 5)[0] is False   # other methods' successes do not open it
+
+
+def test_the_side_grasp_trust_region_shrinks_where_it_keeps_failing_even_inside_the_seed_zone():
+    assert go.in_side_zone((0.33, -0.14))
+    assert go.side_allowed('cup', (0.33, -0.14), [])[0] is True
+    fails = [rec('side', 0.331, -0.145, False)] * 3                                      # the knocked-over cup
+    ok, why = go.side_allowed('cup', (0.33, -0.14), fails)
+    assert ok is False and 'failed' in why
+    assert go.side_allowed('cup', (0.45, 0.10), fails)[0] is True                        # elsewhere in the zone nothing changes
+
+
+def test_ranking_follows_the_local_record():
+    good = [rec('side', 0.42, 0.05, True)] * 6
+    assert go.rank_methods('cup', (0.42, 0.05), TABLE_TOP, [], 0.05, False, records=good)[0]['method'] == 'side'
+    bad = [rec('side', 0.42, 0.05, False)] * 4 + [rec('top', 0.42, 0.05, True)] * 4
+    out = go.rank_methods('cup', (0.42, 0.05), TABLE_TOP, [], 0.05, False, records=bad)
+    assert [o['method'] for o in out] == ['top']                                         # side closed here by its failures
+
+
+def test_a_success_outside_the_seed_zone_makes_the_side_grasp_a_candidate_there():
+    win = [rec('side', 0.56, 0.0, True)] * 3
+    out = go.rank_methods('cup', (0.58, 0.02), TABLE_TOP, [], 0.05, False, records=win)
+    assert 'side' in [o['method'] for o in out]

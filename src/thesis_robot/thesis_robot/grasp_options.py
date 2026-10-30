@@ -161,15 +161,69 @@ def handle_adjust(az_deg, handle_bearing_deg):
     return -0.1, None
 
 
-def method_factor(label, method, records):
-    """What past outcomes say about this method for this class: 1.0 with no data; (successes+1)/(trials+2)/0.5 clipped to [0.4, 1.5]. records: the outcome log (picks carry 'method')."""
-    s = n = 0
+# ---- learning from past picks, per place on the table -----------------------------------------------------------------------------------------------
+LEARN_SIGMA_M = 0.10          # how far a past pick still counts as "here" (Gaussian kernel width)
+LEARN_PRIOR_N = 2.0           # pseudo-trials of the method's overall rate mixed into every local estimate (little nearby data -> the overall rate)
+TRUST_RADIUS_M = 0.12         # the side grasp is allowed within this of a place where it has worked
+TRUST_MIN_RATE = 0.50         # ... if the local success rate there is at least this
+BLOCK_RATE = 0.35             # a place whose local rate is below this (with LEARN_MIN_N pseudo-trials of evidence) is blocked for the method, even inside the seed zone
+LEARN_MIN_N = 2.0
+
+
+def pick_samples(records, label, method):
+    """[(x, y, ok)] of the live picks of this class done with this method (the 'xy' of the record is where the object was)."""
+    out = []
     for r in records or ():
         if r.get('kind') != 'pick' or not r.get('live', True) or r.get('label') != label or r.get('method') != method:
             continue
-        n += 1
-        s += int(bool(r.get('ok')))
-    return float(min(1.5, max(0.4, (s + 1.0) / (n + 2.0) / 0.5)))
+        xy = r.get('xy')
+        if xy and len(xy) >= 2:
+            out.append((float(xy[0]), float(xy[1]), bool(r.get('ok'))))
+        else:
+            out.append((None, None, bool(r.get('ok'))))          # place unknown: counts toward the overall rate only
+    return out
+
+
+def local_rate(samples, xy):
+    """(p, n_eff, s_eff) for the method near xy: a distance-weighted success rate that falls back to the method's overall rate where there is little nearby data.
+    p = (sum w*ok + m*p_overall) / (sum w + m) with w = exp(-d^2 / 2 sigma^2) and m = LEARN_PRIOR_N; p_overall = (successes+1)/(trials+2)."""
+    n_all = len(samples)
+    p_all = (sum(1 for _x, _y, ok in samples if ok) + 1.0) / (n_all + 2.0)
+    sw = so = 0.0
+    for x, y, ok in samples:
+        if x is None:
+            continue
+        w = math.exp(-((x - xy[0]) ** 2 + (y - xy[1]) ** 2) / (2.0 * LEARN_SIGMA_M ** 2))
+        sw += w
+        so += w * (1.0 if ok else 0.0)
+    p = (so + LEARN_PRIOR_N * p_all) / (sw + LEARN_PRIOR_N)
+    return float(p), float(sw), float(so)
+
+
+def method_factor(label, method, records, xy=None):
+    """What past outcomes say about this method for this class at this place: 1.0 with no data; local_rate()/0.5 clipped to [0.4, 1.5]. Without xy it is the overall rate, as before."""
+    samples = pick_samples(records, label, method)
+    if xy is None:
+        n = len(samples)
+        p = (sum(1 for _x, _y, ok in samples if ok) + 1.0) / (n + 2.0)
+    else:
+        p, _n, _s = local_rate(samples, xy)
+    return float(min(1.5, max(0.4, p / 0.5)))
+
+
+def side_allowed(label, centre_xy, records=(), width_m=None):
+    """(allowed, why): where the side grasp may be tried. A seed zone where it was proven by hand (SIDE_ZONE) plus a trust region that GROWS: within TRUST_RADIUS_M of a place where a side
+    grasp has worked and the local rate is >= TRUST_MIN_RATE. It SHRINKS: a place with local evidence of failure (rate < BLOCK_RATE) is closed even inside the seed zone."""
+    samples = pick_samples(records, label, 'side')
+    p, n_eff, _s = local_rate(samples, centre_xy)
+    if n_eff >= LEARN_MIN_N * 0.5 and p < BLOCK_RATE:
+        return False, f'side grasps near here have mostly failed (local rate {p:.2f})'
+    if in_side_zone(centre_xy):
+        return True, 'inside the proven zone'
+    near_win = [(x, y) for x, y, ok in samples if ok and x is not None and math.hypot(x - centre_xy[0], y - centre_xy[1]) <= TRUST_RADIUS_M]
+    if near_win and p >= TRUST_MIN_RATE:
+        return True, f'within {TRUST_RADIUS_M * 100:.0f} cm of {len(near_win)} successful side grasp(s) (local rate {p:.2f})'
+    return False, 'not near anywhere a side grasp has worked'
 
 
 # ---- the ranking ----------------------------------------------------------------------------------------------------------------------------------
@@ -177,7 +231,7 @@ def rank_side(label, centre_xy, table_top_z, obstacles, handle_bearing_deg=None,
               azimuths=AZIMUTHS, exclude_az=()):
     """Side-grasp options for every azimuth, best first: [{'method': 'side', 'az', 'score', 'clearance_m', 'pad_z'}], plus the rejected ones as {'method': 'side', 'az', 'rejected': why}."""
     pad_z = side_pad_z(label, table_top_z)
-    base = PREF.get(label, DEFAULT_PREF)['side'] * method_factor(label, 'side', records)
+    base = PREF.get(label, DEFAULT_PREF)['side'] * method_factor(label, 'side', records, centre_xy)
     ok, rejected = [], []
     for az in azimuths:
         if any(ang_diff(az, e) < 1.0 for e in exclude_az):
@@ -203,13 +257,14 @@ def rank_methods(label, centre_xy, table_top_z, obstacles, top_clear_m, lean_pos
     side_mode: 'off' (never), 'auto' (ranked with the others), 'only' (nothing else). avoid_methods: methods that already failed on this object (a retry should try another)."""
     pref = PREF.get(label, DEFAULT_PREF)
     out = []
-    if side_mode != 'off' and side_eligible(label, table_top_z, width_m) and (in_side_zone(centre_xy) or side_mode == 'only'):
+    allowed, learned_why = side_allowed(label, centre_xy, records)
+    if side_mode != 'off' and side_eligible(label, table_top_z, width_m) and (allowed or side_mode == 'only'):
         out += [o for o in rank_side(label, centre_xy, table_top_z, obstacles, handle_bearing_deg, records, same_object_m) if 'score' in o]
     if side_mode != 'only':
-        top = {'method': 'top', 'score': pref['top'] * method_factor(label, 'top', records) + (0.5 * min(top_clear_m, CLEAR_CAP_M) / CLEAR_CAP_M if top_clear_m is not None else -1.0)}
+        top = {'method': 'top', 'score': pref['top'] * method_factor(label, 'top', records, centre_xy) + (0.5 * min(top_clear_m, CLEAR_CAP_M) / CLEAR_CAP_M if top_clear_m is not None else -1.0)}
         out.append(top)
         if lean_possible:
-            out.append({'method': 'lean', 'score': pref['lean'] * method_factor(label, 'lean', records) + (0.3 if top_clear_m is None else 0.0)})
+            out.append({'method': 'lean', 'score': pref['lean'] * method_factor(label, 'lean', records, centre_xy) + (0.3 if top_clear_m is None else 0.0)})
     for o in out:
         if o['method'] in avoid_methods:
             o['score'] -= 1.0

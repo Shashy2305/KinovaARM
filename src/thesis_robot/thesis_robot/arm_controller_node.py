@@ -1038,6 +1038,13 @@ class ArmControllerNode(Node):
             ranked = go.rank_methods(label, centred['xy'], geom['table_top_z'], obstacles, None if top_sweep else 0.05, self._tilt_for(label, centred['xy'], object_id) is not None,
                                      side_mode=mode, handle_bearing_deg=hb, records=records, same_object_m=float(self.get_parameter('sweep_same_object_m').value),
                                      width_m=getattr(self, '_shape_width_m', None), avoid_methods=tried[-1:] if int(getattr(self, '_pick_attempt', 1)) >= 2 else ())
+            try:
+                allowed, why_side = go.side_allowed(label, centred['xy'], records)
+                ps, ns, _s = go.local_rate(go.pick_samples(records, label, 'side'), centred['xy'])
+                pt, nt, _s = go.local_rate(go.pick_samples(records, label, 'top'), centred['xy'])
+                self.get_logger().info(f'pick: learned here: side grasp {"allowed" if allowed else "not allowed"} ({why_side}); local success rate side {ps:.2f} (evidence {ns:.1f}), top {pt:.2f} (evidence {nt:.1f})')
+            except Exception:
+                pass
             if not ranked:
                 return self._refuse(f'pick: no way to grasp the {label} here (side grasp only, and none fits)')
             plan['order'] = ranked
