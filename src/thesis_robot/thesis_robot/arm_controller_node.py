@@ -639,6 +639,7 @@ class ArmControllerNode(Node):
         outside the limits means the arm does not move."""
         self._blocked = False
         self._plan_too_long = False
+        self._last_move_error = ''
         if geom is None:
             return self._refuse('no table geometry recorded — record the table first')
         try:
@@ -687,6 +688,7 @@ class ArmControllerNode(Node):
             self._tool_quat = self._actual_tool_quat(default=quat_used)
             return True
         except Exception as e:
+            self._last_move_error = str(e)
             self.get_logger().error(f'{label} failed: {e}')
             return False
 
@@ -1216,10 +1218,23 @@ class ArmControllerNode(Node):
                 return self._move_to(float(here[0]), float(here[1]), lift_z + (float(t['grasp'][2]) - grasp_z), cartesian=True, max_flange_z=ws.HOVER_MAX_Z)
             return self._move_to(centred['xy'][0], centred['xy'][1], lift_z, cartesian=True, max_flange_z=ws.HOVER_MAX_Z)
 
+        def hover_over():
+            """Hover above the object. If the arm is somewhere (near its own base after the last command, or in a horizontal pose) from which the solver needs a huge joint swing to get there, go home first
+            and try again instead of failing the pick (2026-10-30: three picks of a far-edge cup stopped at 'needs a 2.9 rad single-joint reconfiguration - go home first')."""
+            if self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z):
+                return True
+            if 'reconfiguration' in getattr(self, '_last_move_error', '') and not self._blocked:
+                self.get_logger().info('pick: the hover needs a big joint reconfiguration from here: going home first, then again')
+                self._publish_pp_status(f'pick {object_id}: going home first')
+                if not self._safe_home():
+                    return False
+                return self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z)
+            return False
+
         steps = [
             ('open gripper', lambda: self._open_gripper()),
             ('raise',        lambda: self._raise_to(hover_z)),
-            ('hover',        lambda: self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z)),
+            ('hover',        hover_over),
             ('turn the fingers away from any handle', lambda: self._align_for_handle(label, (ox, oy))),
             ('centre on the object (wrist camera)', center),
             ('choose how to grasp it', choose_method),
