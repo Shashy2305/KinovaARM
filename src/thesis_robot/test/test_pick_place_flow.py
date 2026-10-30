@@ -617,8 +617,27 @@ def test_when_no_side_direction_has_a_solution_auto_falls_back_to_straight_down_
     assert not [m for m in side_world.moves if m[3] == 'cart' and m[2] < 0.3]
 
 
-def test_a_side_swing_that_fails_stops_the_pick_before_anything_closes(node, side_world, monkeypatch):
-    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None: False)
+def test_a_side_swing_that_is_refused_before_the_arm_moves_falls_back_to_straight_down_in_auto_and_refuses_in_only(node, side_world, monkeypatch):
+    from rclpy.parameter import Parameter
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None: label.startswith('side: swing') is False)
+    set_params(node, approach_tilt_deg=0.0)
+    assert run_cup_pick(node) is True                                          # the arm never moved: straight down instead
+    assert node._held['tilt'] == 0.0
+    node._held = None
+    node.set_parameters([Parameter('side_grasp', Parameter.Type.STRING, 'only')])
+    side_world.grippers.clear()
+    assert run_cup_pick(node) is False                                         # 'only' never falls back
+    assert 'close_gripper' not in [g[1] for g in side_world.grippers]
+
+
+def test_a_side_swing_that_fails_after_the_arm_moved_stops_the_pick(node, side_world, monkeypatch):
+    joints = {'q': np.zeros(7)}
+    monkeypatch.setattr(node, '_current_joint_vector', lambda: joints['q'])
+
+    def guarded(geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None):
+        joints['q'] = joints['q'] + 0.5                                         # the arm started to move, then the move failed
+        return False
+    monkeypatch.setattr(node, '_guarded_move', guarded)
     side_world.grippers.clear()
     assert run_cup_pick(node) is False
     assert 'close_gripper' not in [g[1] for g in side_world.grippers]

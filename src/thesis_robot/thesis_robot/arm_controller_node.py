@@ -1092,8 +1092,17 @@ class ArmControllerNode(Node):
                 return None
             self.get_logger().info(f'pick: side grasp toward azimuth {az:.0f}: pads at z={pad_z:.3f} just under the rim' + (' (wrist turned 180 deg)' if flipped else ''))
             self._log_event('tilt', tilt=round(go.SIDE_TILT_DEG, 1), az=round(az, 1), flipped=flipped, asked=round(go.SIDE_TILT_DEG, 1), side=True)
+            try:
+                q_before = np.array(self._current_joint_vector())
+            except RuntimeError:
+                q_before = None
             if not self._guarded_move(geom, 'side: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
-                return None if getattr(self, '_plan_too_long', False) else False      # nothing moved: try the next option, or straight down
+                # A swing that was refused (unsafe path, too long, no plan) BEFORE the arm moved is not a failed pick: try the next direction, or straight down.
+                try:
+                    moved = q_before is None or float(np.max(np.abs(np.array(self._current_joint_vector()) - q_before))) > 0.05
+                except RuntimeError:
+                    moved = True
+                return False if moved else None
             tilt_state['on'] = {'tilt': go.SIDE_TILT_DEG, 'az': az, 'pre': pre, 'grasp': grasp_fl, 'side': True}
             return (self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), 'side: down beside the object', min_flange_z=float(pre[2]) - 0.02)
                     and self._move_verified(float(grasp_fl[0]), float(grasp_fl[1]), float(grasp_fl[2]), 'side: in around the object', min_flange_z=float(grasp_fl[2]) - 0.02))
