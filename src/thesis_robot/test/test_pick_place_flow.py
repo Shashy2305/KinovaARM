@@ -915,33 +915,43 @@ def test_colour_blob_detections_do_not_block_a_place_in_the_arm_controller(node,
     assert [lab for lab, _x, _y in node._scene_obstacles()] == ['cup']
 
 
-def test_a_hover_that_needs_a_huge_joint_swing_goes_home_first_and_tries_again(node, world, monkeypatch):
+def test_a_hover_that_needs_a_huge_joint_swing_is_staged_over_the_table_first(node, world, monkeypatch):
     calls = []
-    state = {'n': 0}
-
-    def move_to(x, y, z, **kw):
-        calls.append(('move', round(z, 2)))
-        if len(calls) == 3 and state['n'] == 0:                               # the first hover (after 'raise' and any other move) is refused
-            pass
-        return True
-    # the hover is the first max_flange_z move of the pick: make exactly that one fail the first time
-    seen = {'hover': 0}
+    big = 'that pose needs a 2.9 rad single-joint reconfiguration (limit 2.6) — go home first or pick a closer target'
 
     def fake_move_to(x, y, z, speed=None, cartesian=False, min_flange_z=None, max_flange_z=None):
         if max_flange_z is not None and not cartesian:
-            seen['hover'] += 1
-            if seen['hover'] == 1:
-                node._last_move_error = 'that pose needs a 2.9 rad single-joint reconfiguration (limit 2.6) — go home first or pick a closer target'
+            calls.append(('hover', round(x, 2), round(y, 2)))
+            if (round(x, 2), round(y, 2)) == (0.40, 0.0) and calls.count(('hover', 0.4, 0.0)) == 1 and len([c for c in calls if c[0] == 'hover']) == 1:
+                node._last_move_error = big                         # the direct hover over the object is refused for the size of the swing
                 node._blocked = False
-                calls.append('hover refused')
                 return False
-        calls.append(('move', round(z, 3)))
         return True
+
     monkeypatch.setattr(node, '_move_to', fake_move_to)
     monkeypatch.setattr(node, '_safe_home', lambda: (calls.append('home') or True))
     assert run_pick(node) is True
-    assert 'hover refused' in calls and 'home' in calls
-    assert calls.index('home') > calls.index('hover refused')
+    hovers = [c for c in calls if c[0] == 'hover']
+    assert hovers[0] == ('hover', 0.40, 0.0) and hovers[1][1:] == (0.42, 0.0) and hovers[2][1:] == (0.40, 0.0)       # direct (refused), staging, target again
+    assert 'home' not in calls
+
+
+def test_when_even_the_staging_hover_is_refused_for_the_swing_the_arm_goes_home_first(node, world, monkeypatch):
+    calls = []
+    big = 'that pose needs a 3.2 rad single-joint reconfiguration (limit 2.6) — go home first or pick a closer target'
+    state = {'home': False}
+
+    def fake_move_to(x, y, z, speed=None, cartesian=False, min_flange_z=None, max_flange_z=None):
+        if max_flange_z is not None and not cartesian and not state['home']:
+            node._last_move_error = big
+            node._blocked = False
+            calls.append(('hover refused', round(x, 2)))
+            return False
+        return True
+    monkeypatch.setattr(node, '_move_to', fake_move_to)
+    monkeypatch.setattr(node, '_safe_home', lambda: (calls.append('home') or state.update(home=True) or True))
+    assert run_pick(node) is True
+    assert [c for c in calls if c == 'home'] == ['home'] and calls.index('home') > 0
 
 
 def test_a_hover_refused_for_another_reason_does_not_go_home(node, world, monkeypatch):

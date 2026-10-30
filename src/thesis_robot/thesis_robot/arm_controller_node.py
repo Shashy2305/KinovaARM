@@ -414,6 +414,7 @@ class ArmControllerNode(Node):
             geom, f'move_to ({rx:.3f},{ry:.3f},{rz:.3f})',
             position=[rx, ry, rz], cartesian=cartesian)
 
+    HOVER_STAGING_XY = (0.42, 0.0)    # a hover that needs too big a joint swing is staged over here (the middle of the table) first
     HOME_RISE_Z = 0.50               # go_home from a horizontal tool first rises to this flange height
     SHORT_MOVE_M = 0.20              # longer straight lines with a horizontal tool stay cartesian
 
@@ -1219,17 +1220,28 @@ class ArmControllerNode(Node):
             return self._move_to(centred['xy'][0], centred['xy'][1], lift_z, cartesian=True, max_flange_z=ws.HOVER_MAX_Z)
 
         def hover_over():
-            """Hover above the object. If the arm is somewhere (near its own base after the last command, or in a horizontal pose) from which the solver needs a huge joint swing to get there, go home first
-            and try again instead of failing the pick (2026-10-30: three picks of a far-edge cup stopped at 'needs a 2.9 rad single-joint reconfiguration - go home first')."""
-            if self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z):
+            """Hover above the object. A hover far out can need more joint swing than the planner allows from where the arm is (the wrist alone needs ~2.6 rad from home to reach x 0.61:
+            2026-10-30, three picks of a far-edge cup stopped at 'needs a 2.9 rad single-joint reconfiguration - go home first', and going home did not help). So: try directly; if that
+            is refused for the size of the swing, stage the arm over the middle of the table first (a small move from there to the target); if even that is refused, go home first."""
+            def to_target():
+                return self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z)
+
+            def reconfig_refused():
+                return 'reconfiguration' in getattr(self, '_last_move_error', '') and not self._blocked
+            if to_target():
                 return True
-            if 'reconfiguration' in getattr(self, '_last_move_error', '') and not self._blocked:
-                self.get_logger().info('pick: the hover needs a big joint reconfiguration from here: going home first, then again')
-                self._publish_pp_status(f'pick {object_id}: going home first')
+            if not reconfig_refused():
+                return False
+            sx, sy = self.HOVER_STAGING_XY
+            self.get_logger().info(f'pick: the hover needs a big joint swing from here: staging over ({sx:.2f}, {sy:.2f}) first')
+            self._publish_pp_status(f'pick {object_id}: staging over the table')
+            staged = self._move_to(sx, sy, hover_z, max_flange_z=ws.HOVER_MAX_Z)
+            if not staged and reconfig_refused():
+                self.get_logger().info('pick: the staging hover also needs a big swing: going home first')
                 if not self._safe_home():
                     return False
-                return self._move_to(ox, oy, hover_z, max_flange_z=ws.HOVER_MAX_Z)
-            return False
+                staged = self._move_to(sx, sy, hover_z, max_flange_z=ws.HOVER_MAX_Z)
+            return bool(staged) and to_target()
 
         steps = [
             ('open gripper', lambda: self._open_gripper()),
