@@ -162,3 +162,13 @@ def test_past_outcomes_move_the_ranking():
     out = go.rank_methods('cup', (0.4, 0.0), TABLE_TOP, [], 0.05, False, records=fails + wins)
     assert out[0]['method'] == 'top'
     assert go.method_factor('cup', 'side', [{'kind': 'pick', 'label': 'cup', 'method': 'side', 'ok': False, 'live': False}]) == 1.0      # dry runs do not count
+
+
+def test_the_side_grasp_is_only_ranked_inside_the_proven_zone():
+    inside = go.rank_methods('cup', (0.42, 0.05), TABLE_TOP, [], 0.05, False)
+    assert inside[0]['method'] == 'side'
+    for far in ((0.58, 0.065), (0.40, 0.30), (0.25, 0.0), (0.45, -0.30)):
+        out = go.rank_methods('cup', far, TABLE_TOP, [], 0.05, False)
+        assert [o['method'] for o in out] == ['top'], far                                  # straight down outside it
+    only = go.rank_methods('cup', (0.58, 0.065), TABLE_TOP, [], 0.05, False, side_mode='only')   # 'only' is the operator's explicit test switch
+    assert only and all(o['method'] == 'side' for o in only)

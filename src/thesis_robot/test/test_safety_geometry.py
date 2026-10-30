@@ -158,3 +158,33 @@ def test_the_whole_gripper_body_is_the_robot_not_only_its_finger_axis():
     # grasping (pads at object height): a neighbour 13 cm from the axis, beside the pad, is NOT hidden
     low_fingers = [(flange, (0.29, 0.20, 0.05)), (flange, (0.42, 0.20, 0.05))]
     assert not sg.point_on_robot((0.49, 0.20, 0.04), chain, low_fingers)
+
+
+# ---- the arm's own tubes are guarded too (2026-10-29) --------------------------------------------------------------------------------------------------
+GEOM_TUBES = {'table_top_z': -0.0125, 'x': (-0.15, 0.78), 'y': (-0.9, 0.85), 'rear_wall_x': -0.2}
+
+
+def _pos(**over):
+    base = {l: (0.4, 0.0, 0.30) for l in sg.GUARDED_LINKS}
+    base.update(over)
+    return base
+
+
+def test_a_forearm_or_wrist_link_close_to_the_table_is_refused_even_when_the_gripper_is_high():
+    ok, why = sg.check_link_positions(_pos(forearm_link=(0.3, 0.0, 0.03)), GEOM_TUBES)             # 4 cm over the table: its tube is on it
+    assert not ok and 'forearm_link' in why
+    assert not sg.check_link_positions(_pos(spherical_wrist_2_link=(0.3, 0.0, 0.05)), GEOM_TUBES)[0]
+
+
+def test_the_poses_of_the_verified_grasps_pass():
+    # forearm 10 cm, wrist links 11-12 cm above the table top (the user's side-grasp demonstration)
+    top = GEOM_TUBES['table_top_z']
+    pos = _pos(half_arm_2_link=(0.2, 0.0, top + 0.20), forearm_link=(0.3, 0.0, top + 0.10), spherical_wrist_1_link=(0.35, 0.0, top + 0.11), spherical_wrist_2_link=(0.4, 0.0, top + 0.12))
+    assert sg.check_link_positions(pos, GEOM_TUBES)[0]
+
+
+def test_a_tube_already_low_at_the_start_may_leave_but_not_go_lower():
+    start = _pos(forearm_link=(0.3, 0.0, 0.03))
+    floors = sg.start_floors(start, GEOM_TUBES)
+    assert sg.check_link_positions(_pos(forearm_link=(0.3, 0.0, 0.05)), GEOM_TUBES, floors)[0]        # moving up out of it: allowed
+    assert not sg.check_link_positions(_pos(forearm_link=(0.3, 0.0, 0.02)), GEOM_TUBES, floors)[0]    # going lower: refused

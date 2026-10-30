@@ -28,6 +28,14 @@ RIM_BELOW_M = 0.008                  # pads this far under the rim of a short ob
 MIN_SIDE_HEIGHT_M = 0.07             # shorter objects have no side to hold: the pads would dip under the table margin
 PAD_MIN_ABOVE_TABLE_M = 0.06         # lowest pad-frame height over the table (the trajectory check wants 0.05)
 AZIMUTHS = tuple(range(0, 360, 45))
+# The side grasp is only used where it has been proven on the arm (2026-10-29: pick + put-down of a cup at x 0.37-0.45, y 0.0-0.10, six times). Outside this box the straight-down grasp is used:
+# a cup at x = 0.58 got a side grasp that needed a turned wrist and a 28 s swing. Widen it only after testing a position.
+SIDE_ZONE_X = (0.30, 0.52)
+SIDE_ZONE_Y = (-0.22, 0.22)
+
+
+def in_side_zone(centre_xy):
+    return SIDE_ZONE_X[0] <= centre_xy[0] <= SIDE_ZONE_X[1] and SIDE_ZONE_Y[0] <= centre_xy[1] <= SIDE_ZONE_Y[1]
 # With the tool horizontal the flange sits ~0.3 m behind the object, so its x/y can lie outside the planner's targets for the OBJECT (safety_geometry.PLAN_*_RANGE). The object must still be inside
 # those; the flange only has to stay over the table side of the base. The trajectory check (links over the table, in front of the rear limit) still covers every path.
 FLANGE_X_RANGE = (-0.05, 0.90)
@@ -195,7 +203,7 @@ def rank_methods(label, centre_xy, table_top_z, obstacles, top_clear_m, lean_pos
     side_mode: 'off' (never), 'auto' (ranked with the others), 'only' (nothing else). avoid_methods: methods that already failed on this object (a retry should try another)."""
     pref = PREF.get(label, DEFAULT_PREF)
     out = []
-    if side_mode != 'off' and side_eligible(label, table_top_z, width_m):
+    if side_mode != 'off' and side_eligible(label, table_top_z, width_m) and (in_side_zone(centre_xy) or side_mode == 'only'):
         out += [o for o in rank_side(label, centre_xy, table_top_z, obstacles, handle_bearing_deg, records, same_object_m) if 'score' in o]
     if side_mode != 'only':
         top = {'method': 'top', 'score': pref['top'] * method_factor(label, 'top', records) + (0.5 * min(top_clear_m, CLEAR_CAP_M) / CLEAR_CAP_M if top_clear_m is not None else -1.0)}

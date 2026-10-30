@@ -71,7 +71,12 @@ GUARDED_LINKS = [
     'end_effector_link', 'bracelet_link', 'robotiq_140_base_link',
     'left_inner_finger_pad', 'right_inner_finger_pad',
     'left_outer_finger', 'right_outer_finger',
+    # the arm's own tubes (added 2026-10-29: a side-grasp swing with a turned wrist put the robot's body on the table and nothing checked these)
+    'half_arm_2_link', 'forearm_link', 'spherical_wrist_1_link', 'spherical_wrist_2_link',
 ]
+# Minimum height of a link FRAME above the table top. The pad frames need 0.05 (LINK_TABLE_CLEARANCE_M); the arm's tubes are 10-12 cm thick around their frame axis, so they need more.
+# The poses of the verified side and top-down grasps keep the forearm at 10-12 cm and the wrist links at 11-20 cm, so these limits stop a real collision and pass them.
+LINK_CLEARANCE_M = {'half_arm_2_link': 0.08, 'forearm_link': 0.08, 'spherical_wrist_1_link': 0.075, 'spherical_wrist_2_link': 0.075}
 
 MAX_RECORDED_Z_SPREAD_M = 0.03
 
@@ -165,15 +170,14 @@ def start_floors(first_positions, geom):
     below the table margin at the start (the fingers close ~2 cm lower than they open, so a grasp
     of a low object ends there) may leave it, but never go lower than it began: otherwise every
     move away from such a pose, including the lift, is refused and the arm is stuck."""
-    margin = geom['table_top_z'] + LINK_TABLE_CLEARANCE_M
-    return {link: min(margin, z - 0.002) for link, (_x, _y, z) in first_positions.items()}
+    return {link: min(geom['table_top_z'] + LINK_CLEARANCE_M.get(link, LINK_TABLE_CLEARANCE_M), z - 0.002) for link, (_x, _y, z) in first_positions.items()}
 
 
 def check_link_positions(positions, geom, floors=None):
     """positions: {link: (x, y, z)} in base_link. Returns (ok, reason).
     floors: optional per-link minimum z (see start_floors) in place of the table margin."""
-    min_z = geom['table_top_z'] + LINK_TABLE_CLEARANCE_M
     for link, (x, y, z) in positions.items():
+        min_z = geom['table_top_z'] + LINK_CLEARANCE_M.get(link, LINK_TABLE_CLEARANCE_M)
         if z < (floors or {}).get(link, min_z):
             return False, (f'{link} would be at z={z:.3f}, below the table limit '
                            f'{min_z:.3f} (table top {geom["table_top_z"]:.3f})')

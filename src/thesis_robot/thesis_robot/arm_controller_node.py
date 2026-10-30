@@ -632,11 +632,12 @@ class ArmControllerNode(Node):
                 f'{pipeline or "OMPL"} path rejected by the safety check: {why}')
         return None, reason
 
-    def _guarded_move(self, geom, label, position=None, joint_positions=None, cartesian=False):
+    def _guarded_move(self, geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None):
         """Plan -> verify the whole path -> only then execute. Fails closed:
         no recorded table, planner/IK failure, FK failure or any waypoint
         outside the limits means the arm does not move."""
         self._blocked = False
+        self._plan_too_long = False
         if geom is None:
             return self._refuse('no table geometry recorded — record the table first')
         try:
@@ -670,7 +671,14 @@ class ArmControllerNode(Node):
                     return self._refuse(f'{label} unsafe: {why}')
                 self.get_logger().error(f'{label}: {why}')
                 return False
-            self.moveit2.execute(self._smoothed(traj, label))
+            traj = self._smoothed(traj, label)
+            if max_duration_s is not None and traj.points:
+                dur = traj.points[-1].time_from_start.sec + traj.points[-1].time_from_start.nanosec * 1e-9
+                if dur > max_duration_s:
+                    self._plan_too_long = True
+                    self.get_logger().warn(f'{label}: the planned path takes {dur:.0f} s (limit {max_duration_s:.0f} s): it wanders far from a direct swing, not executing it')
+                    return False
+            self.moveit2.execute(traj)
             if self.moveit2.wait_until_executed() is False:
                 self.get_logger().error(f'{label} not executed')
                 return False
@@ -818,6 +826,7 @@ class ArmControllerNode(Node):
             return False
         return False
 
+    SIDE_SWING_MAX_S = 14.0       # the verified side-grasp swings plan in 7-8 s; a 28 s one (wrist turned 180 deg, far edge) ended with the arm aborting and its body on the table (2026-10-29)
     TILT_HARD_MAX_DEG = 60.0     # code limit: the parameter tilt_cap_deg cannot raise the lean above this
     TILT_STANDOFF_M = 0.10        # the pregrasp sits this far back along the tool axis
 
@@ -1083,8 +1092,8 @@ class ArmControllerNode(Node):
                 return None
             self.get_logger().info(f'pick: side grasp toward azimuth {az:.0f}: pads at z={pad_z:.3f} just under the rim' + (' (wrist turned 180 deg)' if flipped else ''))
             self._log_event('tilt', tilt=round(go.SIDE_TILT_DEG, 1), az=round(az, 1), flipped=flipped, asked=round(go.SIDE_TILT_DEG, 1), side=True)
-            if not self._guarded_move(geom, 'side: swing to the high pre-pose', joint_positions=goal):
-                return False
+            if not self._guarded_move(geom, 'side: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
+                return None if getattr(self, '_plan_too_long', False) else False      # nothing moved: try the next option, or straight down
             tilt_state['on'] = {'tilt': go.SIDE_TILT_DEG, 'az': az, 'pre': pre, 'grasp': grasp_fl, 'side': True}
             return (self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), 'side: down beside the object', min_flange_z=float(pre[2]) - 0.02)
                     and self._move_verified(float(grasp_fl[0]), float(grasp_fl[1]), float(grasp_fl[2]), 'side: in around the object', min_flange_z=float(grasp_fl[2]) - 0.02))
@@ -1516,7 +1525,12 @@ class ArmControllerNode(Node):
             # flip three times (2026-10-06). The fingers straddle a round body at any angle.
             self.get_logger().info(f'align: the {label} is tall and round — no wrist turn')
             return True
-        if self._use_candidates():
+        # A cup with a handle is aligned from the HANDLE, not from the outline's orientation (2026-10-29: a white cup's near-round outline gave a wrist angle that flipped twice and the fingers closed along
+        # the handle). The handle-aware ranking keeps the closing direction well away from it.
+        handle_known = label == 'cup' and bool(((det or {}).get('shape') or {}).get('handle'))
+        if handle_known:
+            self.get_logger().info(f'align: the {label} has a handle (bearing {det["shape"]["handle"].get("bearing_deg", float("nan")):.0f} deg in the image): closing across it')
+        if self._use_candidates() or handle_known:
             try:
                 handled = self._align_with_candidates(label, expected_xy, det)
             except Exception as e:

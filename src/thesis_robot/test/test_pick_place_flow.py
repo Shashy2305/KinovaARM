@@ -290,7 +290,7 @@ def tilt_world(node, world, monkeypatch):
         world.ik_calls.append((tuple(round(float(v), 4) for v in position), [round(v, 4) for v in quat], allow_yaw))
         return [0.0] * 7, quat
     monkeypatch.setattr(node, '_solve_goal_joints', fake_ik)
-    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False: (world.guarded.append(label) or True))
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None: (world.guarded.append(label) or True))
     yield world
     set_params(node, approach_tilt_deg=0.0, retry_tilt_deg=0.0, tilt_azimuth_deg=-1.0, tilt_cap_deg=30.0)
 
@@ -617,7 +617,7 @@ def test_when_no_side_direction_has_a_solution_auto_falls_back_to_straight_down_
 
 
 def test_a_side_swing_that_fails_stops_the_pick_before_anything_closes(node, side_world, monkeypatch):
-    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False: False)
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None: False)
     side_world.grippers.clear()
     assert run_cup_pick(node) is False
     assert 'close_gripper' not in [g[1] for g in side_world.grippers]
@@ -733,7 +733,7 @@ def test_a_short_straight_move_with_a_horizontal_tool_goes_through_joint_space(n
     monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: [0.7387, -0.0282, 0.0167, 0.6733])      # the side-grasp orientation (axis nearly horizontal)
     monkeypatch.setattr(node, '_tf_pose', lambda *a, **k: (np.eye(3), [0.247, 0.001, 0.153]))
     monkeypatch.setattr(node, '_solve_goal_joints', lambda pos, quat, yaw: (calls.append(('ik', tuple(round(v, 3) for v in pos))) or [0.1] * 7, quat))
-    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False: (calls.append(('move', label, joint_positions is not None, cartesian)) or True))
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None: (calls.append(('move', label, joint_positions is not None, cartesian)) or True))
     assert node._move_to(0.247, 0.001, 0.207, cartesian=True) is True
     assert calls[0] == ('ik', (0.247, 0.001, 0.207)) and calls[1][2] is True and calls[1][3] is False
     calls.clear()
@@ -828,3 +828,45 @@ def test_a_neighbour_beside_a_side_held_cups_target_refuses_instead_of_turning_t
     node.latest_scene = {'bottle_00': {'label': 'bottle', 'x': 0.247 + 0.12, 'y': 0.001, 'z': 0.10, 'confidence': 0.95, 'stale': False}}
     assert node._place(here=True) is False
     assert side_world.rotations == [] and side_world.verified == []
+
+
+def test_a_side_swing_whose_planned_path_is_too_long_is_skipped_for_the_next_option_without_moving(node, side_world, monkeypatch):
+    seen = []
+
+    def guarded(geom, label, position=None, joint_positions=None, cartesian=False, max_duration_s=None):
+        seen.append((label, max_duration_s))
+        if label.startswith('side: swing') and len(seen) == 1:
+            node._plan_too_long = True                         # the first direction plans a 28 s wander
+            return False
+        node._plan_too_long = False
+        return True
+    monkeypatch.setattr(node, '_guarded_move', guarded)
+    assert run_cup_pick(node) is True
+    swings = [s for s in seen if s[0].startswith('side: swing')]
+    assert len(swings) == 2 and all(s[1] == node.SIDE_SWING_MAX_S for s in swings)        # the next direction was tried
+
+
+def test_a_cup_at_the_far_edge_is_picked_straight_down_in_auto_mode(node, side_world):
+    node.latest_scene['cup_00'].update(x=0.58, y=0.065)
+    assert run_cup_pick(node) is True
+    assert side_world.guarded == [] and node._held['tilt'] == 0.0
+
+
+def test_a_cup_with_a_detected_handle_is_aligned_from_the_handle_and_one_without_keeps_the_old_rule(node, world, monkeypatch):
+    used = []
+    monkeypatch.setattr(node, '_align_with_candidates', lambda label, xy, det: (used.append(label) or True))
+    handle = {'depth_px': 64.0, 'x': 781, 'y': 478, 'kind': 'notch', 'bearing_deg': 14.8}
+    base = world.wrist_match('cup', (0.4, 0.0))
+
+    def with_handle(label, xy, timeout=3.0, after=None):
+        d = dict(base)
+        d['shape'] = dict(d['shape'], handle=handle)
+        return d
+    monkeypatch.setattr(node, '_wrist_match', with_handle)
+    assert node._align_for_handle('cup', (0.4, 0.0)) is True
+    assert used == ['cup']
+    used.clear()
+    assert node._align_for_handle('mouse', (0.4, 0.0)) in (True, False) and used == []           # other objects: unchanged
+    monkeypatch.setattr(node, '_wrist_match', lambda label, xy, timeout=3.0, after=None: base)
+    node._align_for_handle('cup', (0.4, 0.0))
+    assert used == []                                                                               # no handle found: the old short-side rule
