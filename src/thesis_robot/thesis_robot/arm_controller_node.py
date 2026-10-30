@@ -826,9 +826,25 @@ class ArmControllerNode(Node):
                 self.get_logger().warn(f'pick {object_id}: the grip failed ({failed}) — trying once more')
                 self._publish_pp_status(f'pick {object_id}: retrying')
                 time.sleep(1.0)
+                self._recover_before_retry()
                 continue
             return False
         return False
+
+    def _tool_is_horizontal(self):
+        qx, qy = self._actual_tool_quat()[:2]
+        return 1.0 - 2.0 * (qx * qx + qy * qy) > -0.5
+
+    def _recover_before_retry(self):
+        """A side grasp that missed leaves the arm with a horizontal tool beside the object; the retry plans from where the arm is, and a plan from that pose is what made the 28 s swing. Go home first
+        when the tool is not pointing down. Never raises: a failed recovery just leaves the retry to plan from here, as before."""
+        try:
+            if self.dry_run or self.moveit2 is None or not self._tool_is_horizontal():
+                return
+            self.get_logger().info('pick: retrying from the home pose (the tool is not pointing down)')
+            self._safe_home()
+        except Exception as e:
+            self.get_logger().warn(f'pick: could not go home before the retry ({e})')
 
     SIDE_SWING_MAX_S = 14.0       # the verified side-grasp swings plan in 7-8 s; a 28 s one (wrist turned 180 deg, far edge) ended with the arm aborting and its body on the table (2026-10-29)
     TILT_HARD_MAX_DEG = 60.0     # code limit: the parameter tilt_cap_deg cannot raise the lean above this

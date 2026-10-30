@@ -104,6 +104,7 @@ TABLE_REGION_MARGIN_M = 0.05    # keep detections this far outside the recorded 
 SAME_LABEL_MERGE_BY_LABEL_M = {'bottle': 0.14, 'cup': 0.12}   # transparent/low-contrast objects: depth differs most between cameras
 SAME_LABEL_MERGE_M = 0.10      # same-label tracks closer than this are one object in the snapshot
 DUP_RADIUS_M = 0.06          # two detections of different labels this close are one object
+BLOB_GHOST_M = 0.08           # a colour blob this close to a recognised object is that object seen again
 
 
 class SceneGraphNode(Node):
@@ -116,6 +117,7 @@ class SceneGraphNode(Node):
         # ── scene storage ────────────────────────────────────────────
         # { object_id: { label, x, y, z, confidence, last_seen, stale } }
         self._obs = {}            # object_id -> {source: (t, x, y, z, conf)}: each camera's latest reading
+        self._pair_gaps = {}      # 'cam_a|cam_b' -> deque of (t, gap_m): how far apart two static cameras put the SAME object (a camera that was moved shows up here)
         self._colour_votes = {}   # object_id -> {colour name: weight}: what the cameras say its colour is (a cast makes one frame lie; the vote does not)
         self.scene = {}
 
@@ -145,6 +147,9 @@ class SceneGraphNode(Node):
         # ── publishers ───────────────────────────────────────────────
         self.snapshot_pub = self.create_publisher(
             String, '/scene_snapshot', 10)
+
+        self.agreement_pub = self.create_publisher(String, '/camera_agreement', 10)
+        self.create_timer(5.0, self.publish_agreement)
 
         # ── publish scene snapshot at 5 Hz ───────────────────────────
         self.create_timer(0.2, self.publish_snapshot)
@@ -202,6 +207,7 @@ class SceneGraphNode(Node):
             resolved.append(tup)
 
         resolved = self._drop_relabelled_duplicates(resolved)
+        resolved = self._drop_blobs_on_known_objects(resolved)
 
         if not resolved:
             return
@@ -210,6 +216,7 @@ class SceneGraphNode(Node):
         for tup, obj_id in zip(resolved, assignments):
             label, x, y, z, conf = tup
             x, y, z, conf = self._fuse_position(obj_id, x, y, z, conf, now, src_of.get(id(tup)))
+            self._record_agreement(obj_id, now)
             self.scene[obj_id] = {
                 'label':      label,
                 'x':          round(x, 4),
@@ -230,6 +237,35 @@ class SceneGraphNode(Node):
             throttle_duration_sec=10.0,
         )
 
+    AGREEMENT_WINDOW_S = 120.0
+    AGREEMENT_MIN_N = 15
+
+    def _record_agreement(self, obj_id, now):
+        """Remember how far apart each pair of fresh static-camera readings of this object is. Two cameras that are both where they were calibrated agree within 2-4 cm; a camera that was bumped
+        or moved by someone shifts every object it sees by centimetres, and the pair's median gap shows it long before a pick misses."""
+        obs = self._obs.get(obj_id) or {}
+        fresh = sorted(k for k, v in obs.items() if k in STATIC_SOURCES and now - v[0] <= SOURCE_WINDOW_S)
+        for i, a in enumerate(fresh):
+            for b in fresh[i + 1:]:
+                gap = math.hypot(obs[a][1] - obs[b][1], obs[a][2] - obs[b][2])
+                q = self._pair_gaps.setdefault(f'{a}|{b}', [])
+                q.append((now, gap))
+                while q and now - q[0][0] > self.AGREEMENT_WINDOW_S:
+                    q.pop(0)
+
+    def agreement_summary(self, now=None):
+        """{'a|b': {'median_m', 'n'}} over the last AGREEMENT_WINDOW_S, only for pairs with enough samples."""
+        now = time.time() if now is None else now
+        out = {}
+        for k, q in self._pair_gaps.items():
+            vals = sorted(g for t, g in q if now - t <= self.AGREEMENT_WINDOW_S)
+            if len(vals) >= self.AGREEMENT_MIN_N:
+                out[k] = {'median_m': round(vals[len(vals) // 2], 4), 'n': len(vals)}
+        return out
+
+    def publish_agreement(self):
+        self.agreement_pub.publish(String(data=json.dumps({'pairs': self.agreement_summary(), 'time': time.time()})))
+
     def _same_label_duplicates(self):
         """Ids of fresh tracks that are a duplicate of a more confident fresh track of the same label within
         SAME_LABEL_MERGE_M. A transparent bottle is read 5-9 cm apart by two cameras and tracked twice; a ghost
@@ -243,6 +279,19 @@ class SceneGraphNode(Node):
                 if math.hypot(oa['x'] - ob['x'], oa['y'] - ob['y']) < SAME_LABEL_MERGE_BY_LABEL_M.get(oa['label'], SAME_LABEL_MERGE_M):
                     dups.add(a if oa['confidence'] < ob['confidence'] else b)
         return dups
+
+    def _drop_blobs_on_known_objects(self, resolved):
+        """A colour blob ('blue_obj', the HSV fallback detector) on top of a recognised object is that object seen a second time: it only adds a ghost to the scene (a 'red_obj' once sat where the
+        white cup was). Blobs away from every recognised object are kept: they are the only way to see things YOLO has no class for. Existing ghost tracks are removed too."""
+        def blob(label):
+            return str(label).endswith('_obj')
+        known = [(o[1], o[2]) for o in resolved if not blob(o[0])]
+        known += [(o['x'], o['y']) for o in self.scene.values() if not blob(o['label']) and not o.get('stale')]
+        def covered(x, y):
+            return any(math.hypot(x - kx, y - ky) < BLOB_GHOST_M for kx, ky in known)
+        for oid in [i for i, o in self.scene.items() if blob(o['label']) and covered(o['x'], o['y'])]:
+            del self.scene[oid]
+        return [o for o in resolved if not (blob(o[0]) and covered(o[1], o[2]))]
 
     def _drop_relabelled_duplicates(self, resolved):
         """A mouse seen from above is "cup" to the detectors, a bottle "cup", a bowl "mouse": the same object

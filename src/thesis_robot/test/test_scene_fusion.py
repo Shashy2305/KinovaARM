@@ -163,3 +163,52 @@ def test_the_vote_keeps_a_stable_colour_for_a_track():
     for i in range(60):
         out.append(SceneGraphNode._vote_colour(node, 'cup_00', 'blue' if i % 2 == 0 else 'black', 0.94 if i % 2 == 0 else 0.82))
     assert set(out[10:]) == {'blue'}
+
+
+def blob_world():
+    return SimpleNamespace(scene={
+        'cup_00': {'label': 'cup', 'x': 0.40, 'y': 0.10, 'z': 0.045, 'confidence': 0.9, 'stale': False},
+        'red_obj_00': {'label': 'red_obj', 'x': 0.42, 'y': 0.11, 'z': 0.04, 'confidence': 0.6, 'stale': False},
+        'blue_obj_00': {'label': 'blue_obj', 'x': 0.55, 'y': -0.20, 'z': 0.04, 'confidence': 0.6, 'stale': False},
+    })
+
+
+def test_a_colour_blob_on_a_recognised_object_is_dropped_from_the_scene_and_from_new_detections():
+    w = blob_world()
+    new = [('red_obj', 0.41, 0.09, 0.04, 0.7), ('green_obj', 0.50, 0.30, 0.04, 0.7), ('cup', 0.40, 0.10, 0.045, 0.9)]
+    kept = SceneGraphNode._drop_blobs_on_known_objects(w, new)
+    assert [k[0] for k in kept] == ['green_obj', 'cup']                     # the red blob sits on the cup; the green one is a thing of its own
+    assert 'red_obj_00' not in w.scene                                      # the old ghost track is gone too
+    assert 'blue_obj_00' in w.scene                                         # a blob away from any recognised object stays
+
+
+def test_a_blob_is_not_dropped_for_a_stale_neighbour():
+    w = blob_world()
+    w.scene['cup_00']['stale'] = True
+    SceneGraphNode._drop_blobs_on_known_objects(w, [])
+    assert 'red_obj_00' in w.scene
+
+
+def agreement_world():
+    w = SimpleNamespace(_pair_gaps={}, _obs={})
+    w.AGREEMENT_WINDOW_S, w.AGREEMENT_MIN_N = SceneGraphNode.AGREEMENT_WINDOW_S, SceneGraphNode.AGREEMENT_MIN_N
+    return w
+
+
+def test_a_pair_of_static_cameras_that_are_8_cm_apart_shows_in_the_agreement_summary():
+    w = agreement_world()
+    for i in range(30):
+        t = 100.0 + i * 0.5
+        w._obs['cup_00'] = {'realsense': (t, 0.40, 0.10, 0.04, 0.8), 'realsense2': (t, 0.48, 0.10, 0.04, 0.9), 'wrist': (t, 0.45, 0.10, 0.04, 0.9)}
+        SceneGraphNode._record_agreement(w, 'cup_00', t)
+    out = SceneGraphNode.agreement_summary(w, 116.0)
+    assert list(out) == ['realsense|realsense2']                             # the wrist is not a static camera: it never makes a pair
+    assert out['realsense|realsense2']['median_m'] == pytest.approx(0.08, abs=0.001)
+
+
+def test_too_few_samples_give_no_summary_and_old_ones_expire():
+    w = agreement_world()
+    for i in range(5):
+        w._obs['cup_00'] = {'realsense': (100.0, 0.40, 0.10, 0.04, 0.8), 'realsense2': (100.0, 0.48, 0.10, 0.04, 0.9)}
+        SceneGraphNode._record_agreement(w, 'cup_00', 100.0 + i)
+    assert SceneGraphNode.agreement_summary(w, 106.0) == {}

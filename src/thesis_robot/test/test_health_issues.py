@@ -127,3 +127,15 @@ def test_fix_controllers_only_touches_the_state_publishers(monkeypatch):
     monkeypatch.setattr(h, '_ros', lambda cmd, timeout=40: (0, 'joint_state_broadcaster active\nfault_controller active'))
     ok, msg = h.fix_controllers()
     assert ok and 'nothing to fix' in msg
+
+
+def test_two_cameras_that_agree_raise_nothing_and_a_sustained_gap_warns_with_the_pair_named():
+    assert ids(healthy(camera_agreement={'realsense|realsense2': {'median_m': 0.03, 'n': 80}})) == []
+    out = hi.evaluate(healthy(camera_agreement={'realsense|realsense2': {'median_m': 0.11, 'n': 80}}))
+    assert [i['id'] for i in out] == ['cameras_disagree_realsense_realsense2']
+    assert out[0]['severity'] == 'warn' and '11 cm' in out[0]['title'] and 'realsense and realsense2' in out[0]['title']
+
+
+def test_a_big_gap_from_a_handful_of_readings_is_not_trusted():
+    assert ids(healthy(camera_agreement={'realsense|realsense2': {'median_m': 0.20, 'n': 3}})) == []
+    assert ids(healthy(camera_agreement=None)) == []

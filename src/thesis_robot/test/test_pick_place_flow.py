@@ -967,3 +967,29 @@ def test_a_hover_refused_for_another_reason_does_not_go_home(node, world, monkey
     monkeypatch.setattr(node, '_safe_home', lambda: (calls.append('home') or True))
     assert run_pick(node) is False
     assert calls == []
+
+
+def test_a_retry_after_a_missed_side_grip_goes_home_first(node, world, monkeypatch):
+    homed = []
+    monkeypatch.setattr(node, '_tool_is_horizontal', lambda: True)
+    monkeypatch.setattr(node, '_safe_home', lambda: homed.append(1) or True)
+    world.grips = [False, True, True, True]
+    assert run_pick(node) is True
+    assert homed == [1]                                               # once, between the two attempts
+
+
+def test_a_retry_with_the_tool_pointing_down_does_not_go_home(node, world, monkeypatch):
+    homed = []
+    monkeypatch.setattr(node, '_tool_is_horizontal', lambda: False)
+    monkeypatch.setattr(node, '_safe_home', lambda: homed.append(1) or True)
+    world.grips = [False, True, True, True]
+    assert run_pick(node) is True
+    assert homed == []
+
+
+def test_a_failing_recovery_does_not_stop_the_retry(node, world, monkeypatch):
+    def boom():
+        raise RuntimeError('tf lookup failed')
+    monkeypatch.setattr(node, '_tool_is_horizontal', boom)
+    world.grips = [False, True, True, True]
+    assert run_pick(node) is True

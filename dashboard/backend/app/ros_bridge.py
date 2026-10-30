@@ -149,6 +149,8 @@ class RosBridge(Node):
         self._health_tick_t = time.monotonic()
         self._started_t = time.monotonic()
         self.create_subscription(Bool, '/fault_controller/internal_fault', self._on_fault, 5)
+        self._agreement = None                                # {'pairs': {...}, 'time': epoch} from the scene graph: do two cameras still agree on where objects are
+        self.create_subscription(String, '/camera_agreement', self._on_agreement, 2)
         self.create_timer(0.5, self._health_tick)
         # Only the wrist's native cloud is read (get_fused_points); the static cameras are fused from their depth images. Subscribing to their full-resolution driver clouds
         # decoded megabytes per message at 30 Hz for nothing and starved the camera-image callbacks (no frames reached the dashboard, 2026-10-22).
@@ -162,6 +164,12 @@ class RosBridge(Node):
     def _on_pointcloud(self, name, msg):
         with self._pc_lock:
             self._latest_pc[name] = msg
+
+    def _on_agreement(self, msg):
+        try:
+            self._agreement = json.loads(msg.data)
+        except ValueError:
+            pass
 
     def _on_fault(self, msg):
         self._fault = bool(msg.data)
@@ -187,7 +195,8 @@ class RosBridge(Node):
         now = time.monotonic()
         _pos, age = self.joint_feed.latest()
         return {'joint_age_s': None if age > 1e8 else age, 'frozen_for_s': now - self._joint_changed_t if age < 1.0 else 0.0,
-                'fault': self._fault, 'tf_ok': self._tf_ok, 'executor_lag_s': max(0.0, now - self._health_tick_t - 0.5), 'uptime_s': now - self._started_t}
+                'fault': self._fault, 'tf_ok': self._tf_ok, 'executor_lag_s': max(0.0, now - self._health_tick_t - 0.5), 'uptime_s': now - self._started_t,
+                'camera_agreement': (self._agreement or {}).get('pairs') if self._agreement and time.time() - float(self._agreement.get('time', 0)) < 30 else None}
 
     def _on_audio_level(self, msg):
         self._audio_level = (float(msg.data), time.monotonic())

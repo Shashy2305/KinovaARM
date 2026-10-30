@@ -67,6 +67,10 @@ CHECK_COMMANDS = {
 }
 
 
+AGREEMENT_WARN_M = 0.07         # two calibrated static cameras agree within 2-4 cm (measured 2026-10-29); 7 cm sustained means one moved
+AGREEMENT_MIN_N = 15
+
+
 def _issue(id_, severity, title, detail, hint):
     acts = list(ISSUE_ACTIONS.get(id_, []))
     if id_.startswith('camera_'):
@@ -146,6 +150,14 @@ def evaluate(s):
             issues.append(_issue(f'camera_{name}', 'warn', f'{c.get("label", name)} has no live image' + when,
                                  'The dashboard is not receiving frames from this camera.',
                                  'Check the USB cable / port (USB 3, direct on the PC), then use the button (a restart makes the watchdog flag the static cameras for a recalibration check).'))
+    for pair, a in sorted((s.get('camera_agreement') or {}).items()):
+        if a.get('median_m', 0) >= AGREEMENT_WARN_M and a.get('n', 0) >= AGREEMENT_MIN_N:
+            cams = ' and '.join(pair.split('|'))
+            issues.append(_issue(f'cameras_disagree_{pair.replace("|", "_")}', 'warn', f'{cams} put the same objects {a["median_m"] * 100:.0f} cm apart',
+                                 f'Over the last two minutes ({a["n"]} readings) the two cameras place the same object a median of {a["median_m"] * 100:.1f} cm apart; when both are where they were calibrated '
+                                 f'it is 2-4 cm. One of them has probably been moved or bumped, so picks will miss by about that much.',
+                                 'Look at which camera moved (the 3D map shows each object once: put one object in view of both and compare with a tape measure), then recalibrate that camera '
+                                 '(docs/START_HERE_LATEST.md section 9: check_arm_depth with the arm in an open pose).'))
     order = {'error': 0, 'warn': 1}
     issues.sort(key=lambda i: order.get(i['severity'], 2))
     return issues
