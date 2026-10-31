@@ -1,0 +1,149 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesClass{cover}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{times} % Times font
+\usepackage{setspace}
+\usepackage{graphicx}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{caption}
+\usepackage{titlesec}
+\usepackage{appendix}
+
+\onehalfspacing % 1.5 line spacing for readability
+
+% Section formatting
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+% ****************************************
+%    *             FRONT MATTER             *
+% ****************************************
+%
+
+% DECLARATIONS
+%
+% These macros are used to declare arguments needed for the
+% construction of the front matter.  
+
+\def\degreemonth#1{\gdef\@degreemonth{#1}}
+% The year the degree will be officially conferred
+\def\degreeyear#1{\gdef\@degreeyear{#1}}
+
+% The semester (Fall or Spring) the degree will be officially conferred
+\def\degreesemester#1{\gdef\@degreesemester{#1}}
+
+% The full (unabbreviated) name of the degree
+\def\degree#1{\gdef\@degree{#1}}
+
+% All previous degrees: one per line in chronological order
+\def\prevdegrees#1{\gdef\@prevdegrees{#1}}
+
+% The name of your committee's chair
+\def\chair#1{\gdef\@chair{#1}}
+
+% The names of your other committe members, one per line
+\def\othermembers#1{\gdef\@othermembers{#1}}
+
+% The number of committee members, which affects both the
+% number of lines and the amount of space between lines
+% on the approval page.
+\def\@numberofmembers{3}
+\def\@approvalspace{.75in}
+\def\numberofmembers#1{\gdef\@numberofmembers{#1}
+\ifnum \@numberofmembers > 3
+\gdef\@approvalspace{.5in}
+\fi}
+
+% The name of your degree's field (e.g. Psychology, Computer Science)
+\def\field#1{\gdef\@field{#1}}
+
+% You have to define the campus name twice because I can't figure out
+% how to get the TeX \uppercase macro to work for me (EVM, 9/21/94)
+
+% The name of your UC Campus CAPITALIZED (e.g. Berkeley, Los Angeles)
+\def\campus#1{\gdef\@campus{#1}}
+
+% \alwayssingle and \endalwayssingle
+%
+% These macros define an environment for front matter that is always 
+% single column even in a double-column document.
+
+\def\alwayssingle{\@restonecolfalse\if@twocolumn\@restonecoltrue\onecolumn
+     \else \newpage \fi}
+
+\def\endalwayssingle{\if@restonecol\twocolumn \else \newpage \fi}
+
+
+% Set the font that will be used in the front matter headings
+\def\fmfont{\fontsize\@xiipt{14.5}\selectfont}
+\def\fmsmallfont{\fontsize\@xiipt{14pt}\selectfont}
+
+\def\makecover{
+{
+    \let\footnotesize\small
+    \let\footnoterule\relax
+    \thispagestyle{empty}
+    \setcounter{page}{1}
+
+    \null\vfil
+  \begin{center}
+ %\fmfont
+ %   UNIVERSITY OF CALIFORNIA \par {\expandafter\uppercase\expandafter{\@campus}} \par  
+\vspace*{2cm}
+    {\Huge\bfseries Capstone Project Report\par}
+    \vspace{1.5cm}
+    {\LARGE\bfseries {{\@title} \par}}
+    \bigskip \medskip
+    by \par \bigskip
+    {\large\@author} \par
+    
+    \vspace{6ex}
+    \large 
+   Submitted in partial fulfillment \par
+    of the requirements for the degree of \par \medskip
+\vspace{2ex}
+   Master of Science \par
+    %\bigskip \medskip
+    in \par
+    %\bigskip \medskip
+    Robotics \par
+    %\bigskip \medskip
+    %by \par
+    %\bigskip \medskip
+    %{\@author} \par
+    \vspace{4ex}
+    \bigskip \medskip
+\fmfont
+    %University of California, Riverside
+    UNIVERSITY OF CALIFORNIA, RIVERSIDE
+\par
+    \bigskip \medskip
+    \today
+    %{\@degreemonth} {\@degreeyear}
+    \par
+%\bigskip\bigskip
+%\fmfont
+%    UNIVERSITY OF CALIFORNIA,  {\expandafter\uppercase\expandafter{\@campus}}
+    
+\end{center}
+  
+{
+\vspace{6ex}
+    \bigskip \medskip
+\fmsmallfont
+  Committee:
+\begin{quote}
+{\@chair}, Chair\newline
+{\@othermembers}
+\end{quote}
+
+}
+    \vfil\null
+%\end{alwayssingle}
+
+\setcounter{footnote}{0}
+}}
+
