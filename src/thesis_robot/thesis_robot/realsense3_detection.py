@@ -200,7 +200,8 @@ class RealSense3Detection(Node):
         detections = []
         display = bgr.copy()
 
-        for label, conf, u, v, *rest in raw_detections:
+        colours = oc.colour_names(bgr, [(rest[0] if rest else None, self._get_depth(u, v)) for _l, _c, u, v, *rest in raw_detections])   # occlusion-aware
+        for idx, (label, conf, u, v, *rest) in enumerate(raw_detections):
             depth_m = self._get_depth(u, v)
             if depth_m < 0.1:
                 continue
@@ -208,7 +209,7 @@ class RealSense3Detection(Node):
             if coords is None:
                 continue
             cx3, cy3, cz3 = coords
-            colour = oc.colour_name(bgr, rest[0]) if rest else oc.fallback_colour(label)
+            colour = colours[idx] if rest else oc.fallback_colour(label)
 
             detections.append({
                 'label':      label,

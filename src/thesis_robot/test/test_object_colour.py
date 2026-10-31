@@ -81,3 +81,42 @@ def test_an_underexposed_object_is_unknown_not_black():
     assert oc.colour_name(img, box) == 'unknown'
     img, box = scene((35, 35, 35))                                 # a real black mouse in normal exposure stays black
     assert oc.colour_name(img, box) == 'black'
+
+
+def test_a_cup_behind_another_is_read_from_its_own_pixels_only():
+    import numpy as np
+    img = np.full((240, 320, 3), (60, 90, 150), np.uint8)               # table (brown, BGR)
+    img[60:160, 100:200] = (235, 235, 235)                              # the white cup (box 100..200 x 60..160)
+    img[80:200, 130:230] = (150, 130, 20)                               # a teal-blue cup in front, covering most of it and partly outside
+    white_box, blue_box = (100, 60, 200, 160), (130, 80, 230, 200)
+    naive = oc.colour_name(img, white_box)
+    names = oc.colour_names(img, [(white_box, 1.4), (blue_box, 1.0)])   # the blue cup is nearer
+    assert names[1] == 'blue'
+    assert names[0] in ('white', 'unknown') and names[0] != 'blue'
+    assert naive in ('blue', 'white', 'unknown')                       # (documents that the whole-box read can be wrong: no assertion on it)
+
+
+def test_equal_depth_neighbours_do_not_mask_each_other():
+    import numpy as np
+    img = np.full((240, 320, 3), (60, 90, 150), np.uint8)
+    img[60:160, 100:200] = (235, 235, 235)
+    names = oc.colour_names(img, [((100, 60, 200, 160), 1.0), ((190, 60, 290, 160), 1.01)])
+    assert names[0] == 'white'
+
+
+def test_a_detection_without_a_box_is_unknown():
+    import numpy as np
+    assert oc.colour_names(np.zeros((50, 50, 3), np.uint8), [(None, 1.0)]) == ['unknown']
+
+
+def _flat(h, s, v, size=(120, 160)):
+    import numpy as np
+    hsv = np.full((size[0], size[1], 3), (h, s, v), np.uint8)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
+def test_a_silver_object_with_a_cool_cast_is_grey_but_a_saturated_blue_one_is_blue():
+    box = (10, 10, 150, 110)
+    assert oc.colour_name(_flat(98, 139, 111), box) == 'grey'          # the silver mouse under a cool light (live 2026-10-30: S median 139)
+    assert oc.colour_name(_flat(99, 196, 65), box) == 'blue'           # the teal cup (S median 196)
+    assert oc.colour_name(_flat(176, 200, 180), box) == 'red'          # a saturated red stays red (hue 5 would be the table)

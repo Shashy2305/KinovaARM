@@ -18,6 +18,7 @@ CHROMATIC_SHARE = 0.22          # this share of the usable pixels must be one co
 SAT_MIN = 105                   # OpenCV scale 0..255. A camera's colour cast makes white and grey read as saturation 60-90 (RS1: a white cup at S=84), a real blue cup is 130-245
 SAT_MIN_BRIGHT = 150            # bright pixels (V >= BRIGHT_V) must be even more saturated to count as coloured: the cast shows most there
 VAL_MIN = 45
+CHROMA_MEDIAN_S = 165           # a coloured NAME needs the typical saturation of its pixels this high: a silver mouse under a cool cast has blue-ish pixels at S~139, the teal cup's are at ~196 (2026-10-30)
 DARK_UNKNOWN_V = 15             # median brightness (0..255) of the object's pixels below which a neutral name is not trusted
 DARK_CHROMA_MIN = 22            # max-min of the B,G,R channels for a dark pixel to count as coloured (a black object's channels are within ~10 of each other)
 BRIGHT_V = 150
@@ -62,9 +63,11 @@ def colour_stats(bgr, box, mask=None):
     stats = {}
     chroma = use & (s >= SAT_MIN) & (v >= VAL_MIN) & ((v < BRIGHT_V) | (s >= SAT_MIN_BRIGHT))
     for lo, hi, name in HUE_RANGES:
-        n = int(np.count_nonzero(chroma & (h >= lo) & (h < hi)))
+        sel_h = chroma & (h >= lo) & (h < hi)
+        n = int(np.count_nonzero(sel_h))
         if n:
             stats[name] = stats.get(name, 0) + n
+            stats['_s_' + name] = max(stats.get('_s_' + name, 0.0), float(np.median(s[sel_h])))
     # a dark coloured object (a dark teal cup) has pixels below VAL_MIN whose HUE is unreliable but whose channels still differ: count them as coloured when the spread between the channels is clear
     mx, mn = bgr.max(axis=2).astype(int), bgr.min(axis=2).astype(int)
     dark_chroma = use & (v < VAL_MIN) & ((mx - mn) >= DARK_CHROMA_MIN) & (s >= SAT_MIN)
@@ -92,11 +95,16 @@ def colour_name(bgr, box, mask=None):
     vmed = st.pop('_vmed', 255.0)
     if usable < MIN_PIXELS:
         return 'unknown'
-    coloured = {k: v for k, v in st.items() if k not in ('white', 'black', 'grey')}
+    coloured = {k: v for k, v in st.items() if k not in ('white', 'black', 'grey') and not k.startswith('_')}
     if coloured:
         best = max(coloured, key=coloured.get)
         if coloured[best] / usable >= CHROMATIC_SHARE:
-            return best
+            if st.get('_s_' + best, 255.0) >= CHROMA_MEDIAN_S:
+                return best
+            # the pixels are only weakly coloured (a cool cast on a silver object): a neutral, by how bright the object is
+            if vmed >= BRIGHT_V:
+                return 'white'
+            return 'black' if vmed < DARK_V else 'grey'
     if vmed < DARK_UNKNOWN_V:
         return 'unknown'                 # RS2 saw a dark teal cup at brightness 12: that is not 'black', it is too dark to tell
     white, black, grey = st['white'], st['black'], st['grey']
@@ -104,6 +112,30 @@ def colour_name(bgr, box, mask=None):
     if white * 2 >= max(black, grey) and white / usable >= 0.12:
         return 'white' if white * 1.0 >= black * 0.5 else 'black'
     return max(('black', 'grey', 'white'), key=lambda k: st[k])
+
+
+NEARER_BY_M = 0.03             # another detection counts as IN FRONT when its depth is this much smaller
+
+
+def colour_names(bgr, items):
+    """Colour names for ALL detections of one frame. items: [(box or None, depth_m or None)]. The pixels of a detection that lie inside the box of a NEARER detection are left out of its colour: a white cup standing
+    behind a teal one is read from the pixels of the white cup only (RS2 called it blue in every frame, 2026-10-30). Too few own pixels left -> 'unknown' (the scene keeps the other cameras' votes)."""
+    out = []
+    for i, (box, depth) in enumerate(items):
+        if box is None:
+            out.append('unknown')
+            continue
+        try:
+            mask = _ellipse_mask(bgr.shape, box)
+            if depth:
+                for j, (obox, odepth) in enumerate(items):
+                    if j != i and obox is not None and odepth and odepth < depth - NEARER_BY_M:
+                        ox1, oy1, ox2, oy2 = [int(v) for v in obox]
+                        mask[max(0, min(oy1, oy2)):max(0, max(oy1, oy2)), max(0, min(ox1, ox2)):max(0, max(ox1, ox2))] = 0
+            out.append(colour_name(bgr, box, mask))
+        except Exception:
+            out.append('unknown')
+    return out
 
 
 def fallback_colour(label):

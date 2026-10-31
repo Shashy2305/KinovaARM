@@ -238,3 +238,52 @@ def test_a_detection_inside_a_fixed_obstacle_footprint_is_recognised():
     w = SimpleNamespace(_fixed_obstacles=lambda: [{'name': 'coffee machine', 'x': 0.40, 'y': 0.68, 'radius': 0.14, 'height': 0.3}])
     assert SceneGraphNode._in_fixed_obstacle(w, 0.39, 0.55)             # the front face read 13 cm short
     assert not SceneGraphNode._in_fixed_obstacle(w, 0.56, 0.32)         # the white cup
+
+
+# ---- colour vote, 2026-10-30: a white cup behind a blue one was read blue --------------------------------------------------------------------------------------
+def vote_world():
+    node = SimpleNamespace(_colour_votes={})
+    node._colour_from_votes = SceneGraphNode._colour_from_votes
+    node.COLOUR_SOURCE_TTL_S = SceneGraphNode.COLOUR_SOURCE_TTL_S
+    return node
+
+
+def test_a_few_wrong_blue_readings_do_not_turn_a_white_cup_blue():
+    vote = SceneGraphNode._colour_from_votes
+    assert vote({'white': 1.0, 'blue': 0.5}) == 'white'
+    assert vote({'white': 1.0, 'blue': 0.4, 'grey': 0.3}) == 'white'
+    assert vote({'blue': 1.0, 'white': 0.4}) == 'blue'                  # a real blue cup with a few white glints stays blue
+    assert vote({'blue': 0.3, 'black': 1.0}) == 'blue'                  # the dark-teal rule against black is unchanged
+
+
+def test_a_camera_that_reports_more_often_does_not_outvote_the_others():
+    node = vote_world()
+    out = None
+    for i in range(80):                                                  # RS2 reports 14 times for every 6 of RS1; RS2 is wrong (the cup is hidden behind a blue one)
+        out = SceneGraphNode._vote_colour(node, 'cup_00', 'blue', 0.9, 'realsense2')
+        if i % 3 == 0:
+            out = SceneGraphNode._vote_colour(node, 'cup_00', 'white', 0.9, 'realsense')
+    assert out == 'white'                                               # RS1 weight 1.0 against RS2 0.6, one vote each
+
+
+def test_a_camera_that_goes_quiet_drops_out_of_the_vote():
+    node = vote_world()
+    for _ in range(30):
+        SceneGraphNode._vote_colour(node, 'cup_00', 'blue', 0.9, 'realsense2')
+    for _ in range(5):
+        SceneGraphNode._vote_colour(node, 'cup_00', 'white', 0.9, 'realsense')
+    node._colour_votes['cup_00']['realsense2']['t'] -= 60                # RS2 has said nothing for a minute (it only saw 'unknown', or lost the cup)
+    out = [SceneGraphNode._vote_colour(node, 'cup_00', None, 0.9, 'realsense2') for _ in range(12)]
+    assert out[-1] == 'white'
+
+
+def test_the_published_colour_changes_only_after_the_new_one_keeps_winning():
+    node = SimpleNamespace(_colour_votes={}, _colour_pub={})
+    hold = lambda w: SceneGraphNode._hold_colour(node, 'mouse_00', w)  # noqa: E731
+    assert [hold('white') for _ in range(3)] == ['white'] * 3            # warm-up: the raw winner is published ...
+    assert [hold('grey') for _ in range(12)][-1] == 'grey'               # ... so a lone first frame cannot lock a wrong colour in
+    assert [hold('blue') for _ in range(5)] == ['grey'] * 5              # settled: a short bluish flash changes nothing
+    assert hold('grey') == 'grey'
+    assert [hold('blue') for _ in range(9)] == ['grey'] * 9              # the count starts again after grey won once
+    assert hold('blue') == 'blue'                                        # the 10th in a row switches
+    assert hold(None) == 'blue'                                          # no evidence keeps the current colour

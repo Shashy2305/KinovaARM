@@ -72,6 +72,8 @@ SOURCE_WINDOW_S = 2.0         # a camera's reading counts this long
 SMOOTH_ALPHA = 0.35           # how far the published estimate moves toward the fused one per message
 JUMP_M = 0.06                 # a fused estimate this far from the published one is a moved object: follow at once
 COLOUR_VOTE_DECAY = 0.97
+COLOUR_SOURCE_WEIGHT = {'realsense': 1.0, 'realsense2': 0.6, 'realsense3': 0.3, 'wrist': 0.5}   # RS1 looks down on the table and sees every object whole; the side camera is often blocked by a nearer object
+CHROMA_VS_LIGHT = 0.55        # a clear colour (blue ...) must hold this share of (its weight + white + grey) to beat white or grey; against black the old 15 % of everything still applies
 STATIC_SOURCES = ('realsense', 'realsense2', 'realsense3', 'oakd')
 SURFACE_CENTRE_FACTOR = 1.0   # 1.0 = move static-camera points away from the camera by the object's radius (surface -> centre); 0 = off
 WRIST_MIN_DOWN = 0.7          # the wrist camera only places objects when its axis points at the table (z component of the axis <= -0.7) ...
@@ -255,7 +257,7 @@ class SceneGraphNode(Node):
                 'last_seen':  now,
                 'stale':      False,
                 'reachable':  self._is_reachable(x, y, z),
-                'color':      self._vote_colour(obj_id, col_of.get(id(tup)), conf),
+                'color':      self._vote_colour(obj_id, col_of.get(id(tup)), conf, src_of.get(id(tup))),
             }
 
         # Once per 10 s, not once per detection message: this line alone wrote ~660,000 lines
@@ -490,6 +492,7 @@ class SceneGraphNode(Node):
             self.get_logger().info(f'Dropping {obj_id} — unseen for {GC_THRESHOLD:.0f}s+')
             del self.scene[obj_id]
             self._colour_votes.pop(obj_id, None)
+            getattr(self, '_colour_pub', {}).pop(obj_id, None)
             self._obs.pop(obj_id, None)
 
     # ── SPATIAL PREDICATES ───────────────────────────────────────────
@@ -573,16 +576,57 @@ class SceneGraphNode(Node):
             fz = mz if existing['z'] is None else (existing['z'] if mz is None else existing['z'] + a * (mz - existing['z']))
         return fx, fy, fz, max(conf, existing['confidence'])
 
-    def _vote_colour(self, obj_id, colour, conf):
-        """The colour of track obj_id: every detection votes with its confidence, older votes fade (x0.97 per detection), the winner is published. A single frame under a colour cast cannot flip it."""
-        votes = self._colour_votes.setdefault(obj_id, {})
-        for k in list(votes):
-            votes[k] *= COLOUR_VOTE_DECAY
-            if votes[k] < 1e-3:
-                del votes[k]
+    COLOUR_SOURCE_TTL_S = 10.0    # a camera that stopped reporting (the object is hidden from it, or it saw 'unknown') stops voting after this long
+
+    def _vote_colour(self, obj_id, colour, conf, source=None):
+        """The colour of track obj_id. Each camera keeps its OWN fading vote (x0.97 per detection of its own); the published colour comes from the cameras' NORMALISED votes times their reliability
+        (COLOUR_SOURCE_WEIGHT), so a camera that reports 14 times a second does not outvote one that reports 6 times (RS2 against RS1, 2026-10-30), and a camera whose view is blocked (it says
+        'unknown') drops out after COLOUR_SOURCE_TTL_S. A single frame under a colour cast cannot flip it."""
+        now = time.time()
+        per = self._colour_votes.setdefault(obj_id, {})
+        src = source or 'unknown'
         if colour and colour != 'unknown':
+            entry = per.setdefault(src, {'t': now, 'v': {}})
+            votes = entry['v']
+            for k in list(votes):
+                votes[k] *= COLOUR_VOTE_DECAY
+                if votes[k] < 1e-3:
+                    del votes[k]
             votes[colour] = votes.get(colour, 0.0) + max(float(conf), 0.05)
-        return self._colour_from_votes(votes)
+            entry['t'] = now
+        combined = {}
+        for s_, entry in list(per.items()):
+            if now - entry["t"] > SceneGraphNode.COLOUR_SOURCE_TTL_S:
+                del per[s_]
+                continue
+            tot = sum(entry['v'].values())
+            if tot <= 0:
+                continue
+            w = COLOUR_SOURCE_WEIGHT.get(s_, 0.5)
+            for k, x in entry['v'].items():
+                combined[k] = combined.get(k, 0.0) + w * x / tot
+        return SceneGraphNode._hold_colour(self, obj_id, SceneGraphNode._colour_from_votes(combined))
+
+    COLOUR_SWITCH_AFTER = 10      # a new colour must win this many evaluations in a row before the published one changes
+
+    def _hold_colour(self, obj_id, winner):
+        """Hysteresis: once a track's colour has had COLOUR_SWITCH_AFTER evaluations to settle, the published colour changes only when another colour has been the winner COLOUR_SWITCH_AFTER evaluations in a
+        row (a silver mouse with a bluish sheen flashed 'blue' in 5 % of the evaluations). During the warm-up the raw winner is published, so a first lone frame does not lock in a wrong colour."""
+        if not hasattr(self, '_colour_pub'):
+            self._colour_pub = {}
+        cur, cand, n, age = self._colour_pub.get(obj_id, (None, None, 0, 0))
+        if winner is None:
+            return cur
+        age += 1
+        if cur is None or age <= SceneGraphNode.COLOUR_SWITCH_AFTER or winner == cur:
+            self._colour_pub[obj_id] = (winner if age <= SceneGraphNode.COLOUR_SWITCH_AFTER or cur is None else cur, None, 0, age)
+            return self._colour_pub[obj_id][0]
+        n = n + 1 if cand == winner else 1
+        if n >= SceneGraphNode.COLOUR_SWITCH_AFTER:
+            self._colour_pub[obj_id] = (winner, None, 0, age)
+            return winner
+        self._colour_pub[obj_id] = (cur, winner, n, age)
+        return cur
 
     NEUTRAL_COLOURS = ('white', 'grey', 'black')
 
@@ -593,10 +637,13 @@ class SceneGraphNode(Node):
         if not votes:
             return None
         total = sum(votes.values())
+        light = sum(w for k, w in votes.items() if k in ('white', 'grey'))
         chroma = {k: w for k, w in votes.items() if k not in SceneGraphNode.NEUTRAL_COLOURS}
         if chroma:
             best = max(chroma, key=chroma.get)
-            if chroma[best] >= 0.15 * total:
+            # a coloured name beats black on 15 % (a dark teal cup reads black when underexposed) but it must be the MAJORITY against white/grey: a few wrong 'blue' readings of a
+            # white cup (blocked by a blue one, a colour cast) may not turn it blue (2026-10-30)
+            if chroma[best] >= 0.15 * total and (light == 0 or chroma[best] >= CHROMA_VS_LIGHT * (chroma[best] + light)):
                 return best
         neutral = {k: w * (0.6 if k == 'black' else 1.0) for k, w in votes.items() if k in SceneGraphNode.NEUTRAL_COLOURS}
         pool = neutral or votes
