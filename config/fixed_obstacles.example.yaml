@@ -1,0 +1,10 @@
+# Big things that stand on the table and are never picked (a coffee machine, a monitor stand, a box). Copy to ~/.ros/fixed_obstacles.yaml (re-read within seconds, no restart).
+# The scene graph publishes each as an object that is not reachable, the arm treats it as a tall obstacle (carries and finger sweeps keep clear of it), and any detection inside its footprint
+# (a coffee machine read as a 'cup') is dropped. x, y = centre in base_link metres (x forward, y to the right), radius = half the footprint, height above the table top.
+# Measure it with: source scripts/ros_env.sh; ROS_DOMAIN_ID=42 python3 scripts/scan_large_objects.py   (or a tape measure from the robot base)
+obstacles:
+  - name: coffee machine
+    x: 0.40
+    y: 0.68
+    radius: 0.14
+    height: 0.30

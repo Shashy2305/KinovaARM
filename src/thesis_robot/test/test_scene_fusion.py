@@ -212,3 +212,29 @@ def test_too_few_samples_give_no_summary_and_old_ones_expire():
         w._obs['cup_00'] = {'realsense': (100.0, 0.40, 0.10, 0.04, 0.8), 'realsense2': (100.0, 0.48, 0.10, 0.04, 0.9)}
         SceneGraphNode._record_agreement(w, 'cup_00', 100.0 + i)
     assert SceneGraphNode.agreement_summary(w, 106.0) == {}
+
+
+def test_a_detection_far_taller_than_its_class_is_implausible_but_a_normal_one_is_not():
+    top = -0.0125
+    assert sgn.implausibly_tall('cup', 0.1555, top)                      # the red coffee machine read as a cup (top 17 cm above the table)
+    assert sgn.implausibly_tall('cup', 0.358, top)                       # the gripper read as a cup
+    assert not sgn.implausibly_tall('cup', 0.078, top)                   # a real 9 cm cup
+    assert not sgn.implausibly_tall('cup', 0.1, top)                     # a 11 cm mug with depth noise
+    assert not sgn.implausibly_tall('mouse', 0.0233, top)
+    assert sgn.implausibly_tall('mouse', 0.0697, top)
+    assert not sgn.implausibly_tall('bottle', 0.2, top)
+    assert not sgn.implausibly_tall('laptop', 0.5, top)                  # a class without a known height is never judged
+    assert not sgn.implausibly_tall('cup', None, top) and not sgn.implausibly_tall('cup', 0.5, None)
+
+
+def test_fixed_obstacles_parse_and_bad_entries_are_skipped():
+    out = sgn.parse_fixed_obstacles({'obstacles': [{'name': 'coffee machine', 'x': 0.4, 'y': 0.68, 'radius': 0.14, 'height': 0.3}, {'name': 'broken', 'x': 'a'}, {'x': 0.1, 'y': 0.2}]})
+    assert [o['name'] for o in out] == ['coffee machine', 'large object']
+    assert out[0]['radius'] == 0.14 and out[1]['height'] == 0.30
+    assert sgn.parse_fixed_obstacles(None) == [] and sgn.parse_fixed_obstacles({'obstacles': None}) == []
+
+
+def test_a_detection_inside_a_fixed_obstacle_footprint_is_recognised():
+    w = SimpleNamespace(_fixed_obstacles=lambda: [{'name': 'coffee machine', 'x': 0.40, 'y': 0.68, 'radius': 0.14, 'height': 0.3}])
+    assert SceneGraphNode._in_fixed_obstacle(w, 0.39, 0.55)             # the front face read 13 cm short
+    assert not SceneGraphNode._in_fixed_obstacle(w, 0.56, 0.32)         # the white cup

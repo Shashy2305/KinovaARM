@@ -78,6 +78,25 @@ WRIST_MIN_DOWN = 0.7          # the wrist camera only places objects when its ax
 WRIST_MIN_RANGE_M = 0.25      # ... and the object is at least this far away (its depth is empty / wrong closer)
 
 
+def implausibly_tall(label, z, table_top):
+    """True when a detection's top (z, base_link) is far higher above the table than an object of that class can be. Unknown classes and unknown heights are never rejected."""
+    if z is None or table_top is None or label not in ws.OBJECT_HEIGHT_M:
+        return False
+    return (z - table_top) > MAX_TOP_FACTOR * ws.OBJECT_HEIGHT_M[label] + MAX_TOP_MARGIN_M
+
+
+def parse_fixed_obstacles(data):
+    """[{'name', 'x', 'y', 'radius', 'height'}] from the parsed YAML ({'obstacles': [...]}); entries that are not numbers are skipped."""
+    out = []
+    for o in (data or {}).get('obstacles') or []:
+        try:
+            out.append({'name': str(o.get('name', 'large object')), 'x': float(o['x']), 'y': float(o['y']),
+                        'radius': float(o.get('radius', 0.12)), 'height': float(o.get('height', 0.30))})
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def _load_workspace(logger):
     """Load WORKSPACE bounds from workspace_bounds.yaml if present (written
     by calibration/define_workspace_boundary.py), else fall back to
@@ -104,6 +123,10 @@ TABLE_REGION_MARGIN_M = 0.05    # keep detections this far outside the recorded 
 SAME_LABEL_MERGE_BY_LABEL_M = {'bottle': 0.14, 'cup': 0.12}   # transparent/low-contrast objects: depth differs most between cameras
 SAME_LABEL_MERGE_M = 0.10      # same-label tracks closer than this are one object in the snapshot
 DUP_RADIUS_M = 0.06          # two detections of different labels this close are one object
+FIXED_OBSTACLES_FILE = os.path.expanduser('~/.ros/fixed_obstacles.yaml')   # big things that live on the table and are never picked: a coffee machine, a monitor stand
+FIXED_MARGIN_M = 0.05         # a detection this far outside a fixed obstacle's footprint is still the obstacle (a depth read on its front face lands off-centre)
+MAX_TOP_FACTOR = 1.3          # a detection's top may be this many times the class's usual height (+ margin) above the table ...
+MAX_TOP_MARGIN_M = 0.03       # ... before it is not that object: a red coffee machine read as a 'cup' at 15 cm, the gripper as one at 36 cm
 BLOB_GHOST_M = 0.08           # a colour blob this close to a recognised object is that object seen again
 
 
@@ -113,6 +136,7 @@ class SceneGraphNode(Node):
         super().__init__('scene_graph_node')
         self.workspace = _load_workspace(self.get_logger())
         self._table_cache = (None, None)
+        self._fixed_cache = (None, [])
 
         # ── scene storage ────────────────────────────────────────────
         # { object_id: { label, x, y, z, confidence, last_seen, stale } }
@@ -197,6 +221,11 @@ class SceneGraphNode(Node):
                 x, y = self._to_object_centre(det, label, x, y)
             if det.get('source') == 'wrist' and not self._wrist_usable(det):
                 continue                      # the wrist camera is not looking at the table: its 3D point is not an object on it
+            if self._in_fixed_obstacle(x, y):
+                continue                      # the coffee machine (or whatever is declared there), named as a cup/bottle by the detector
+            if implausibly_tall(label, z, self._table_top()):
+                self.get_logger().warn(f'Dropping {label} at ({x:.2f},{y:.2f}): top at z={z:.2f} is too high for a {label} (not an object of that class)', throttle_duration_sec=10.0)
+                continue
             if not self._on_table_region(x, y, z):
                 continue                      # the room: another desk, the people, the floor — not objects on the table
             if z is not None and self._on_robot((x, y, z)):
@@ -428,6 +457,11 @@ class SceneGraphNode(Node):
 
             snapshot[obj_id] = entry
 
+        top = table_top if table_top is not None else -0.0125
+        for i, o in enumerate(self._fixed_obstacles()):
+            snapshot[f'fixed_{i:02d}'] = {'label': o['name'], 'x': o['x'], 'y': o['y'], 'z': round(top + o['height'], 3), 'confidence': 1.0,
+                                          'reachable': False, 'stale': False, 'fixed': True, 'radius': o['radius']}
+
         self.snapshot_pub.publish(String(data=json.dumps(snapshot)))
 
     # ── STALENESS UPDATE ─────────────────────────────────────────────
@@ -459,6 +493,27 @@ class SceneGraphNode(Node):
             self._obs.pop(obj_id, None)
 
     # ── SPATIAL PREDICATES ───────────────────────────────────────────
+    def _fixed_obstacles(self):
+        """The declared fixed obstacles, re-read only when the file changes (edit it, no restart)."""
+        try:
+            mtime = os.path.getmtime(FIXED_OBSTACLES_FILE)
+        except OSError:
+            self._fixed_cache = (None, [])
+            return []
+        if self._fixed_cache[0] != mtime:
+            try:
+                with open(FIXED_OBSTACLES_FILE) as f:
+                    items = parse_fixed_obstacles(yaml.safe_load(f))
+                self.get_logger().info(f'Fixed obstacles: {[(o["name"], o["x"], o["y"]) for o in items]}')
+            except (OSError, yaml.YAMLError) as e:
+                self.get_logger().error(f'Invalid {FIXED_OBSTACLES_FILE} ({e}): ignoring it')
+                items = []
+            self._fixed_cache = (mtime, items)
+        return self._fixed_cache[1]
+
+    def _in_fixed_obstacle(self, x, y):
+        return any(math.hypot(x - o['x'], y - o['y']) < o['radius'] + FIXED_MARGIN_M for o in self._fixed_obstacles())
+
     def _table_top(self):
         """Recorded table-top z (base_link), re-read only when the file changes."""
         try:
