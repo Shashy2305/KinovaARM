@@ -30,6 +30,13 @@ SIDE = r'(?P<side>(?:to the |on the |at the )?(?:left|right)(?: side)?(?: of)?|i
 ASIDE = r'(?:aside|away|out of the way|to the side|somewhere else|off to the side|over there)'
 BASE = r'(?:the )?(?:robot(?:s|\'s)? |arm(?:s|\'s)? )?base(?: of the (?:robot|arm))?'
 NEAR_BASE = r'(?:next to|beside|near|by|close to|at|to|towards|toward|around)'
+# Corners of the table as seen from the robot base. 'left' is -y and 'front' is +x as in SIDE_VECTOR; "near"/"back" is toward the base. When no depth is said the FAR corner is meant.
+# (x, y) inside the planner's workspace (sg.PLAN_X_RANGE 0.07..0.65, PLAN_Y_RANGE -0.50..0.50) with a margin for the fingers.
+CORNER_XY = {('left', 'far'): (0.55, -0.38), ('right', 'far'): (0.55, 0.38), ('left', 'near'): (0.22, -0.38), ('right', 'near'): (0.22, 0.38)}
+_DEPTH = {'far': 'far', 'front': 'far', 'near': 'near', 'back': 'near'}
+CORNER_PUT = r'(?:put|place|set|move|bring|drop|shift|keep|leave|park|store)'
+CORNER = (r'(?:(?:in|on|at|to) )?(?:the )?(?:(?P<cdepth0>near|far|front|back) )?(?P<cside>left|right)(?: (?P<cdepth>near|far|front|back))? (?:corner|edge)'
+          r'(?: of the (?:table|workspace|desk))?(?: (?:from|of|by) the (?:robot )?(?:base|robot|arm))?')
 FILLER = re.compile(r'\b(please|can you|could you|would you|robot|now|kindly|just)\b')
 
 
@@ -69,6 +76,8 @@ PATTERNS = [
     ('pick_place_base', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + NEAR_BASE + r' ' + BASE + r'$')),
     ('pick_place_near', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEXT_TO + r' ' + _o('b') + r'$')),
     ('pick_place_near', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + NEXT_TO + r' ' + _o('b') + r'$')),
+    ('pick_place_corner', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + CORNER_PUT + r' (?:it|that) ' + CORNER + r'$')),
+    ('pick_place_corner', re.compile(r'^' + CORNER_PUT + r' ' + _o('a') + r' ' + CORNER + r'$')),
     ('pick_aside', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + ASIDE + r'$')),
     ('pick_aside', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + ASIDE + r'$')),
     ('pick', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'$')),
@@ -88,7 +97,8 @@ def parse(command):
                     'b': SYNONYMS.get(g.get('b')) if g.get('b') else None,
                     'a_color': COLOURS.get(g.get('a_c')) if g.get('a_c') else None,
                     'b_color': COLOURS.get(g.get('b_c')) if g.get('b_c') else None,
-                    'side': _side_word(g.get('side'))}
+                    'side': _side_word(g.get('side')),
+                    'corner': (g.get('cside'), _DEPTH.get(g.get('cdepth') or g.get('cdepth0') or 'far')) if g.get('cside') else None}
     return None
 
 
@@ -193,6 +203,11 @@ def check(intent, steps, scene):
         return res(not places, 'a plain pick must not include a place step')
     if len(places) != 1:
         return False, f'expected one place step, got {len(places)}'
+    if k == 'pick_place_corner':
+        st = places[0]
+        cx, cy = CORNER_XY[intent['corner']]
+        ok = 'x' in st and 'y' in st and math.hypot(st['x'] - cx, st['y'] - cy) <= 0.08
+        return res(ok, f'the place must be at the {intent["corner"][1]} {intent["corner"][0]} corner of the table: {{"action":"place","x":{cx},"y":{cy}}}')
     if k == 'pick_place_base':
         st = places[0]
         ok = str(st.get('near', '')).lower() == 'base' or ('x' in st and math.hypot(st['x'], st['y']) <= 0.45)
@@ -225,6 +240,9 @@ def build_plan(intent, scene):
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'x': 0.45, 'y': 0.0}]
     if k == 'pick_place_base':
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'near': 'base'}]
+    if k == 'pick_place_corner':
+        cx, cy = CORNER_XY[intent['corner']]
+        return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'x': cx, 'y': cy}]
     if k in ('pick_place_near', 'pick_place_side'):
         b = best_object(scene, intent['b'], exclude=a, colour=intent.get('b_color'))
         if b is None:

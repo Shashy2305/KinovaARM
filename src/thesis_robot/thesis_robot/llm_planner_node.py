@@ -334,7 +334,7 @@ DESTINATION_WORDS = ('next to', 'beside', 'near', 'by the', 'left', 'right', 'fr
 PICK_WORDS = ('pick', 'grab', 'take', 'lift', 'fetch', 'get the', 'grasp')
 
 
-PLACE_WORDS = (' put ', ' place ', ' set it', ' next to', ' beside', ' aside', ' away', ' near ')
+PLACE_WORDS = (' put ', ' place ', ' set it', ' next to', ' beside', ' aside', ' away', ' near ', ' keep ', ' leave ', ' park ', ' drop ', ' bring ', ' move it', ' corner', ' edge', ' store ', ' there')   # 2026-10-31: "pick up the mouse and KEEP it on the left corner" ran as a lone pick and held the mouse
 
 
 def plan_covers_command(steps, command):

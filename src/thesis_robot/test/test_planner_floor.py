@@ -308,3 +308,12 @@ def test_colour_blob_detections_are_not_obstacles_for_placing():
     scene = {'cup_01': {'label': 'cup', 'x': 0.4, 'y': 0.0, 'z': 0.04, 'confidence': 0.95, 'stale': False},
              'red_obj_00': {'label': 'red_obj', 'x': 0.23, 'y': 0.13, 'z': -0.04, 'confidence': 0.9, 'stale': False}}
     assert [oid for oid, _x, _y in _scene_points(scene)] == ['cup_01']
+
+
+def test_the_generic_check_catches_a_keep_it_somewhere_command_planned_as_a_lone_pick():
+    from thesis_robot.llm_planner_node import plan_covers_command
+    lone_pick = [{'action': 'pick', 'object_id': 'mouse_00', 'approach_z': 0.35}]
+    for cmd in ('pick up mouse and keep it on left corner', 'pick up the cup and leave it there', 'grab the mouse and park it by the window'):
+        ok, why = plan_covers_command(lone_pick, cmd)
+        assert not ok and 'place' in why, cmd
+    assert plan_covers_command(lone_pick, 'pick up the mouse') == (True, '')

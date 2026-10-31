@@ -214,3 +214,34 @@ def test_next_to_a_coloured_object_checks_the_colour_of_the_reference():
     assert cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00', 'approach_z': 0.35}, {'action': 'place', 'near': 'cup_01'}], scene)[0]
     assert not cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00', 'approach_z': 0.35}, {'action': 'place', 'near': 'cup_00'}], scene)[0]
     assert cg.build_plan(intent, scene)[1] == {'action': 'place', 'near': 'cup_01'}
+
+
+# ---- corners (2026-10-31: "pick up mouse and keep it on left corner from the base" ran as a lone pick and the mouse stayed in the gripper) -----------------------
+def test_a_corner_command_is_recognised_and_placed_at_that_corner():
+    scene = {'mouse_00': {'label': 'mouse', 'x': 0.48, 'y': -0.22, 'z': 0.02, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'grey'}}
+    for text, corner in (('pick up mouse and keep it on left corner from the base', ('left', 'far')),
+                         ('pick up the mouse and put it in the far right corner of the table', ('right', 'far')),
+                         ('pick up the mouse and leave it near left corner', ('left', 'near')),
+                         ('pick up the mouse and put it in the right near corner', ('right', 'near')),
+                         ('keep the mouse on the left corner', ('left', 'far'))):
+        intent = cg.parse(text)
+        assert intent and intent['kind'] == 'pick_place_corner' and intent['corner'] == corner, text
+        plan = cg.build_plan(intent, scene)
+        assert [s['action'] for s in plan] == ['pick', 'place']
+        assert (plan[1]['x'], plan[1]['y']) == cg.CORNER_XY[corner]
+        assert cg.check(intent, plan, scene) == (True, '')
+
+
+def test_a_corner_plan_without_the_place_or_at_the_wrong_corner_is_rejected():
+    scene = {'mouse_00': {'label': 'mouse', 'x': 0.48, 'y': -0.22, 'z': 0.02, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'grey'}}
+    intent = cg.parse('pick up the mouse and keep it on the left corner')
+    ok, why = cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00'}], scene)
+    assert not ok and 'place' in why                                    # the lone pick the model produced live
+    ok, why = cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00'}, {'action': 'place', 'x': 0.55, 'y': 0.38}], scene)
+    assert not ok and 'corner' in why                                   # the right corner is not the left one
+
+
+def test_the_corner_places_are_inside_the_planner_workspace():
+    from thesis_robot import safety_geometry as sg
+    for x, y in cg.CORNER_XY.values():
+        assert sg.PLAN_X_RANGE[0] <= x <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= y <= sg.PLAN_Y_RANGE[1]
