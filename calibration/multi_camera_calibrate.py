@@ -310,6 +310,18 @@ class MultiCameraCalibrate(Node):
         except Exception as e:                      # logging must never break a capture
             self.get_logger().warn(f'could not log the raw capture: {e}')
 
+    @staticmethod
+    def _backup_installed(calib_file, name):
+        """A capture overwrites the live calibration file with ONE raw capture. Keep what was installed (2026-10-30: the first RS2 capture replaced the levelled, verified file)."""
+        try:
+            if os.path.exists(calib_file):
+                import shutil
+                d = os.path.expanduser('~/.ros/calibration_candidates')
+                os.makedirs(d, exist_ok=True)
+                shutil.copy2(calib_file, os.path.join(d, f'{name}_calibration.before-capture-{time.strftime("%Y%m%d-%H%M%S")}.yaml'))
+        except OSError:
+            pass
+
     def capture_camera(self, name, timeout_sec=CAPTURE_TIMEOUT_SEC):
         """Detect the board from the wrist camera and camera `name` right
         now (or within timeout_sec), compute base_link -> camera, and write
@@ -339,12 +351,23 @@ class MultiCameraCalibrate(Node):
                 f'{name}: lost the wrist camera\'s TF/detection right at '
                 f'capture time ({e}) — try again.'), None
 
-        rvec, tvec = detect_pose(self.detector, self.board, cam.gray, cam.K, cam.dist)
+        pose = None
+        for _ in range(8):                                  # the corner count flickers at the threshold: try a few fresh frames
+            pose = detect_pose(self.detector, self.board, cam.gray, cam.K, cam.dist)
+            if pose is not None:
+                break
+            time.sleep(0.25)
+        if pose is None:
+            return False, (
+                f'{name}: the board was seen but too few of its corners could be located in {name}\'s image to solve a pose (board too small, too oblique or blurred) — '
+                f'move it closer to {name} and more square-on, then capture again. Nothing was written.'), None
+        rvec, tvec = pose
         T_cam_marker = rt_to_matrix(rvec, tvec)
         T_base_cam = T_base_marker @ np.linalg.inv(T_cam_marker)
         t, q = matrix_to_translation_quat(T_base_cam)
         self._log_raw_capture(name, T_cam_marker)
 
+        self._backup_installed(calib_file, name)
         write_calibration_yaml(
             calib_file, self.base_frame, cam.frame_id, t, q,
             note='Computed by multi_camera_calibrate.py, anchored via wrist camera.')
