@@ -993,3 +993,43 @@ def test_a_failing_recovery_does_not_stop_the_retry(node, world, monkeypatch):
     monkeypatch.setattr(node, '_tool_is_horizontal', boom)
     world.grips = [False, True, True, True]
     assert run_pick(node) is True
+
+
+def test_a_side_grasp_that_fails_on_the_way_in_is_retried_with_the_next_method(node, world, monkeypatch):
+    calls, homed = [], []
+
+    def fake_once(object_id, pos, approach_z):
+        calls.append(int(node._pick_attempt))
+        if len(calls) == 1:
+            node._tried_methods = ['side']                               # the side grasp swung in, then 'move_to ... no collision-free IK' at the last step
+            node._side_swing_done = True
+            return False, 'descend'
+        return True, None
+    monkeypatch.setattr(node, '_pick_once', fake_once)
+    monkeypatch.setattr(node, '_recover_before_retry', lambda: homed.append(1))
+    assert node._pick('mouse_00', 0.35) is True
+    assert calls == [1, 2] and homed == [1]
+
+
+def test_a_top_grasp_that_fails_to_descend_is_not_retried_by_that_rule(node, world, monkeypatch):
+    calls = []
+
+    def fake_once(object_id, pos, approach_z):
+        calls.append(1)
+        node._tried_methods = ['top']
+        return False, 'descend'
+    monkeypatch.setattr(node, '_pick_once', fake_once)
+    assert node._pick('mouse_00', 0.35) is False
+    assert calls == [1]
+
+
+def test_a_failed_swing_is_never_retried_even_though_the_method_was_side(node, world, monkeypatch):
+    calls = []
+
+    def fake_once(object_id, pos, approach_z):
+        calls.append(1)
+        node._tried_methods = ['side']                                   # the swing itself failed (the flag stays False): the 2026-10-29 rule, stop
+        return False, 'descend'
+    monkeypatch.setattr(node, '_pick_once', fake_once)
+    assert node._pick('mouse_00', 0.35) is False
+    assert calls == [1]

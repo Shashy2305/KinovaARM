@@ -819,12 +819,18 @@ class ArmControllerNode(Node):
             if pos is None:
                 return False
             self._pick_attempt = attempt
+            self._side_swing_done = False                 # set by descend_side once the swing to the high pre-pose SUCCEEDED
             ok, failed = self._pick_once(object_id, pos, approach_z)
             if ok:
                 return True
-            if failed in ('check the grip', 'check it is still held', 'check the grip (3 cm up)') and attempt == 1:
-                self.get_logger().warn(f'pick {object_id}: the grip failed ({failed}) — trying once more')
-                self._publish_pp_status(f'pick {object_id}: retrying')
+            # A SIDE grasp that fails on the way in (the swing worked, then no collision-free IK for the last move: 2026-10-30, cup near the base) never closed the fingers: nothing is held and nothing
+            # was touched, so the safe thing is the other method. The retry already prefers one (avoid_methods in choose_method); the arm goes home first from the horizontal pose.
+            # Only when the SWING itself succeeded: a swing that failed after the arm had moved (2026-10-29: a 28 s swing aborted with the arm's body on the table) still stops the pick.
+            side_aborted = failed == 'descend' and list(getattr(self, '_tried_methods', []))[-1:] == ['side'] and bool(getattr(self, '_side_swing_done', False))
+            if (failed in ('check the grip', 'check it is still held', 'check the grip (3 cm up)') or side_aborted) and attempt == 1:
+                why = 'the side grasp could not get in' if side_aborted else f'the grip failed ({failed})'
+                self.get_logger().warn(f'pick {object_id}: {why} — trying once more' + (' with a top grasp' if side_aborted else ''))
+                self._publish_pp_status(f'pick {object_id}: retrying' + (' (top grasp)' if side_aborted else ''))
                 time.sleep(1.0)
                 self._recover_before_retry()
                 continue
@@ -1131,6 +1137,7 @@ class ArmControllerNode(Node):
                     moved = True
                 return False if moved else None
             tilt_state['on'] = {'tilt': go.SIDE_TILT_DEG, 'az': az, 'pre': pre, 'grasp': grasp_fl, 'side': True}
+            self._side_swing_done = True
             return (self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), 'side: down beside the object', min_flange_z=float(pre[2]) - 0.02)
                     and self._move_verified(float(grasp_fl[0]), float(grasp_fl[1]), float(grasp_fl[2]), 'side: in around the object', min_flange_z=float(grasp_fl[2]) - 0.02))
 
