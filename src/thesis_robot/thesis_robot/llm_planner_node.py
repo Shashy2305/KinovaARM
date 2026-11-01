@@ -69,6 +69,12 @@ WHICH ACTION FOR WHICH COMMAND:
 
 WORKSPACE BOUNDS: x=[{X_RANGE}]  y=[{Y_RANGE}]  z=[{Z_FLOOR}, 0.50]
 
+ROBOT FRAME AND NAMED PLACES (the robot's own view): the base is at x=0,y=0; x runs forward along the table (FRONT = larger x, BACK/near = toward the base); the robot's LEFT is +y and its RIGHT is -y.
+Places for "put it on the ..." (use {"action":"place","x":..,"y":..}): front-left corner x=0.55,y=0.38; front-right corner x=0.55,y=-0.38; back-left corner (on the line of the base) x=0.22,y=0.38;
+back-right corner x=0.22,y=-0.38; left side x=0.40,y=0.38; right side x=0.40,y=-0.38; front x=0.55,y=0; back x=0.22,y=0. A bare "left corner"/"right corner" means the back (base-line) corner.
+If the person says "my left/right" (the operator faces the robot) swap left and right.
+A command with several parts ("pick up A and put it next to B, then pick up B and put it next to C") is ONE plan with all the steps in order: pick, place, pick, place, ... Never drop a part.
+
 RESPOND WITH EXACTLY THIS JSON STRUCTURE — no other format:
 {
   "reasoning": "step by step thinking about which objects, sequence, safety checks",
@@ -275,6 +281,8 @@ def fix_place_targets(plan, scene, current_xy=None):
     A place that cannot be satisfied is left with an 'unplaceable' reason, which validate_plan rejects."""
     if not isinstance(plan, list):
         return plan
+    if sum(1 for st in plan if isinstance(st, dict) and st.get('action') == 'pick') > 1 and isinstance(scene, dict):
+        scene = {k: (dict(v) if isinstance(v, dict) else v) for k, v in scene.items()}        # a chain of picks: later steps must see where the earlier ones put things (never touches the live scene)
     picked = None
     for step in plan:
         if not isinstance(step, dict):
@@ -324,6 +332,8 @@ def fix_place_targets(plan, scene, current_xy=None):
         else:
             step['unplaceable'] = 'place needs a target (near an object, x/y, or here)'
         step.pop('z', None)                          # the arm derives the set-down height from how it is holding the object
+        if picked in (scene or {}) and isinstance(scene[picked], dict) and _is_number(step.get('x')) and _is_number(step.get('y')) and not step.get('unplaceable'):
+            scene[picked]['x'], scene[picked]['y'] = step['x'], step['y']            # (only a copy of the scene when the plan has several picks)
     return plan
 
 
@@ -564,6 +574,7 @@ class LLMPlannerNode(Node):
         # wrong answers use the grammar's own plan (flagged 'repaired').
         self.declare_parameter('plan_verification', True)
         self.declare_parameter('grammar_repair', True)
+        self.declare_parameter('grammar_first', True)        # a command the grammar recognises (also a chain of them) is planned by the grammar itself: no model call, no wrong object (2026-11-01)
         # Add one worked example of a similar command, and one warning, to the prompt (planner_memory)
         self.declare_parameter('planner_memory', True)
         self.model = self.get_parameter('model').value
@@ -720,7 +731,7 @@ class LLMPlannerNode(Node):
             parsed = None
             parsed_unverified = None
             repaired, hint, last_why = False, '', ''
-            intent = cg.parse(command) if bool(self.get_parameter('plan_verification').value) else None
+            intent = cg.parse_any(command) if bool(self.get_parameter('plan_verification').value) else None
             # A command about an object nobody can reach (outside the arm's range, stale, not seen): say so now instead of three slow model retries and "Plan is empty or not a list".
             if intent is not None and intent.get('kind') != 'put_down' and not (self._held and self._held.get('label') == intent.get('a')):    # (the held object is in the gripper, not on the table)
                 gone = cg.no_reachable_reason(intent, self.latest_scene, sg.PLAN_X_RANGE, sg.PLAN_Y_RANGE)
@@ -729,7 +740,12 @@ class LLMPlannerNode(Node):
                     self._publish_status(f'REJECTED: {gone}')
                     return
             attempts_used = 0
-            for attempt in (1, 2, 3):
+            if intent is not None and bool(self.get_parameter('grammar_first').value):
+                direct = cg.build_plan(intent, prompt_scene)
+                if direct:
+                    parsed = {'reasoning': f'planned by the command grammar ({intent["kind"]}); the language model was not needed', 'plan': direct}
+                    self.get_logger().info(f'plan built by the command grammar ({intent["kind"]}): no model call')
+            for attempt in ((1, 2, 3) if parsed is None else ()):
                 attempts_used = attempt
                 response = self.llm.chat(
                     model=self.model,
@@ -786,6 +802,13 @@ class LLMPlannerNode(Node):
                     repaired = True
                     self.get_logger().warn(f'plan repaired by the command grammar ({intent["kind"]}): {last_why}')
                 elif parsed_unverified is not None:
+                    unverified_steps = [st for st in (parsed_unverified.get('plan') or []) if st]
+                    if unverified_steps:
+                        # 2026-11-01: with the mouse out of view "pick up the blue cup, put it next to the mouse" was approved as the model's unverified plan and the cup went next to the WHITE cup.
+                        why_not = f'I could not verify a plan for "{command}" ({last_why}); nothing was done'
+                        self.get_logger().warn(f'Plan REJECTED: {why_not}')
+                        self._publish_status(f'REJECTED: {why_not}')
+                        return
                     parsed = parsed_unverified          # e.g. the object is not on the table: the model's empty plan + reasoning stands
             if parsed is None:
                 raise json.JSONDecodeError('the language model returned no valid plan after 3 attempts', '', 0)
@@ -840,6 +863,13 @@ class LLMPlannerNode(Node):
 
             # Publish approved plan
             self.get_logger().info(f'Plan APPROVED: {reason}')
+            for i, st in enumerate(plan, 1):
+                try:
+                    o = self.latest_scene.get(st.get('object_id')) or {}
+                    what = f"{o.get('color') or 'unknown colour'} {o.get('label')} at ({o.get('x', 0):.2f},{o.get('y', 0):.2f})" if st.get('action') == 'pick' else ''
+                    self.get_logger().info(f'  target {i}: {st.get("action")} {what}'.rstrip())
+                except Exception:
+                    pass
             self._publish_status(f'EXECUTING: {len(plan)} steps')
 
             out = String()

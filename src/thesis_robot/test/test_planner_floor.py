@@ -317,3 +317,19 @@ def test_the_generic_check_catches_a_keep_it_somewhere_command_planned_as_a_lone
         ok, why = plan_covers_command(lone_pick, cmd)
         assert not ok and 'place' in why, cmd
     assert plan_covers_command(lone_pick, 'pick up the mouse') == (True, '')
+
+
+def test_a_chain_of_places_sees_where_the_earlier_steps_put_things():
+    from thesis_robot.llm_planner_node import fix_place_targets
+    scene = {'cup_01': {'label': 'cup', 'x': 0.40, 'y': -0.20, 'z': 0.05, 'reachable': True, 'stale': False},
+             'mouse_04': {'label': 'mouse', 'x': 0.45, 'y': 0.15, 'z': 0.02, 'reachable': True, 'stale': False},
+             'cup_02': {'label': 'cup', 'x': 0.55, 'y': 0.00, 'z': 0.05, 'reachable': True, 'stale': False}}
+    before = {k: dict(v) for k, v in scene.items()}
+    plan = [{'action': 'pick', 'object_id': 'cup_01'}, {'action': 'place', 'near': 'mouse_04'},
+            {'action': 'pick', 'object_id': 'mouse_04'}, {'action': 'place', 'near': 'cup_02'}]
+    out = fix_place_targets(plan, scene)
+    assert not any(st.get('unplaceable') for st in out)
+    cup_spot = (out[1]['x'], out[1]['y'])
+    mouse_spot = (out[3]['x'], out[3]['y'])
+    assert ((cup_spot[0] - mouse_spot[0]) ** 2 + (cup_spot[1] - mouse_spot[1]) ** 2) ** 0.5 >= 0.12        # the mouse's new spot keeps clear of where the cup will be
+    assert scene == before                                                                                  # the live scene was not touched

@@ -30,13 +30,36 @@ SIDE = r'(?P<side>(?:to the |on the |at the )?(?:left|right)(?: side)?(?: of)?|i
 ASIDE = r'(?:aside|away|out of the way|to the side|somewhere else|off to the side|over there)'
 BASE = r'(?:the )?(?:robot(?:s|\'s)? |arm(?:s|\'s)? )?base(?: of the (?:robot|arm))?'
 NEAR_BASE = r'(?:next to|beside|near|by|close to|at|to|towards|toward|around)'
-# Corners of the table as seen from the robot base. 'left' is -y and 'front' is +x as in SIDE_VECTOR; "near"/"back" is toward the base. When no depth is said the FAR corner is meant.
-# (x, y) inside the planner's workspace (sg.PLAN_X_RANGE 0.07..0.65, PLAN_Y_RANGE -0.50..0.50) with a margin for the fingers.
-CORNER_XY = {('left', 'far'): (0.55, -0.38), ('right', 'far'): (0.55, 0.38), ('left', 'near'): (0.22, -0.38), ('right', 'near'): (0.22, 0.38)}
-_DEPTH = {'far': 'far', 'front': 'far', 'near': 'near', 'back': 'near'}
+# NAMED PLACES in the ROBOT's own frame. The base is at (0, 0); x runs forward along the table (front = away from the base, back = toward the base); the robot's LEFT is +y and its RIGHT is -y
+# (the robot faces +x). "Corner" without a depth means the corner on the line of the base (back), "edge"/"side" without one means halfway (mid). Say "my left" / "the operator's right" to use the
+# operator's side instead (the operator faces the robot, so it is mirrored). All points lie inside the planner's workspace (sg.PLAN_X_RANGE 0.07..0.65, PLAN_Y_RANGE -0.50..0.50) with a margin.
+ZONE_X = {'front': 0.55, 'mid': 0.40, 'back': 0.22}
+ZONE_Y = {'left': 0.38, 'centre': 0.0, 'right': -0.38}
+_DEPTH = {'front': 'front', 'far': 'front', 'forward': 'front', 'back': 'back', 'near': 'back', 'rear': 'back'}
+_SIDE = {'left': 'left', 'right': 'right', 'centre': 'centre', 'center': 'centre', 'middle': 'centre'}
 CORNER_PUT = r'(?:put|place|set|move|bring|drop|shift|keep|leave|park|store)'
-CORNER = (r'(?:(?:in|on|at|to) )?(?:the )?(?:(?P<cdepth0>near|far|front|back) )?(?P<cside>left|right)(?: (?P<cdepth>near|far|front|back))? (?:corner|edge)'
-          r'(?: of the (?:table|workspace|desk))?(?: (?:from|of|by) the (?:robot )?(?:base|robot|arm))?')
+_ZD = r'(?:front|far|forward|back|near|rear)'
+_ZS = r'(?:left|right|centre|center|middle)'
+ZONE = (r"(?:(?:in|on|at|to) )?(?:the )?(?P<zframe>my |the operators |operators |operator's |robots |robot's |robot )?(?:(?P<zd0>" + _ZD + r")(?: |-))?(?P<zs>" + _ZS + r")(?:(?: |-)(?P<zd1>" + _ZD + r"))? (?P<znoun>corner|edge|side)"
+        r"(?: of the (?:table|workspace|desk))?(?: (?:from|of|by|on|along|at) the (?:robot )?(?:base|robot|arm)(?: line)?)?")
+ZONE_FB = r"(?:in|on|at|to) the (?P<zfb>front|back|far|near|rear) (?:of the (?:table|workspace|desk)|edge|side|area)"
+
+
+def zone_xy(depth, side, operator=False):
+    """(x, y) of a named place in the robot frame; operator=True mirrors left/right (the operator's own left)."""
+    y = ZONE_Y[side]
+    return ZONE_X[depth], (-y if operator else y)
+
+
+def _zone_from_groups(g):
+    """(x, y) for a matched ZONE / ZONE_FB, or None when the match has no zone."""
+    if g.get('zs'):
+        depth = _DEPTH.get(g.get('zd1') or g.get('zd0') or '') or ('back' if g.get('znoun') == 'corner' else 'mid')
+        operator = (g.get('zframe') or '').strip().startswith(('my', 'the operator', 'operator'))
+        return zone_xy(depth, _SIDE[g['zs']], operator)
+    if g.get('zfb'):
+        return zone_xy(_DEPTH[g['zfb']], 'centre')
+    return None
 FILLER = re.compile(r'\b(please|can you|could you|would you|robot|now|kindly|just)\b')
 
 
@@ -58,6 +81,7 @@ def _clean(command):
     c = (command or '').lower()
     c = re.sub(r"[^a-z' ]+", ' ', c)
     c = FILLER.sub(' ', c)
+    c = re.sub(r'\bthan\b', 'then', c)                    # "pick up A ... than pick up B" (a typo for "then"; nobody says "than" in a command)
     return re.sub(r'\s+', ' ', c).strip()
 
 
@@ -70,15 +94,17 @@ PATTERNS = [
     # "put it down", "put the cup back on the table" (2026-10-26: the second was not recognised, nothing checked the model's plan and a lone go_home was approved with the cup still in the gripper)
     ('put_down', re.compile(r"^(?:put|set|place)(?: it| that| this| the object| the [a-z]+(?: [a-z]+)?)? (?:down|back)(?: down)?(?: (?:on|onto|at|in) (?:the )?(?:table|desk|surface|same place|same spot))?$"
                             r"|^(?:release|let go of)(?: it| that)?$|^drop it$")),
-    ('pick_place_side', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + SIDE + r' ' + _o('b') + r'$')),
+    ('pick_place_side', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and then| and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + SIDE + r' ' + _o('b') + r'$')),
     ('pick_place_side', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + SIDE + r' ' + _o('b') + r'$')),
-    ('pick_place_base', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEAR_BASE + r' ' + BASE + r'$')),
+    ('pick_place_base', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and then| and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEAR_BASE + r' ' + BASE + r'$')),
     ('pick_place_base', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + NEAR_BASE + r' ' + BASE + r'$')),
-    ('pick_place_near', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEXT_TO + r' ' + _o('b') + r'$')),
+    ('pick_place_near', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and then| and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + NEXT_TO + r' ' + _o('b') + r'$')),
     ('pick_place_near', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + NEXT_TO + r' ' + _o('b') + r'$')),
-    ('pick_place_corner', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + CORNER_PUT + r' (?:it|that) ' + CORNER + r'$')),
-    ('pick_place_corner', re.compile(r'^' + CORNER_PUT + r' ' + _o('a') + r' ' + CORNER + r'$')),
-    ('pick_aside', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + ASIDE + r'$')),
+    ('pick_place_zone', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and then| and| then|,)? ' + CORNER_PUT + r' (?:it|that) ' + ZONE + r'$')),
+    ('pick_place_zone', re.compile(r'^' + CORNER_PUT + r' ' + _o('a') + r' ' + ZONE + r'$')),
+    ('pick_place_zone', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and then| and| then|,)? ' + CORNER_PUT + r' (?:it|that) ' + ZONE_FB + r'$')),
+    ('pick_place_zone', re.compile(r'^' + CORNER_PUT + r' ' + _o('a') + r' ' + ZONE_FB + r'$')),
+    ('pick_aside', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'(?: and then| and| then|,)? ' + PUT_VERB + r' (?:it|that) ' + ASIDE + r'$')),
     ('pick_aside', re.compile(r'^' + PUT_VERB + r' ' + _o('a') + r' ' + ASIDE + r'$')),
     ('pick', re.compile(r'^' + PICK_VERB + r' ' + _o('a') + r'$')),
     ('go_near', re.compile(r'^(?:go|move|come|fly|hover)(?: to| near| over| above| towards| close to)? ' + _o('a') + r'$')),
@@ -98,8 +124,28 @@ def parse(command):
                     'a_color': COLOURS.get(g.get('a_c')) if g.get('a_c') else None,
                     'b_color': COLOURS.get(g.get('b_c')) if g.get('b_c') else None,
                     'side': _side_word(g.get('side')),
-                    'corner': (g.get('cside'), _DEPTH.get(g.get('cdepth') or g.get('cdepth0') or 'far')) if g.get('cside') else None}
+                    'zone': _zone_from_groups(g) if kind == 'pick_place_zone' else None}
     return None
+
+
+SEQ_SPLIT = re.compile(r'\b(?:and then|then|afterwards|after that)\b')
+
+
+def parse_sequence(command):
+    """{'kind': 'sequence', 'items': [intent, ...]} for a command that chains several recognised commands ("pick up the blue cup and put it next to the mouse, then pick up the mouse and put it next to
+    the white cup"), else None (also when ANY part is not recognised: then the whole command goes to the model as before)."""
+    parts = [p.strip() for p in SEQ_SPLIT.split(_clean(command)) if p.strip()]
+    if len(parts) < 2:
+        return None
+    items = [parse(p) for p in parts]
+    if any(i is None for i in items):
+        return None
+    return {'kind': 'sequence', 'items': items}
+
+
+def parse_any(command):
+    """A single recognised command, or a recognised sequence of them, or None."""
+    return parse(command) or parse_sequence(command)
 
 
 def _label(scene, oid):
@@ -117,12 +163,9 @@ def _describe(label, colour):
     return f'{colour} {label}' if colour else label
 
 
-def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.35)):
-    """None when the command can go on to the model; else a plain-language reason it cannot be done: the object it names is not in the scene, is stale, or stands outside what the arm reaches.
-    Without this the model returned an empty plan after three slow retries and the operator only saw "Plan is empty or not a list"."""
-    label = (intent or {}).get('a')
-    colour = (intent or {}).get('a_color')
-    if not label or _objects(scene, label, colour):
+def _why_unreachable(label, colour, scene, x_range, y_range, need=1):
+    """None when at least `need` fresh, reachable objects of this class (and colour) exist, else the plain-language reason."""
+    if not label or len(_objects(scene, label, colour)) >= need:
         return None
     mine = [(oid, o) for oid, o in scene.items() if isinstance(o, dict) and o.get('label') == label]
     if not mine:
@@ -142,6 +185,27 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
         else:
             parts.append(f'{oid} is not reachable')
     return f'no {_describe(label, colour)} the arm can reach: ' + '; '.join(parts)
+
+
+def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.35)):
+    """None when the command can go on to the model; else a plain-language reason it cannot be done: an object it names (the one to pick, and the one to put it NEXT TO) is not in the scene, is stale,
+    or stands outside what the arm reaches. Without this the model returned an empty plan after three slow retries; and when the reference object was missing it improvised (2026-11-01: "put it next
+    to the mouse" with no mouse in view put the cup next to the white cup). A sequence is checked step by step."""
+    if not intent:
+        return None
+    if intent.get('kind') == 'sequence':
+        for i, item in enumerate(intent['items'], 1):
+            why = no_reachable_reason(item, scene, x_range, y_range)
+            if why:
+                return f'step {i} of {len(intent["items"])}: {why}'
+        return None
+    why = _why_unreachable(intent.get('a'), intent.get('a_color'), scene, x_range, y_range)
+    if why:
+        return why
+    if intent.get('kind') in ('pick_place_near', 'pick_place_side') and intent.get('b'):
+        same = intent.get('b') == intent.get('a') and (intent.get('b_color') in (None, intent.get('a_color')))
+        return _why_unreachable(intent['b'], intent.get('b_color'), scene, x_range, y_range, need=2 if same else 1)
+    return None
 
 
 def best_object(scene, label, exclude=None, colour=None):
@@ -172,11 +236,26 @@ def _on_side(step, scene, label, side, reach=0.35):
     return False
 
 
+_STEPS = {'go_home': 1, 'put_down': 1, 'go_near': 1, 'pick': 1}        # steps a part of a sequence takes (everything else is a pick and a place)
+
+
 def check(intent, steps, scene):
     """(ok, why) for the model's raw plan `steps` against the intent, in the current `scene`. why is '' when ok."""
     def res(ok, why):
         return bool(ok), '' if ok else why
     k = intent['kind']
+    if k == 'sequence':
+        want = sum(_STEPS.get(i['kind'], 2) for i in intent['items'])
+        if len(steps) != want:
+            return False, f'expected {want} steps for the {len(intent["items"])} parts of the command, got {len(steps)}'
+        n = 0
+        for i, item in enumerate(intent['items'], 1):
+            m = _STEPS.get(item['kind'], 2)
+            ok, why = check(item, steps[n:n + m], scene)
+            if not ok:
+                return False, f'part {i} of the command: {why}'
+            n += m
+        return True, ''
     acts = [s.get('action') for s in steps if isinstance(s, dict)]
     if k == 'go_home':
         return res(acts == ['go_home'], f'expected only go_home, got {acts}')
@@ -203,11 +282,11 @@ def check(intent, steps, scene):
         return res(not places, 'a plain pick must not include a place step')
     if len(places) != 1:
         return False, f'expected one place step, got {len(places)}'
-    if k == 'pick_place_corner':
+    if k == 'pick_place_zone':
         st = places[0]
-        cx, cy = CORNER_XY[intent['corner']]
+        cx, cy = intent['zone']
         ok = 'x' in st and 'y' in st and math.hypot(st['x'] - cx, st['y'] - cy) <= 0.08
-        return res(ok, f'the place must be at the {intent["corner"][1]} {intent["corner"][0]} corner of the table: {{"action":"place","x":{cx},"y":{cy}}}')
+        return res(ok, f'the place must be at the named spot x={cx}, y={cy}: {{"action":"place","x":{cx},"y":{cy}}}')
     if k == 'pick_place_base':
         st = places[0]
         ok = str(st.get('near', '')).lower() == 'base' or ('x' in st and math.hypot(st['x'], st['y']) <= 0.45)
@@ -227,6 +306,14 @@ def check(intent, steps, scene):
 def build_plan(intent, scene):
     """The raw plan the model should have produced, or None if the objects it needs are not in the scene."""
     k = intent['kind']
+    if k == 'sequence':
+        out = []
+        for item in intent['items']:
+            part = build_plan(item, scene)
+            if not part:
+                return None
+            out += part
+        return out
     if k == 'go_home':
         return [{'action': 'go_home'}]
     if k == 'put_down':
@@ -240,8 +327,8 @@ def build_plan(intent, scene):
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'x': 0.45, 'y': 0.0}]
     if k == 'pick_place_base':
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'near': 'base'}]
-    if k == 'pick_place_corner':
-        cx, cy = CORNER_XY[intent['corner']]
+    if k == 'pick_place_zone':
+        cx, cy = intent['zone']
         return [{'action': 'pick', 'object_id': a, 'approach_z': 0.35}, {'action': 'place', 'x': cx, 'y': cy}]
     if k in ('pick_place_near', 'pick_place_side'):
         b = best_object(scene, intent['b'], exclude=a, colour=intent.get('b_color'))

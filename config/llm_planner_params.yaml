@@ -3,6 +3,7 @@ llm_planner:
   ros__parameters:
     plan_verification: true          # check the model's plan against what the command means; retry with a hint
     grammar_repair: true             # after 3 wrong answers use the grammar's own plan (flagged repaired)
+    grammar_first: true              # a command the grammar recognises (also a chain of them) is planned by the grammar itself, no model call
     planner_memory: true             # one worked example + one warning in the prompt
     llm_num_ctx: 8192
     llm_keep_alive: 6h

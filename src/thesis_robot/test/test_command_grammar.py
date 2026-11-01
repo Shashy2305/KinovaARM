@@ -216,32 +216,80 @@ def test_next_to_a_coloured_object_checks_the_colour_of_the_reference():
     assert cg.build_plan(intent, scene)[1] == {'action': 'place', 'near': 'cup_01'}
 
 
-# ---- corners (2026-10-31: "pick up mouse and keep it on left corner from the base" ran as a lone pick and the mouse stayed in the gripper) -----------------------
-def test_a_corner_command_is_recognised_and_placed_at_that_corner():
-    scene = {'mouse_00': {'label': 'mouse', 'x': 0.48, 'y': -0.22, 'z': 0.02, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'grey'}}
-    for text, corner in (('pick up mouse and keep it on left corner from the base', ('left', 'far')),
-                         ('pick up the mouse and put it in the far right corner of the table', ('right', 'far')),
-                         ('pick up the mouse and leave it near left corner', ('left', 'near')),
-                         ('pick up the mouse and put it in the right near corner', ('right', 'near')),
-                         ('keep the mouse on the left corner', ('left', 'far'))):
+# ---- named places in the robot frame (corners, sides), and chains of commands (2026-11-01) -----------------------------------------------------------------
+SCENE3 = {'cup_01': {'label': 'cup', 'x': 0.49, 'y': -0.06, 'z': 0.05, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'blue'},
+          'cup_02': {'label': 'cup', 'x': 0.51, 'y': -0.18, 'z': 0.05, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'white'},
+          'mouse_04': {'label': 'mouse', 'x': 0.48, 'y': 0.11, 'z': 0.02, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'grey'}}
+
+
+def test_named_places_are_in_the_robot_frame_left_is_plus_y():
+    for text, xy in (('pick up mouse and keep it on left corner from the base', (0.22, 0.38)),       # a bare corner = the corner on the line of the base
+                     ('pick up the mouse and put it in the front left corner', (0.55, 0.38)),
+                     ('pick up the mouse and put it in the far right corner of the table', (0.55, -0.38)),
+                     ('pick up the mouse and put it on the right side of the table', (0.40, -0.38)),
+                     ('pick up the mouse and leave it near left corner', (0.22, 0.38)),
+                     ('pick up the mouse and put it at the back of the table', (0.22, 0.0)),
+                     ('pick up the mouse and put it on the front of the table', (0.55, 0.0)),
+                     ('keep the mouse on the left corner', (0.22, 0.38))):
         intent = cg.parse(text)
-        assert intent and intent['kind'] == 'pick_place_corner' and intent['corner'] == corner, text
-        plan = cg.build_plan(intent, scene)
-        assert [s['action'] for s in plan] == ['pick', 'place']
-        assert (plan[1]['x'], plan[1]['y']) == cg.CORNER_XY[corner]
-        assert cg.check(intent, plan, scene) == (True, '')
+        assert intent and intent['kind'] == 'pick_place_zone' and intent['zone'] == xy, text
+        plan = cg.build_plan(intent, SCENE3)
+        assert [s['action'] for s in plan] == ['pick', 'place'] and (plan[1]['x'], plan[1]['y']) == xy
+        assert cg.check(intent, plan, SCENE3) == (True, '')
 
 
-def test_a_corner_plan_without_the_place_or_at_the_wrong_corner_is_rejected():
-    scene = {'mouse_00': {'label': 'mouse', 'x': 0.48, 'y': -0.22, 'z': 0.02, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'grey'}}
+def test_the_operators_own_left_is_the_mirror_image():
+    assert cg.parse('pick up the mouse and put it in my left front corner')['zone'] == (0.55, -0.38)
+    assert cg.parse("pick up the mouse and put it on the operator's right side")['zone'] == (0.40, 0.38)
+
+
+def test_a_zone_plan_without_the_place_or_at_the_wrong_spot_is_rejected():
     intent = cg.parse('pick up the mouse and keep it on the left corner')
-    ok, why = cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00'}], scene)
-    assert not ok and 'place' in why                                    # the lone pick the model produced live
-    ok, why = cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_00'}, {'action': 'place', 'x': 0.55, 'y': 0.38}], scene)
-    assert not ok and 'corner' in why                                   # the right corner is not the left one
+    ok, why = cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_04'}], SCENE3)
+    assert not ok and 'place' in why                                    # the lone pick the model produced live on 2026-10-30
+    ok, why = cg.check(intent, [{'action': 'pick', 'object_id': 'mouse_04'}, {'action': 'place', 'x': 0.22, 'y': -0.38}], SCENE3)
+    assert not ok                                                       # the mirrored corner is not the left one
 
 
-def test_the_corner_places_are_inside_the_planner_workspace():
+def test_the_named_places_are_inside_the_planner_workspace():
     from thesis_robot import safety_geometry as sg
-    for x, y in cg.CORNER_XY.values():
-        assert sg.PLAN_X_RANGE[0] <= x <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= y <= sg.PLAN_Y_RANGE[1]
+    for depth in cg.ZONE_X:
+        for side in cg.ZONE_Y:
+            x, y = cg.zone_xy(depth, side)
+            assert sg.PLAN_X_RANGE[0] <= x <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= y <= sg.PLAN_Y_RANGE[1]
+
+
+def test_a_chain_of_commands_becomes_one_plan_with_all_the_steps():
+    text = 'pick up blue cup place it next to mouse than pick up mouse and put it next to white cup'      # the user's own sentence, typo and all
+    intent = cg.parse_any(text)
+    assert intent['kind'] == 'sequence' and [i['kind'] for i in intent['items']] == ['pick_place_near', 'pick_place_near']
+    plan = cg.build_plan(intent, SCENE3)
+    assert [(s['action'], s.get('object_id') or s.get('near')) for s in plan] == [('pick', 'cup_01'), ('place', 'mouse_04'), ('pick', 'mouse_04'), ('place', 'cup_02')]
+    assert cg.check(intent, plan, SCENE3) == (True, '')
+    assert cg.no_reachable_reason(intent, SCENE3) is None
+
+
+def test_a_chain_can_mix_named_places_and_next_to():
+    intent = cg.parse_any('pick up the blue cup and put it next to the mouse, then pick up the mouse and put it on the front left corner')
+    plan = cg.build_plan(intent, SCENE3)
+    assert [s['action'] for s in plan] == ['pick', 'place', 'pick', 'place'] and (plan[3]['x'], plan[3]['y']) == (0.55, 0.38)
+
+
+def test_a_chain_with_an_unrecognised_part_is_left_to_the_model_and_a_wrong_part_is_named():
+    assert cg.parse_sequence('pick up the cup then do a little dance') is None
+    intent = cg.parse_any('pick up blue cup place it next to mouse then pick up mouse and put it next to white cup')
+    wrong = [{'action': 'pick', 'object_id': 'cup_02'}, {'action': 'place', 'near': 'mouse_04'}, {'action': 'pick', 'object_id': 'mouse_04'}, {'action': 'place', 'near': 'cup_02'}]
+    ok, why = cg.check(intent, wrong, SCENE3)
+    assert not ok and why.startswith('part 1')                          # picked the white cup for "the blue cup"
+    ok, why = cg.check(intent, wrong[:2], SCENE3)
+    assert not ok and 'expected 4 steps' in why
+
+
+def test_a_missing_reference_object_is_refused_before_anything_moves():
+    gone = {k: v for k, v in SCENE3.items() if k != 'mouse_04'}
+    why = cg.no_reachable_reason(cg.parse_any('pick up blue cup put it next to mouse'), gone)     # 2026-11-01: the mouse was out of view and the cup went next to the white cup
+    assert why and 'no mouse' in why
+    why = cg.no_reachable_reason(cg.parse_any('pick up blue cup place it next to mouse then pick up mouse and put it next to white cup'), gone)
+    assert why and why.startswith('step 1 of 2')
+    only_one_cup = {k: v for k, v in SCENE3.items() if k != 'cup_02'}
+    assert cg.no_reachable_reason(cg.parse_any('pick up the blue cup and put it next to the cup'), only_one_cup)       # "next to the cup" needs ANOTHER cup
