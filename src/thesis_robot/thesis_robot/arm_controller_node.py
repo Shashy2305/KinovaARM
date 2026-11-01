@@ -270,6 +270,7 @@ class ArmControllerNode(Node):
                     step['_pre_calibrated'] = True
                 self.get_logger().info(f'Step {i+1}/{len(plan)}: {json.dumps(step)}')
                 self._publish_pp_status(f'Step {i+1}/{len(plan)}: {act}')
+                self._next_place_xy = self._place_after(plan, i) if act == 'pick' else None
 
                 success = self._dispatch(step)
                 if not success:
@@ -294,6 +295,23 @@ class ArmControllerNode(Node):
                 self.executing = False
             mode = 'DRY RUN' if self.dry_run else 'LIVE'
             self._publish_status(f'READY [{mode}]')
+
+    @staticmethod
+    def _place_after(plan, i):
+        """(x, y) of the place step that follows the pick at plan[i] (before any other pick), or None when the plan does not say where the object goes (no place, \"here\", near the base)."""
+        for st in plan[i + 1:]:
+            if not isinstance(st, dict):
+                continue
+            if st.get('action') == 'pick':
+                return None
+            if st.get('action') == 'place':
+                try:
+                    if st.get('here') or st.get('x') is None or st.get('y') is None:
+                        return None
+                    return float(st['x']), float(st['y'])
+                except (TypeError, ValueError):
+                    return None
+        return None
 
     def _dispatch(self, step):
         act = step.get('action', '')
@@ -1110,8 +1128,22 @@ class ArmControllerNode(Node):
                 # The whole motion must be reachable, not only the first pose: down to the pre pose, in to the grasp, and 10 cm UP again (2026-10-29 the first direction with a solution left the
                 # arm against two joint limits and the cup could not be lifted any higher).
                 seed, bad = goal, None
-                for name, pos in (('pre pose', pre), ('grasp pose', grasp_fl), ('lift', grasp_fl + np.array([0.0, 0.0, 0.10]))):
+                chain = [('pre pose', pre), ('grasp pose', grasp_fl), ('lift', grasp_fl + np.array([0.0, 0.0, 0.10]))]
+                # ... and the CARRY to where the plan puts the object down, held the same way (2026-11-01: a cup picked with the wrist turned 180 deg could not be carried 11 cm closer to the base:
+                # 'needs a 3.9 rad single-joint reconfiguration', and it stayed in the gripper). Better to pick it another way than to find out with the cup in the fingers.
+                nxt = getattr(self, '_next_place_xy', None)
+                if nxt is not None:
+                    _h, _p, place_fl, _a = go.side_poses(nxt, pad_z, az)
+                    if not go.flange_inside(place_fl):
+                        bad = 'place spot (the flange would leave the table side of the base)'
+                    else:
+                        chain += [('carry to the place spot', place_fl + np.array([0.0, 0.0, 0.10])), ('set-down at the place spot', place_fl)]
+                for name, pos in ([] if bad else chain):
                     sol = self._ik(seed, [float(v) for v in pos], q_used, 0.3)
+                    if sol is not None and name.startswith(('carry', 'set-down')):
+                        sol = mu.unwrap_to_seed(sol, seed)
+                        if sol is None or max(mu.joint_deltas(sol, seed)) > mu.MAX_JOINT_DELTA_RAD:
+                            sol = None                                    # reachable only with a joint swing the carry would refuse
                     if sol is None:
                         bad = name
                         break

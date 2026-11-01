@@ -1033,3 +1033,48 @@ def test_a_failed_swing_is_never_retried_even_though_the_method_was_side(node, w
     monkeypatch.setattr(node, '_pick_once', fake_once)
     assert node._pick('mouse_00', 0.35) is False
     assert calls == [1]
+
+
+# ---- 2026-11-01: a side grasp must be able to CARRY the object to where the plan puts it down ----------------------------------------------------------------
+def _place_flanges(go, nxt, up=True):
+    pad_z = go.side_pad_z('cup', TABLE['table_top_z'])
+    out = set()
+    for az in go.AZIMUTHS:
+        fl = go.side_poses(nxt, pad_z, az)[2]
+        out.add(tuple(round(float(v), 3) for v in fl))
+        out.add(tuple(round(float(v), 3) for v in fl + np.array([0.0, 0.0, 0.10])))
+    return out
+
+
+def test_the_plan_tells_a_pick_where_the_next_place_goes():
+    plan = [{'action': 'pick', 'object_id': 'a'}, {'action': 'place', 'x': 0.36, 'y': -0.13}, {'action': 'pick', 'object_id': 'b'}, {'action': 'place', 'here': True}]
+    assert acn.ArmControllerNode._place_after(plan, 0) == (0.36, -0.13)
+    assert acn.ArmControllerNode._place_after(plan, 2) is None                  # "here": no target to check
+    assert acn.ArmControllerNode._place_after([{'action': 'pick', 'object_id': 'a'}], 0) is None
+    assert acn.ArmControllerNode._place_after([{'action': 'pick', 'object_id': 'a'}, {'action': 'pick', 'object_id': 'b'}, {'action': 'place', 'x': 0.4, 'y': 0.0}], 0) is None
+
+
+def test_a_side_grasp_is_chosen_only_if_the_carry_to_the_place_spot_has_a_solution(node, side_world, monkeypatch):
+    from thesis_robot import grasp_options as go
+    nxt = (0.30, -0.15)
+    bad = _place_flanges(go, nxt)
+    seen = []
+
+    def ik(seed, pos, quat, timeout_s=0.15):
+        key = tuple(round(float(v), 3) for v in pos)
+        seen.append(key)
+        return None if key in bad else [0.0] * 7
+    monkeypatch.setattr(node, '_ik', ik)
+    node._next_place_xy = nxt
+    try:
+        assert run_cup_pick(node) is True
+    finally:
+        node._next_place_xy = None
+    assert any(k in bad for k in seen)                                          # the carry poses WERE asked about
+    assert 'side: swing to the high pre-pose' not in side_world.guarded         # ... and with none of them reachable the cup is NOT picked from the side (it goes straight down)
+
+
+def test_without_a_known_place_spot_the_side_grasp_is_unchanged(node, side_world):
+    node._next_place_xy = None
+    assert run_cup_pick(node) is True
+    assert side_world.guarded == ['side: swing to the high pre-pose']
