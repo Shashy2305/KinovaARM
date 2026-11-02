@@ -138,3 +138,64 @@ def test_stage_take_refuses_away_from_the_grasp_pose_or_when_a_grip_closes_on_ai
     monkeypatch.setattr(node, '_check_grip', lambda what: False)                                                            # closed on air
     assert node._go_to_location('coffee_tray_grasp', 'take') is False
     assert [g[1] for g in side_world.grippers] == ['close_gripper'] and side_world.verified == [] and node._held is None   # no lift, nothing recorded
+
+
+# ---- 2026-11-02: the place retreat after a side hold, the withdraw action, and the wrist angle recorded by take ------------------------------------------------
+def _side_place(node, side_world, monkeypatch, fail_labels):
+    """A cup held from the side is put down at (0.40, -0.1); `fail_labels(label)` says which verified moves have no solution."""
+    from test_pick_place_flow import run_cup_pick
+    assert run_cup_pick(node) is True
+    held = dict(node._held)
+    side_world.verified.clear()
+    names = []
+    real = node._move_verified
+
+    def mv(x, y, z, label, **kw):
+        names.append(label)
+        if fail_labels(label):
+            return False
+        return real(x, y, z, label, **kw)
+    monkeypatch.setattr(node, '_move_verified', mv)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.40, 0.2, side_world.z_flange]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    node._held = held
+    node.latest_scene = {}
+    return names
+
+
+def test_the_retreat_after_a_side_place_tries_shorter_runs_when_the_full_one_has_no_solution(node, side_world, monkeypatch):
+    names = _side_place(node, side_world, monkeypatch, lambda lab: lab.startswith('retreat (17'))
+    assert node._place(0.40, -0.1) is True
+    retreats = [n for n in names if n.startswith('retreat (')]
+    assert retreats == ['retreat (17 cm back along the tool axis)', 'retreat (12 cm back along the tool axis)']      # the full run failed, the 12 cm one worked
+    assert 'rise after the retreat' in names and 'rise (no way back along the axis)' not in names
+
+
+def test_when_no_retreat_has_a_solution_the_open_gripper_is_lifted_straight_up(node, side_world, monkeypatch):
+    names = _side_place(node, side_world, monkeypatch, lambda lab: lab.startswith('retreat ('))
+    assert node._place(0.40, -0.1) is True
+    assert names[-1] == 'rise (no way back along the axis)'
+
+
+def test_withdraw_backs_out_along_the_tool_axis_then_up_and_never_while_holding(node, side_world, files, monkeypatch):
+    side_world.verified.clear()
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.466, -0.288, 0.111]))
+    monkeypatch.setattr(node, '_tool_axis_now', lambda: np.array([0.18, 0.98, -0.09]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    assert node._withdraw() is False and side_world.verified == []
+    monkeypatch.setattr(node, '_is_holding', lambda: False)
+    assert node._withdraw() is True
+    back, up = side_world.verified
+    assert back[3].startswith('withdraw (21 cm') and back[1] == pytest.approx(-0.288 - 0.21 * 0.98, abs=2e-3) and back[2] == pytest.approx(0.111 + 0.21 * 0.09, abs=2e-3)      # straight back along the axis (toward -y), not up yet
+    assert up[3] == 'withdraw: rise' and up[2] == pytest.approx(back[2] + node.WITHDRAW_RISE_M) and np.allclose(up[:2], back[:2])
+
+
+def test_take_records_the_wrist_angle_after_the_draw_out(node, side_world, files, monkeypatch):
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    node._held = None
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['grasp']]))
+    monkeypatch.setattr(node, '_check_grip', lambda what: True)
+    angles = iter([1.47, 1.22])                                                            # joint 7 moves while the tool orientation is kept
+    monkeypatch.setattr(node, '_wrist_angle_now', lambda: next(angles))
+    assert node._go_to_location('coffee_tray_grasp', 'take') is True
+    assert node._held['j7'] == pytest.approx(1.22)                                          # the later reading: the place check compares against where the carry starts

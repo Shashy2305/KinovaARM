@@ -334,6 +334,8 @@ class ArmControllerNode(Node):
                 return False
             ok, _xy = self._center_over(label, self._expected_xy(step.get('object_id')))
             return ok
+        elif act == 'withdraw':
+            return self._withdraw()
         elif act == 'go_to_location':
             return self._go_to_location(step.get('name'), step.get('stage', 'pre'))
         elif act == 'place':
@@ -933,6 +935,39 @@ class ArmControllerNode(Node):
         self.get_logger().info(f'go_to_location {name}: straight in along the tool axis to the grasp pose {np.round(grasp, 3).tolist()} (gripper open)')
         return self._move_verified(float(grasp[0]), float(grasp[1]), float(grasp[2]), f'{name}: in to the object', min_flange_z=float(grasp[2]) - 0.02)
 
+    WITHDRAW_RUN_M = 0.21         # the longest run back along the tool axis (the coffee tray's standoff)
+    WITHDRAW_RISE_M = 0.12        # lifted this far when no run back has a solution
+
+    def _withdraw(self):
+        """Get the OPEN gripper out of a place where it stands round an object (after a retreat failed, or after putting something in the coffee tray): back along the current tool axis by the longest run that
+        has a solution (21, 12, 9, 6 cm), then straight up; if no run does, straight up. Refuses while the gripper holds something. Never turns the wrist."""
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info('  [DRY RUN] withdraw')
+            time.sleep(0.5)
+            return True
+        if self._is_holding():
+            return self._refuse('withdraw: the gripper is holding something; put it down first')
+        try:
+            _, g = self._tf_pose(BASE_LINK, EE_LINK)
+            axis = self._tool_axis_now()
+        except Exception as e:
+            return self._refuse(f'withdraw: cannot read the arm pose ({e})')
+        floor = sg.flange_floor_for_axis_z(sg.load_geometry()[0], -max(0.0, math.cos(math.radians(84.7)))) if sg.load_geometry()[0] else None
+        for dist in (self.WITHDRAW_RUN_M, 0.12, 0.09, 0.06):
+            bx, by, bz = float(g[0]) - dist * axis[0], float(g[1]) - dist * axis[1], float(g[2]) - dist * axis[2]
+            if self._move_verified(bx, by, bz, f'withdraw ({dist * 100:.0f} cm back along the tool axis)', min_flange_z=floor):
+                return self._move_verified(bx, by, bz + self.WITHDRAW_RISE_M, 'withdraw: rise')
+        self.get_logger().warn('withdraw: no way back along the tool axis from here: lifting straight up')
+        return self._move_verified(float(g[0]), float(g[1]), float(g[2]) + self.WITHDRAW_RISE_M, 'withdraw: rise')
+
+    def _tool_axis_now(self):
+        """Unit vector from the flange toward the pad midpoint (the way the tool points), in base_link."""
+        _, g = self._tf_pose(BASE_LINK, EE_LINK)
+        _, a = self._tf_pose(BASE_LINK, 'left_inner_finger_pad')
+        _, b = self._tf_pose(BASE_LINK, 'right_inner_finger_pad')
+        v = np.array([(a[i] + b[i]) / 2.0 - g[i] for i in range(3)], float)
+        return v / np.linalg.norm(v)
+
     TAKE_LIFT_M = 0.02            # a cup standing in a coffee tray is lifted this far before it is drawn out (the spout is ~15 cm over the tray: the cup top is ~6 cm under it)
 
     def _take(self, name, loc, poses):
@@ -966,7 +1001,14 @@ class ArmControllerNode(Node):
             return False
         self._set_held({'label': label, 'object_id': str(loc.get('object_id', name)), 'grasp_z': float(grasp[2]), 'tilt': float(go.SIDE_TILT_DEG),
                         'az': float(poses['az']), 'j7': self._wrist_angle_now()})
-        return self._move_verified(float(pre[0]), float(pre[1]), lifted, f'{name}: out of the machine', min_flange_z=float(grasp[2]) - 0.02)
+        if not self._move_verified(float(pre[0]), float(pre[1]), lifted, f'{name}: out of the machine', min_flange_z=float(grasp[2]) - 0.02):
+            return False
+        # Joint 7 moved by ~14 deg during the draw-out although the tool orientation was kept (the arm is redundant): the place routine turns the wrist back whenever joint 7 differs from the record,
+        # which would have rolled the cup. The wrist angle that matters is the one the carry starts from.
+        held = dict(self._held or {})
+        held['j7'] = self._wrist_angle_now()
+        self._set_held(held)
+        return True
 
     def _tool_is_horizontal(self):
         qx, qy = self._actual_tool_quat()[:2]
@@ -2204,13 +2246,17 @@ class ArmControllerNode(Node):
             # back out along the tool axis, the way the fingers came in: they slide off the cup sideways, nothing lifts or drags it
             a = go.side_axis(held_az if held_az_known else 0.0) if held_az_known else None
             if a is not None:
-                bx, by, bz = fx - go.STANDOFF_M * a[0], fy - go.STANDOFF_M * a[1], set_z - go.STANDOFF_M * a[2]
-                if not self._move_verified(bx, by, bz, 'retreat (back along the tool axis)', min_flange_z=low_floor):
-                    return False
-                # then up to the high pose the pick came down from (the mirror of its approach): leaving the arm parked low with the tool horizontal left it against its joint limits (2026-10-29)
-                if not self._move_verified(bx, by, bz + go.HIGH_CLEAR_M, 'rise after the retreat'):
-                    self.get_logger().warn('place: the object is down and the gripper is clear; rising after the retreat was not possible from here')
-                return True
+                # The full run back can be out of the arm's reach (2026-11-02: a cup put down at the right-hand side, the 21 cm retreat had no IK solution and the open fingers were left round the cup).
+                # Try shorter runs; if none has a solution, lift straight up (the cup is down and the gripper open: the pads slide up its sides).
+                for dist in (go.STANDOFF_M, 0.12, 0.09):
+                    bx, by, bz = fx - dist * a[0], fy - dist * a[1], set_z - dist * a[2]
+                    if self._move_verified(bx, by, bz, f'retreat ({dist * 100:.0f} cm back along the tool axis)', min_flange_z=low_floor):
+                        # then up to the high pose the pick came down from (the mirror of its approach): leaving the arm parked low with the tool horizontal left it against its joint limits (2026-10-29)
+                        if not self._move_verified(bx, by, bz + go.HIGH_CLEAR_M, 'rise after the retreat'):
+                            self.get_logger().warn('place: the object is down and the gripper is clear; rising after the retreat was not possible from here')
+                        return True
+                self.get_logger().warn('place: no way back along the tool axis from here: lifting the open gripper straight up')
+                return self._move_verified(fx, fy, set_z + self.WITHDRAW_RISE_M, 'rise (no way back along the axis)')
         return self._move_verified(fx, fy, carry_z, 'retreat')
 
     def _gripper(self, position, label):
