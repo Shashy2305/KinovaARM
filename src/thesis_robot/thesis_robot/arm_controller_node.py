@@ -14,6 +14,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, JointState
 from std_msgs.msg import String
 
+from thesis_robot import locations as locs
 from thesis_robot import motion_utils as mu
 from thesis_robot import outcome_log as ol
 from thesis_robot import grasp_planner as gp
@@ -333,6 +334,8 @@ class ArmControllerNode(Node):
                 return False
             ok, _xy = self._center_over(label, self._expected_xy(step.get('object_id')))
             return ok
+        elif act == 'go_to_location':
+            return self._go_to_location(step.get('name'), step.get('stage', 'pre'))
         elif act == 'place':
             return self._place(step.get('x'), step.get('y'), step.get('z'), bool(step.get('here')))
         elif act == 'open_gripper':
@@ -854,6 +857,54 @@ class ArmControllerNode(Node):
                 continue
             return False
         return False
+
+    def _go_to_location(self, name, stage='pre'):
+        """Take the arm to a location taught by hand (locations.py), by the same route a side pick uses: swing (joint space, guarded, duration-gated) to the HIGH pre-pose, then straight down to the
+        approach pose in front of the object, gripper open. Stage 'pre' only: it stops OUTSIDE whatever the object stands in (the coffee machine). Refuses, before moving, if the gripper holds something,
+        the location is missing, the approach pose has no collision-free IK, or the open fingertips would come within MIN_FRONT_CLEARANCE_M of a declared fixed obstacle."""
+        if stage != 'pre':
+            return self._refuse(f'go_to_location: stage {stage!r} is not built yet (only "pre")')
+        loc = locs.get(name)
+        if loc is None:
+            return self._refuse(f'go_to_location: no complete location called {name!r} (record it with scripts/teach_location.py)')
+        poses = locs.approach_poses(loc)
+        gap, what = locs.approach_clearance(poses, locs.fixed_obstacle_rects())
+        if gap < locs.MIN_FRONT_CLEARANCE_M:
+            return self._refuse(f'go_to_location: at the approach pose the open fingertips would be {gap * 100:.1f} cm from the {what} (need {locs.MIN_FRONT_CLEARANCE_M * 100:.0f} cm)')
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] go_to_location {name} ({stage}): approach pose {np.round(poses["pre"], 3).tolist()}, {gap * 100:.1f} cm from the {what}')
+            time.sleep(0.5)
+            return True
+        geom, _ = sg.load_geometry()
+        if self._is_holding():
+            return self._refuse('go_to_location: the gripper is holding something; put it down first')
+        if not self._open_gripper():
+            return False
+        az, high, pre = poses['az'], poses['high'], poses['pre']
+        goal, why = None, None
+        for flip in (False, True):
+            try:
+                goal_i, q_used = self._solve_goal_joints([float(v) for v in high], go.side_quat(az, flip), False)
+            except Exception as e:
+                why = e
+                continue
+            seed = goal_i
+            ok = True
+            for pos in (pre,):
+                sol = self._ik(seed, [float(v) for v in pos], q_used, 0.3)
+                if sol is None:
+                    ok, why = False, 'the approach pose has no IK solution from the high pre-pose'
+                    break
+                seed = sol
+            if ok:
+                goal = goal_i
+                break
+        if goal is None:
+            return self._refuse(f'go_to_location: {name}: no way to reach the approach pose ({why})')
+        self.get_logger().info(f'go_to_location {name}: swinging to the high pre-pose (azimuth {az:.0f}), then down to the approach pose {np.round(pre, 3).tolist()}; fingertips {gap * 100:.1f} cm from the {what}')
+        if not self._guarded_move(geom, f'{name}: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
+            return False
+        return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: down to the approach pose', min_flange_z=float(pre[2]) - 0.02)
 
     def _tool_is_horizontal(self):
         qx, qy = self._actual_tool_quat()[:2]
