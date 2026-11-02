@@ -34,6 +34,14 @@ def test_the_approach_pose_is_a_standoff_back_along_the_tool_axis_with_the_pads_
     assert np.linalg.norm(p['pre_pad'][:2] - p['pad'][:2]) == pytest.approx(go.STANDOFF_M * np.linalg.norm(p['axis'][:2]), abs=1e-3)      # the pads stop STANDOFF short of the object
 
 
+def test_a_location_can_ask_for_a_longer_standoff(files):
+    loc = dict(locs.get('coffee_tray_grasp'), standoff_m=0.22)
+    p = locs.approach_poses(loc)
+    assert np.linalg.norm(p['grasp'] - p['pre']) == pytest.approx(0.22, abs=1e-6)
+    gap, _ = locs.approach_clearance(p, locs.fixed_obstacle_rects())
+    assert gap > locs.approach_clearance(locs.approach_poses(locs.get('coffee_tray_grasp')), locs.fixed_obstacle_rects())[0] + 0.04      # 5 cm further back = more room
+
+
 def test_the_open_fingertips_at_the_approach_pose_are_clear_of_the_machine_front(files):
     p = locs.approach_poses(locs.get('coffee_tray_grasp'))
     gap, what = locs.approach_clearance(p, locs.fixed_obstacle_rects())

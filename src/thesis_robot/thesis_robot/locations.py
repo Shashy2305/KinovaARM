@@ -43,6 +43,9 @@ def approach_poses(loc):
     pad = loc['pad_midpoint']
     az = loc['approach_azimuth_deg']
     high, pre, grasp, axis = go.side_poses((pad[0], pad[1]), pad[2], az)
+    standoff = float(loc.get('standoff_m', go.STANDOFF_M))             # a location may ask for a longer run-in (the coffee tray: its open front is close to the machine)
+    pre = grasp - standoff * axis
+    high = pre + np.array([0.0, 0.0, go.HIGH_CLEAR_M])
     pre_pad = pre + go.PAD_REACH_M * axis
     return {'high': high, 'pre': pre, 'grasp': grasp, 'axis': axis, 'az': az, 'pad': np.array(pad), 'pre_pad': pre_pad}
 

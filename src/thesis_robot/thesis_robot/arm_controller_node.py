@@ -881,6 +881,14 @@ class ArmControllerNode(Node):
         if not self._open_gripper():
             return False
         az, high, pre = poses['az'], poses['high'], poses['pre']
+        # Same route as a side pick: from the HOME pose go to an upright hover over the flange's place at the high pre-pose (far from the machine: nothing hangs beside it), then swing. From an odd
+        # parked pose (joints near their limits) the swing has no solution, so go home first.
+        self.get_logger().info(f'go_to_location {name}: going home first, then an upright hover over ({high[0]:.3f},{high[1]:.3f})')
+        if not self._safe_home():
+            return False
+        hover_z = min(0.38, ws.HOVER_MAX_Z)
+        if not self._move_to(float(high[0]), float(high[1]), hover_z):
+            return False
         goal, why = None, None
         for flip in (False, True):
             try:
@@ -888,19 +896,14 @@ class ArmControllerNode(Node):
             except Exception as e:
                 why = e
                 continue
-            seed = goal_i
-            ok = True
-            for pos in (pre,):
-                sol = self._ik(seed, [float(v) for v in pos], q_used, 0.3)
-                if sol is None:
-                    ok, why = False, 'the approach pose has no IK solution from the high pre-pose'
-                    break
-                seed = sol
-            if ok:
-                goal = goal_i
-                break
+            sol = self._ik(goal_i, [float(v) for v in pre], q_used, 0.3)
+            if sol is None:
+                why = 'the approach pose has no IK solution from the high pre-pose'
+                continue
+            goal = goal_i
+            break
         if goal is None:
-            return self._refuse(f'go_to_location: {name}: no way to reach the approach pose ({why})')
+            return self._refuse(f'go_to_location: {name}: no way to reach the approach pose ({why}); the arm is waiting at the hover')
         self.get_logger().info(f'go_to_location {name}: swinging to the high pre-pose (azimuth {az:.0f}), then down to the approach pose {np.round(pre, 3).tolist()}; fingertips {gap * 100:.1f} cm from the {what}')
         if not self._guarded_move(geom, f'{name}: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
             return False

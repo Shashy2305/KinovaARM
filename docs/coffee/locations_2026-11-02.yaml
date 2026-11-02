@@ -29,3 +29,4 @@ coffee_tray_grasp:
   - 1.5347
   - 1.5786
   - 1.684
+  standoff_m: 0.21
