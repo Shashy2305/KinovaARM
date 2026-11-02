@@ -60,9 +60,9 @@ def test_go_to_location_swings_to_the_high_pre_pose_and_comes_down_in_front_of_t
     side_world.grippers.clear()
     assert node._go_to_location('coffee_tray_grasp') is True
     assert [g[1] for g in side_world.grippers] == ['open_gripper']                          # the gripper is opened, never closed
-    assert side_world.guarded == ['coffee_tray_grasp: swing to the high pre-pose']
+    assert side_world.guarded == ['go_home', 'coffee_tray_grasp: swing to the high pre-pose']       # home first (an odd parked pose has no swing), then the same route a side pick uses
     p = locs.approach_poses(locs.get('coffee_tray_grasp'))
-    (v,) = side_world.verified
+    v = side_world.verified[-1]
     assert np.allclose(v[:3], p['pre'], atol=2e-3) and v[3] == 'coffee_tray_grasp: down to the approach pose'
 
 
