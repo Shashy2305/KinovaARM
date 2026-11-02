@@ -862,12 +862,14 @@ class ArmControllerNode(Node):
         """Take the arm to a location taught by hand (locations.py), by the same route a side pick uses: swing (joint space, guarded, duration-gated) to the HIGH pre-pose, then straight down to the
         approach pose in front of the object, gripper open. Stage 'pre' only: it stops OUTSIDE whatever the object stands in (the coffee machine). Refuses, before moving, if the gripper holds something,
         the location is missing, the approach pose has no collision-free IK, or the open fingertips would come within MIN_FRONT_CLEARANCE_M of a declared fixed obstacle."""
-        if stage != 'pre':
-            return self._refuse(f'go_to_location: stage {stage!r} is not built yet (only "pre")')
+        if stage not in ('pre', 'in'):
+            return self._refuse(f'go_to_location: stage {stage!r} is not built yet (only "pre" and "in")')
         loc = locs.get(name)
         if loc is None:
             return self._refuse(f'go_to_location: no complete location called {name!r} (record it with scripts/teach_location.py)')
         poses = locs.approach_poses(loc)
+        if stage == 'in':
+            return self._go_in(name, loc, poses)
         gap, what = locs.approach_clearance(poses, locs.fixed_obstacle_rects())
         if gap < locs.MIN_FRONT_CLEARANCE_M:
             return self._refuse(f'go_to_location: at the approach pose the open fingertips would be {gap * 100:.1f} cm from the {what} (need {locs.MIN_FRONT_CLEARANCE_M * 100:.0f} cm)')
@@ -908,6 +910,26 @@ class ArmControllerNode(Node):
         if not self._guarded_move(geom, f'{name}: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
             return False
         return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: down to the approach pose', min_flange_z=float(pre[2]) - 0.02)
+
+    def _go_in(self, name, loc, poses):
+        """Stage 'in': from the approach pose, straight in along the tool axis to the taught grasp pose, gripper OPEN (it does not close). Refuses unless the arm is already at the approach pose (so a
+        wrong start cannot turn this into a swing), the gripper holds nothing and is open."""
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] go_to_location {name} (in): to {np.round(poses["grasp"], 3).tolist()}')
+            time.sleep(0.5)
+            return True
+        if self._is_holding():
+            return self._refuse('go_to_location: the gripper is holding something; put it down first')
+        try:
+            _, here = self._tf_pose(BASE_LINK, EE_LINK)
+        except Exception as e:
+            return self._refuse(f'go_to_location: cannot read the arm pose ({e})')
+        off = float(np.linalg.norm(np.array(here[:3], float) - poses['pre']))
+        if off > 0.03:
+            return self._refuse(f'go_to_location {name} (in): the arm is {off * 100:.0f} cm from the approach pose; run stage "pre" first')
+        grasp = poses['grasp']
+        self.get_logger().info(f'go_to_location {name}: straight in along the tool axis to the grasp pose {np.round(grasp, 3).tolist()} (gripper open)')
+        return self._move_verified(float(grasp[0]), float(grasp[1]), float(grasp[2]), f'{name}: in to the object', min_flange_z=float(grasp[2]) - 0.02)
 
     def _tool_is_horizontal(self):
         qx, qy = self._actual_tool_quat()[:2]

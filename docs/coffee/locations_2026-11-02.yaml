@@ -30,3 +30,35 @@ coffee_tray_grasp:
   - 1.5786
   - 1.684
   standoff_m: 0.21
+coffee_tray_pre:
+  recorded: '2026-11-02 14:07:05'
+  note: open gripper at the approach pose in front of the Keurig tray, reached by
+    go_to_location (2026-11-02)
+  pad_midpoint:
+  - 0.402
+  - 0.078
+  - 0.1097
+  flange:
+  - 0.3703
+  - -0.0955
+  - 0.1262
+  flange_quat_xyzw:
+  - -0.7337
+  - 0.09003
+  - -0.03959
+  - 0.67232
+  tool_axis:
+  - 0.1791
+  - 0.9794
+  - -0.0928
+  approach_azimuth_deg: 79.6
+  tool_tilt_below_horizontal_deg: 5.3
+  finger: 0.0036
+  joints_rad:
+  - 0.861
+  - 1.1967
+  - 2.8459
+  - -1.8402
+  - -0.9403
+  - -1.3178
+  - 1.2505

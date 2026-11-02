@@ -78,7 +78,7 @@ def test_go_to_location_refuses_without_moving_for_a_missing_location_a_held_obj
     tip = p['pre_pad'] + 0.03 * p['axis']
     op.write_text(yaml.safe_dump({'obstacles': [{'name': 'box', 'x': float(tip[0]), 'y': float(tip[1]) + 0.03, 'size_x': 0.1, 'size_y': 0.05}]}))      # a box 1.5 cm from the fingertips
     assert node._go_to_location('coffee_tray_grasp') is False
-    assert node._go_to_location('coffee_tray_grasp', 'in') is False                         # only the approach stage exists
+    assert node._go_to_location('coffee_tray_grasp', 'out') is False                        # only 'pre' and 'in' exist
     assert side_world.guarded == [] and side_world.verified == []
 
 
@@ -90,3 +90,17 @@ def test_go_to_location_in_a_dry_run_only_logs(node, side_world, files):
     finally:
         node.dry_run = False
     assert side_world.guarded == []
+
+
+def test_stage_in_goes_straight_to_the_grasp_pose_only_from_the_approach_pose(node, side_world, files, monkeypatch):
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    side_world.verified.clear()
+    side_world.guarded.clear()
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.0, 0.0, 0.40]))                 # the arm is somewhere else
+    assert node._go_to_location('coffee_tray_grasp', 'in') is False
+    assert side_world.verified == []
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['pre']]))      # at the approach pose
+    assert node._go_to_location('coffee_tray_grasp', 'in') is True
+    (v,) = side_world.verified
+    assert np.allclose(v[:3], p['grasp'], atol=2e-3) and v[3] == 'coffee_tray_grasp: in to the object'
+    assert side_world.guarded == []                                                                                         # no swing, no home: just the straight run in
