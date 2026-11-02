@@ -18,7 +18,7 @@ coffee_tray_grasp:
   - 0.1812
   - 0.9829
   - -0.0325
-  approach_azimuth_deg: 79.6
+  approach_azimuth_deg: 90.0
   tool_tilt_below_horizontal_deg: 1.9
   finger: 0.2664
   joints_rad:
@@ -29,7 +29,9 @@ coffee_tray_grasp:
   - 1.5347
   - 1.5786
   - 1.684
-  standoff_m: 0.21
+  standoff_m: 0.22
+  taught_azimuth_deg: 79.6
+  object_label: cup
 coffee_tray_pre:
   recorded: '2026-11-02 14:07:05'
   note: open gripper at the approach pose in front of the Keurig tray, reached by

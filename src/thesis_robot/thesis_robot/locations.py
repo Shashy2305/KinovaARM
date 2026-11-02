@@ -86,3 +86,25 @@ def approach_clearance(poses, rects):
         if d < best[0]:
             best = (d, r[0])
     return best
+
+
+COFFEE_FILE = os.path.expanduser('~/.ros/coffee.yaml')
+COFFEE_DEFAULTS = {'tray_location': 'coffee_tray_grasp', 'serve_xy': [0.50, -0.10], 'wait_s': 15.0, 'pick_az': 90.0, 'serve_search_m': 0.12}
+
+
+def coffee_config(path=None):
+    """The coffee routine's settings (~/.ros/coffee.yaml over the defaults): the taught tray location, where the cup stands to be picked up and where it is delivered, the brew wait and the side azimuth."""
+    cfg = dict(COFFEE_DEFAULTS)
+    try:
+        with open(path or COFFEE_FILE) as f:
+            cfg.update({k: v for k, v in (yaml.safe_load(f) or {}).items() if k in COFFEE_DEFAULTS})
+    except (OSError, yaml.YAMLError, AttributeError):
+        pass
+    try:
+        cfg['serve_xy'] = [float(cfg['serve_xy'][0]), float(cfg['serve_xy'][1])]
+        cfg['wait_s'] = max(0.0, min(120.0, float(cfg['wait_s'])))
+        cfg['pick_az'] = float(cfg['pick_az'])
+        cfg['serve_search_m'] = float(cfg['serve_search_m'])
+    except (TypeError, ValueError, IndexError):
+        return dict(COFFEE_DEFAULTS)
+    return cfg

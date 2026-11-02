@@ -15,6 +15,8 @@ and a, b = object labels (cup, bowl, bottle, mouse, ...), or None.
 import math
 import re
 
+from thesis_robot import locations as locs
+
 SYNONYMS = {'cup': 'cup', 'mug': 'cup', 'bowl': 'bowl', 'bottle': 'bottle', 'mouse': 'mouse',
             'phone': 'cell phone', 'remote': 'remote', 'book': 'book', 'scissors': 'scissors', 'vase': 'vase'}
 _NAMES = '|'.join(sorted(SYNONYMS, key=len, reverse=True))
@@ -89,7 +91,11 @@ def _o(group):
     return OBJ.replace('{g}', group)
 
 
+COFFEE_ASK = (r"^(?:(?:give|get|make|bring|fetch|pour|serve) me|(?:i )?(?:want|would like|need)|can i have|could i have|may i have|make)(?: a| an| some| my| the| another| one)?(?: cup of| mug of| fresh| hot)* ?coffee(?: (?:now|again))?$"
+              r"|^coffee$|^(?:make|brew) (?:a |some |the )?coffee$")
+
 PATTERNS = [
+    ('coffee', re.compile(COFFEE_ASK)),
     ('go_home', re.compile(r'^(?:(?:go|return|come|move|send it|bring it|get|take it)(?: it| the arm| back)*(?: to)?(?: the)? )?home(?: position)?$')),
     # "put it down", "put the cup back on the table" (2026-10-26: the second was not recognised, nothing checked the model's plan and a lone go_home was approved with the cup still in the gripper)
     ('put_down', re.compile(r"^(?:put|set|place)(?: it| that| this| the object| the [a-z]+(?: [a-z]+)?)? (?:down|back)(?: down)?(?: (?:on|onto|at|in) (?:the )?(?:table|desk|surface|same place|same spot))?$"
@@ -193,6 +199,13 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
     to the mouse" with no mouse in view put the cup next to the white cup). A sequence is checked step by step."""
     if not intent:
         return None
+    if intent.get('kind') == 'coffee':
+        cfg = locs.coffee_config()
+        if locs.get(cfg['tray_location']) is None:
+            return f'the coffee tray location {cfg["tray_location"]!r} has not been taught (scripts/teach_location.py record {cfg["tray_location"]})'
+        if _coffee_cup(scene, cfg) is None:
+            return f'there is no cup at the serving spot ({cfg["serve_xy"][0]:.2f}, {cfg["serve_xy"][1]:+.2f}): stand a cup there, handle toward the robot\'s base or away from the sides, and try again'
+        return None
     if intent.get('kind') == 'sequence':
         for i, item in enumerate(intent['items'], 1):
             why = no_reachable_reason(item, scene, x_range, y_range)
@@ -206,6 +219,14 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
         same = intent.get('b') == intent.get('a') and (intent.get('b_color') in (None, intent.get('a_color')))
         return _why_unreachable(intent['b'], intent.get('b_color'), scene, x_range, y_range, need=2 if same else 1)
     return None
+
+
+def _coffee_cup(scene, cfg):
+    """(object_id, entry) of the fresh, reachable cup standing at the serving spot (within serve_search_m of it), nearest first, or None."""
+    sx, sy = cfg['serve_xy']
+    near = [(math.hypot(o['x'] - sx, o['y'] - sy), oid, o) for oid, o in _objects(scene, 'cup') if o.get('x') is not None]
+    near = [t for t in near if t[0] <= cfg['serve_search_m']]
+    return (sorted(near, key=lambda t: t[0])[0][1], sorted(near, key=lambda t: t[0])[0][2]) if near else None
 
 
 def best_object(scene, label, exclude=None, colour=None):
@@ -244,6 +265,9 @@ def check(intent, steps, scene):
     def res(ok, why):
         return bool(ok), '' if ok else why
     k = intent['kind']
+    if k == 'coffee':
+        good = build_plan(intent, scene)
+        return res(good is not None and steps == good, 'expected the coffee routine: pick the cup at the serving spot (side grasp), put it in the tray, wait, take it out, put it down at the serving spot')
     if k == 'sequence':
         want = sum(_STEPS.get(i['kind'], 2) for i in intent['items'])
         if len(steps) != want:
@@ -306,6 +330,18 @@ def check(intent, steps, scene):
 def build_plan(intent, scene):
     """The raw plan the model should have produced, or None if the objects it needs are not in the scene."""
     k = intent['kind']
+    if k == 'coffee':
+        cfg = locs.coffee_config()
+        cup = _coffee_cup(scene, cfg)
+        if cup is None or locs.get(cfg['tray_location']) is None:
+            return None
+        tray = cfg['tray_location']
+        return [{'action': 'pick', 'object_id': cup[0], 'approach_z': 0.35, 'side_az': cfg['pick_az']},
+                {'action': 'go_to_location', 'name': tray, 'stage': 'put'},
+                {'action': 'wait', 'seconds': cfg['wait_s']},
+                {'action': 'go_to_location', 'name': tray, 'stage': 'in'},
+                {'action': 'go_to_location', 'name': tray, 'stage': 'take'},
+                {'action': 'place', 'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1]}]
     if k == 'sequence':
         out = []
         for item in intent['items']:

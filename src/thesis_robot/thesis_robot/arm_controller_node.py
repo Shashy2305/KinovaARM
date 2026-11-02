@@ -303,8 +303,8 @@ class ArmControllerNode(Node):
         for st in plan[i + 1:]:
             if not isinstance(st, dict):
                 continue
-            if st.get('action') == 'pick':
-                return None
+            if st.get('action') in ('pick', 'go_to_location', 'wait', 'withdraw'):
+                return None                                # the object goes somewhere else first (the coffee tray): the later place is not this pick's carry target
             if st.get('action') == 'place':
                 try:
                     if st.get('here') or st.get('x') is None or st.get('y') is None:
@@ -320,8 +320,14 @@ class ArmControllerNode(Node):
             return self._move_to(step['x'], step['y'], step['z'], cartesian=bool(step.get('cartesian', False)))
         elif act == 'pick':
             approach_z = step.get('approach_z')
-            return self._pick(step.get('object_id'),
-                              0.15 if approach_z is None else approach_z)
+            self._pick_side_az = float(step['side_az']) if step.get('side_az') is not None else None
+            try:
+                return self._pick(step.get('object_id'),
+                                  0.15 if approach_z is None else approach_z)
+            finally:
+                self._pick_side_az = None
+        elif act == 'wait':
+            return self._wait(step.get('seconds', 15))
         elif act == 'rotate_wrist':
             return self._rotate_wrist(float(step.get('radians', math.pi / 2)))
         elif act == 'align_for_handle':
@@ -864,8 +870,8 @@ class ArmControllerNode(Node):
         """Take the arm to a location taught by hand (locations.py), by the same route a side pick uses: swing (joint space, guarded, duration-gated) to the HIGH pre-pose, then straight down to the
         approach pose in front of the object, gripper open. Stage 'pre' only: it stops OUTSIDE whatever the object stands in (the coffee machine). Refuses, before moving, if the gripper holds something,
         the location is missing, the approach pose has no collision-free IK, or the open fingertips would come within MIN_FRONT_CLEARANCE_M of a declared fixed obstacle."""
-        if stage not in ('pre', 'in', 'take'):
-            return self._refuse(f'go_to_location: stage {stage!r} is not built yet (only "pre", "in" and "take")')
+        if stage not in ('pre', 'in', 'take', 'put'):
+            return self._refuse(f'go_to_location: stage {stage!r} is not built yet (only "pre", "in", "take" and "put")')
         loc = locs.get(name)
         if loc is None:
             return self._refuse(f'go_to_location: no complete location called {name!r} (record it with scripts/teach_location.py)')
@@ -874,6 +880,8 @@ class ArmControllerNode(Node):
             return self._go_in(name, loc, poses)
         if stage == 'take':
             return self._take(name, loc, poses)
+        if stage == 'put':
+            return self._put(name, loc, poses)
         gap, what = locs.approach_clearance(poses, locs.fixed_obstacle_rects())
         if gap < locs.MIN_FRONT_CLEARANCE_M:
             return self._refuse(f'go_to_location: at the approach pose the open fingertips would be {gap * 100:.1f} cm from the {what} (need {locs.MIN_FRONT_CLEARANCE_M * 100:.0f} cm)')
@@ -967,6 +975,77 @@ class ArmControllerNode(Node):
         _, b = self._tf_pose(BASE_LINK, 'right_inner_finger_pad')
         v = np.array([(a[i] + b[i]) / 2.0 - g[i] for i in range(3)], float)
         return v / np.linalg.norm(v)
+
+    def _wait(self, seconds):
+        """Wait (the coffee brewing). Reports the countdown in the pick-and-place status; 0..120 s."""
+        try:
+            total = max(0.0, min(120.0, float(seconds)))
+        except (TypeError, ValueError):
+            return self._refuse(f'wait: {seconds!r} is not a number of seconds')
+        if self.dry_run:
+            self.get_logger().info(f'  [DRY RUN] wait {total:.0f} s')
+            time.sleep(min(total, 1.0))
+            return True
+        self.get_logger().info(f'wait: {total:.0f} s')
+        t_end = time.monotonic() + total
+        last = None
+        while True:
+            left = t_end - time.monotonic()
+            if left <= 0:
+                break
+            if int(left) != last:
+                last = int(left)
+                self._publish_pp_status(f'waiting: {last + 1} s left')
+            time.sleep(min(0.5, left))
+        return True
+
+    PUT_AZ_TOL_DEG = 15.0         # the held object's side azimuth may differ this much from the tray's approach azimuth (a yaw of the whole tool, which does not tilt the cup)
+
+    def _put(self, name, loc, poses):
+        """Stage 'put': carry the side-held object to the approach pose of the location, straight in along the tool axis (2 cm above where it will stand), lower it, release, and draw the open
+        gripper back out to the approach pose. The mirror of 'take'. Refuses before moving unless the gripper holds something from the side, toward about the location's azimuth, and nothing
+        blocks the carry. Leaves the arm at the approach pose, gripper open."""
+        grasp, pre = poses['grasp'], poses['pre']
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] go_to_location {name} (put): carry to {np.round(pre, 3).tolist()}, in, lower {self.TAKE_LIFT_M * 100:.0f} cm, release, back out')
+            time.sleep(0.5)
+            return True
+        self._restore_held()
+        if not self._is_holding() or not self._held:
+            return self._refuse('go_to_location: the gripper is not holding anything to put there')
+        held = self._held
+        if float(held.get('tilt', 0.0) or 0.0) < 45.0:
+            return self._refuse('go_to_location: the object is not held from the side; only a side-held object can be put into the tray')
+        daz = abs((float(held.get('az', 0.0)) - float(poses['az']) + 180.0) % 360.0 - 180.0)
+        if daz > self.PUT_AZ_TOL_DEG:
+            return self._refuse(f'go_to_location: the object is held toward azimuth {float(held.get("az", 0.0)):.0f}, the tray is entered toward {poses["az"]:.0f}: pick it with side_az={poses["az"]:.0f}')
+        try:
+            _, g = self._tf_pose(BASE_LINK, EE_LINK)
+        except Exception as e:
+            return self._refuse(f'go_to_location: cannot read the arm pose ({e})')
+        carry_z = min(0.50, max(float(held['grasp_z']) + self.CARRY_CLEARANCE_M, float(g[2])))
+        blocked = self._carry_path_blocked((float(g[0]), float(g[1])), (float(pre[0]), float(pre[1])), min_height=carry_z - float(held['grasp_z']) - 0.03)
+        if blocked and 'coffee machine' not in str(blocked):
+            return self._refuse(f'go_to_location: the carry to the tray passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
+        lifted_z = float(grasp[2]) + self.TAKE_LIFT_M
+        self.get_logger().info(f'go_to_location {name}: carrying the {held.get("label")} to the approach pose at flange z={carry_z:.3f}, then in and down')
+        steps = []
+        if float(g[2]) < carry_z - 0.005:
+            steps.append(('lift', lambda: self._move_verified(float(g[0]), float(g[1]), carry_z, f'{name}: lift to carry height')))
+        steps += [
+            ('carry', lambda: self._move_verified(float(pre[0]), float(pre[1]), carry_z, f'{name}: carry to above the approach pose')),
+            ('down', lambda: self._move_verified(float(pre[0]), float(pre[1]), lifted_z, f'{name}: down to the approach pose', min_flange_z=float(grasp[2]) - 0.02)),
+            ('in', lambda: self._move_verified(float(grasp[0]), float(grasp[1]), lifted_z, f'{name}: in to the tray', min_flange_z=float(grasp[2]) - 0.02)),
+            ('lower', lambda: self._move_verified(float(grasp[0]), float(grasp[1]), float(grasp[2]), f'{name}: lower onto the tray', min_flange_z=float(grasp[2]) - 0.02)),
+        ]
+        for label, action in steps:
+            if not action():
+                self.get_logger().error(f'go_to_location {name} (put) failed at: {label} - still holding the object')
+                return False
+        if not self._open_gripper():
+            return False
+        self._set_held(None)
+        return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: back out to the approach pose', min_flange_z=float(grasp[2]) - 0.02)
 
     TAKE_LIFT_M = 0.02            # a cup standing in a coffee tray is lifted this far before it is drawn out (the spout is ~15 cm over the tray: the cup top is ~6 cm under it)
 
@@ -1219,7 +1298,8 @@ class ArmControllerNode(Node):
 
         def choose_method():
             """Rank the ways to grasp THIS object, here, now: from the side, straight down, leaning. With side_grasp off nothing changes."""
-            mode = str(self.get_parameter('side_grasp').value)
+            only_az = getattr(self, '_pick_side_az', None)               # the plan asked for a side grasp toward exactly this azimuth (the coffee routine)
+            mode = 'only' if only_az is not None else str(self.get_parameter('side_grasp').value)
             if mode == 'off' or self.dry_run or self.moveit2 is None:
                 return True
             obstacles = self._scene_obstacles(exclude_id=object_id)
@@ -1235,7 +1315,7 @@ class ArmControllerNode(Node):
             tried = list(getattr(self, '_tried_methods', []))
             ranked = go.rank_methods(label, centred['xy'], geom['table_top_z'], obstacles, None if top_sweep else 0.05, self._tilt_for(label, centred['xy'], object_id) is not None,
                                      side_mode=mode, handle_bearing_deg=hb, records=records, same_object_m=float(self.get_parameter('sweep_same_object_m').value),
-                                     width_m=getattr(self, '_shape_width_m', None), avoid_methods=tried[-1:] if int(getattr(self, '_pick_attempt', 1)) >= 2 else ())
+                                     width_m=getattr(self, '_shape_width_m', None), avoid_methods=tried[-1:] if int(getattr(self, '_pick_attempt', 1)) >= 2 else (), only_az=only_az)
             try:
                 allowed, why_side = go.side_allowed(label, centred['xy'], records)
                 ps, ns, _s = go.local_rate(go.pick_samples(records, label, 'side'), centred['xy'])
@@ -1347,7 +1427,7 @@ class ArmControllerNode(Node):
                 self._tried_methods = list(getattr(self, '_tried_methods', [])) + [opt['method']]
                 self._log_note(method=opt['method'])
                 return descend_legacy(force_top=opt['method'] == 'top')
-            if str(self.get_parameter('side_grasp').value) == 'only':
+            if str(self.get_parameter('side_grasp').value) == 'only' or getattr(self, '_pick_side_az', None) is not None:
                 return self._refuse(f'pick: no side grasp of the {label} is reachable from here')
             return descend_legacy()
 

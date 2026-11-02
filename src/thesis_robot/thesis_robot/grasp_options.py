@@ -251,10 +251,13 @@ def rank_side(label, centre_xy, table_top_z, obstacles, handle_bearing_deg=None,
 
 
 def rank_methods(label, centre_xy, table_top_z, obstacles, top_clear_m, lean_possible, side_mode='auto', handle_bearing_deg=None,
-                 records=(), same_object_m=SAME_OBJECT_M, width_m=None, avoid_methods=()):
+                 records=(), same_object_m=SAME_OBJECT_M, width_m=None, avoid_methods=(), only_az=None):
     """Every way to grasp this object, best first: [{'method': 'side'|'top'|'lean', ...}].
     top_clear_m: how much room the straight-down approach has (None = a neighbour is in the open fingers' sweep). lean_possible: the lean is switched on and allowed for this object.
-    side_mode: 'off' (never), 'auto' (ranked with the others), 'only' (nothing else). avoid_methods: methods that already failed on this object (a retry should try another)."""
+    side_mode: 'off' (never), 'auto' (ranked with the others), 'only' (nothing else). avoid_methods: methods that already failed on this object (a retry should try another).
+    only_az: a side grasp toward exactly this azimuth and nothing else (the coffee routine needs the cup held the way the machine's tray is entered)."""
+    if only_az is not None:
+        return [o for o in rank_side(label, centre_xy, table_top_z, obstacles, handle_bearing_deg, records, same_object_m, azimuths=(float(only_az),)) if 'score' in o] if side_eligible(label, table_top_z, width_m) else []
     pref = PREF.get(label, DEFAULT_PREF)
     out = []
     allowed, learned_why = side_allowed(label, centre_xy, records)

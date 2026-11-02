@@ -182,7 +182,7 @@ def trim_pick_extras(plan, command):
     # the place (it once hovered the held mug 3 cm above the table, straight over the mouse) or after
     # the place is a collision risk, never needed.
     if any(isinstance(o, dict) and o.get('action') == 'place' for o in out):
-        out = [o for o in out if isinstance(o, dict) and o.get('action') in ('pick', 'place', 'go_home')]
+        out = [o for o in out if isinstance(o, dict) and o.get('action') in ('pick', 'place', 'go_home', 'go_to_location', 'wait', 'withdraw')]
     return out
 
 

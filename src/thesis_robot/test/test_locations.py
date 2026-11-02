@@ -199,3 +199,168 @@ def test_take_records_the_wrist_angle_after_the_draw_out(node, side_world, files
     monkeypatch.setattr(node, '_wrist_angle_now', lambda: next(angles))
     assert node._go_to_location('coffee_tray_grasp', 'take') is True
     assert node._held['j7'] == pytest.approx(1.22)                                          # the later reading: the place check compares against where the carry starts
+
+
+# ---- the four coffee pieces (2026-11-02): pick at one azimuth, put in the tray, wait, the "give me coffee" plan ---------------------------------------------------------
+from thesis_robot import command_grammar as cg  # noqa: E402
+from thesis_robot import grasp_options as go_  # noqa: E402
+
+COFFEE_SCENE = {'cup_03': {'label': 'cup', 'x': 0.452, 'y': 0.01, 'z': 0.05, 'confidence': 0.9, 'reachable': True, 'stale': False, 'color': 'blue'},
+                'mouse_03': {'label': 'mouse', 'x': 0.31, 'y': -0.11, 'z': 0.02, 'confidence': 0.9, 'reachable': True, 'stale': False}}
+
+
+@pytest.fixture
+def coffee_files(files, tmp_path, monkeypatch):
+    cp = tmp_path / 'coffee.yaml'
+    cp.write_text(yaml.safe_dump({'serve_xy': [0.45, 0.0], 'wait_s': 15, 'pick_az': 90, 'tray_location': 'coffee_tray_grasp'}))
+    monkeypatch.setattr(locs, 'COFFEE_FILE', str(cp))
+    return cp
+
+
+def test_give_me_coffee_is_recognised_in_its_usual_forms():
+    for text in ('give me coffee', 'Can you give me a coffee please', 'make me a cup of coffee', 'i want coffee', 'coffee', 'get me some coffee'):
+        assert cg.parse_any(text)['kind'] == 'coffee', text
+    assert cg.parse('pick up the cup')['kind'] == 'pick'
+
+
+def test_the_coffee_plan_is_pick_put_wait_in_take_place_with_the_configured_spot_and_wait(coffee_files):
+    intent = cg.parse('give me coffee')
+    plan = cg.build_plan(intent, COFFEE_SCENE)
+    assert [(s['action'], s.get('stage')) for s in plan] == [('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None)]
+    assert plan[0]['object_id'] == 'cup_03' and plan[0]['side_az'] == 90.0
+    assert plan[2]['seconds'] == 15.0 and (plan[5]['x'], plan[5]['y']) == (0.45, 0.0)
+    assert cg.check(intent, plan, COFFEE_SCENE) == (True, '') and cg.no_reachable_reason(intent, COFFEE_SCENE) is None
+    assert cg.check(intent, plan[:3], COFFEE_SCENE)[0] is False
+
+
+def test_the_coffee_command_is_refused_before_anything_moves_without_a_cup_at_the_spot_or_a_taught_tray(coffee_files, tmp_path, monkeypatch):
+    intent = cg.parse('give me coffee')
+    no_cup = {k: v for k, v in COFFEE_SCENE.items() if k != 'cup_03'}
+    assert 'no cup at the serving spot' in cg.no_reachable_reason(intent, no_cup)
+    far = dict(COFFEE_SCENE, cup_03=dict(COFFEE_SCENE['cup_03'], x=0.30, y=-0.30))
+    assert 'no cup at the serving spot' in cg.no_reachable_reason(intent, far)
+    monkeypatch.setattr(locs, 'LOCATIONS_FILE', str(tmp_path / 'missing.yaml'))
+    assert 'has not been taught' in cg.no_reachable_reason(intent, COFFEE_SCENE)
+
+
+def test_the_coffee_settings_have_safe_limits_and_defaults(tmp_path):
+    p = tmp_path / 'c.yaml'
+    p.write_text(yaml.safe_dump({'wait_s': 9999, 'serve_xy': [0.4, 0.1]}))
+    c = locs.coffee_config(str(p))
+    assert c['wait_s'] == 120.0 and c['serve_xy'] == [0.4, 0.1] and c['pick_az'] == 90.0
+    p.write_text('wait_s: oops')
+    assert locs.coffee_config(str(p)) == locs.COFFEE_DEFAULTS
+    assert locs.coffee_config(str(tmp_path / 'nope.yaml')) == locs.COFFEE_DEFAULTS
+
+
+def test_a_side_pick_can_be_limited_to_one_azimuth_and_nothing_else():
+    ranked = go_.rank_methods('cup', (0.45, 0.0), -0.0125, [], 0.05, False, side_mode='auto', only_az=90.0)
+    assert [(o['method'], o['az']) for o in ranked] == [('side', 90.0)]
+    blocked = go_.rank_methods('cup', (0.45, 0.0), -0.0125, [('mouse', 0.45, 0.13)], 0.05, False, side_mode='auto', only_az=90.0)         # a neighbour where the gripper would come in
+    assert blocked == [] or blocked[0]['az'] == 90.0
+    assert go_.rank_methods('mouse', (0.45, 0.0), -0.0125, [], 0.05, False, only_az=90.0) == []                                          # a flat object has no side grasp
+
+
+def test_the_pick_in_the_coffee_plan_is_not_checked_against_the_final_place(node):
+    plan = cg.build_plan(cg.parse('give me coffee'), COFFEE_SCENE) if False else [
+        {'action': 'pick', 'object_id': 'cup_03'}, {'action': 'go_to_location', 'name': 't', 'stage': 'put'}, {'action': 'wait', 'seconds': 15}, {'action': 'place', 'x': 0.45, 'y': 0.0}]
+    assert acn_place_after(plan, 0) is None                                               # the cup goes into the tray first: the later place is not this pick's carry
+
+
+def acn_place_after(plan, i):
+    from thesis_robot import arm_controller_node as acn
+    return acn.ArmControllerNode._place_after(plan, i)
+
+
+def test_wait_waits_and_refuses_a_bad_number(node, side_world, monkeypatch):
+    import time as _t
+    t0 = _t.monotonic()
+    assert node._wait(0.6) is True and _t.monotonic() - t0 >= 0.55
+    assert node._wait('soon') is False
+    assert node._dispatch({'action': 'wait', 'seconds': 0}) is True
+
+
+def _held_cup(node, az=90.0, tilt=84.7):
+    node._held = {'label': 'cup', 'object_id': 'c', 'grasp_z': 0.107, 'tilt': tilt, 'az': az, 'j7': 0.0}
+
+
+def test_put_carries_in_lowers_releases_and_backs_out_to_the_approach_pose(node, side_world, coffee_files, monkeypatch):
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    side_world.verified.clear()
+    side_world.grippers.clear()
+    _held_cup(node)
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_restore_held', lambda: None)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.45, -0.185, 0.14]))                 # the arm after the pick, cup held toward 90
+    monkeypatch.setattr(node, '_carry_path_blocked', lambda a, b, min_height=None: None)
+    assert node._go_to_location('coffee_tray_grasp', 'put') is True
+    names = [v[3].split(': ', 1)[1] for v in side_world.verified]
+    assert names == ['lift to carry height', 'carry to above the approach pose', 'down to the approach pose', 'in to the tray', 'lower onto the tray', 'back out to the approach pose']
+    lift, carry, down, inn, lower, out = side_world.verified
+    assert carry[2] == pytest.approx(0.107 + node.CARRY_CLEARANCE_M) and np.allclose(carry[:2], p['pre'][:2], atol=2e-3)
+    assert inn[2] == pytest.approx(p['grasp'][2] + node.TAKE_LIFT_M, abs=2e-3) and np.allclose(inn[:2], p['grasp'][:2], atol=2e-3)
+    assert lower[2] == pytest.approx(p['grasp'][2], abs=2e-3) and np.allclose(out[:3], p['pre'], atol=2e-3)
+    assert [g[1] for g in side_world.grippers] == ['open_gripper'] and node._held is None                                      # released, the held record cleared
+
+
+def test_put_refuses_before_moving_for_nothing_held_a_top_held_cup_or_the_wrong_azimuth(node, side_world, coffee_files, monkeypatch):
+    side_world.verified.clear()
+    monkeypatch.setattr(node, '_restore_held', lambda: None)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.45, -0.185, 0.14]))
+    monkeypatch.setattr(node, '_is_holding', lambda: False)
+    node._held = None
+    assert node._go_to_location('coffee_tray_grasp', 'put') is False
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    _held_cup(node, tilt=0.0)
+    assert node._go_to_location('coffee_tray_grasp', 'put') is False                         # held from above: only a side-held cup can go into the tray
+    _held_cup(node, az=45.0)
+    assert node._go_to_location('coffee_tray_grasp', 'put') is False                         # held toward 45, the tray is entered toward 90
+    assert side_world.verified == []
+
+
+def test_a_failed_step_of_the_put_leaves_the_cup_held_and_never_opens_the_gripper(node, side_world, coffee_files, monkeypatch):
+    side_world.verified.clear()
+    side_world.grippers.clear()
+    _held_cup(node)
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_restore_held', lambda: None)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.45, -0.185, 0.14]))
+    monkeypatch.setattr(node, '_carry_path_blocked', lambda a, b, min_height=None: None)
+    real = node._move_verified
+    monkeypatch.setattr(node, '_move_verified', lambda x, y, z, label, **kw: False if 'in to the tray' in label else real(x, y, z, label, **kw))
+    assert node._go_to_location('coffee_tray_grasp', 'put') is False
+    assert side_world.grippers == [] and node._held is not None
+
+
+def test_a_pick_with_side_az_uses_that_side_grasp_only_and_never_falls_back_to_the_top(node, side_world, monkeypatch):
+    from test_pick_place_flow import run_cup_pick
+    node._pick_side_az = 90.0
+    try:
+        assert run_cup_pick(node) is True
+        assert node._held['az'] == pytest.approx(90.0) and side_world.guarded == ['side: swing to the high pre-pose']
+        # now no side grasp has a solution: the pick must fail, not come down from above
+        side_world.guarded.clear()
+        side_world.verified.clear()
+        node._held = None
+        monkeypatch.setattr(node, '_ik', lambda seed, pos, quat, timeout_s=0.15: None)
+        assert run_cup_pick(node) is False
+        assert side_world.guarded == [] and node._held is None
+    finally:
+        node._pick_side_az = None
+
+
+def test_the_whole_coffee_plan_runs_through_the_executor_in_a_dry_run(node, coffee_files, monkeypatch):
+    import json
+    node.dry_run = True
+    node.latest_scene = dict(COFFEE_SCENE)
+    node._scene_time = __import__('time').monotonic()
+    steps_seen = []
+    real = node._dispatch
+    monkeypatch.setattr(node, '_dispatch', lambda step: (steps_seen.append((step['action'], step.get('stage'))) or real(step)))
+    try:
+        plan = cg.build_plan(cg.parse('give me coffee'), COFFEE_SCENE)
+        node.executing = True
+        node._execute(json.dumps({'command': 'give me coffee', 'plan': plan, 'model': 'grammar'}))
+    finally:
+        node.dry_run = False
+    assert steps_seen == [('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None)]
