@@ -187,7 +187,7 @@ OBJECT_RADIUS_M = {'cup': 0.045, 'mug': 0.045, 'bowl': 0.07, 'bottle': 0.035, 'm
 DEFAULT_RADIUS_M = 0.04
 # things that stand on the table and are not for picking (~/.ros/fixed_obstacles.yaml, scene_graph_node): the arm treats them as tall obstacles at their footprint
 OBJECT_HEIGHT_M.update({'coffee machine': 0.30, 'large object': 0.30})
-OBJECT_RADIUS_M.update({'coffee machine': 0.12, 'large object': 0.12})
+OBJECT_RADIUS_M.update({'coffee machine': 0.20, 'large object': 0.12})   # the K-Compact is 21 x 34 cm: half the diagonal is 0.20
 OBJECT_RADIUS_M['unknown object'] = 0.06      # an unidentified obstacle from the depth guard: assume a hand-sized footprint
 FINGER_HALF_SPAN_M = 0.095     # open fingers reach this far (outer edge) either side of the grasp centre
 FINGER_HALF_WIDTH_M = 0.02     # finger/pad half width along the other horizontal axis
