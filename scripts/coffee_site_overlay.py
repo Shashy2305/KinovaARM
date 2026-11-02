@@ -40,7 +40,7 @@ def main():
     ap.add_argument('--camera', default='realsense', choices=list(CAM))
     ap.add_argument('--cup', default='0.40,0.20')
     ap.add_argument('--front-deg', type=float, default=-90.0, help='direction the machine front faces (-90 = toward the robot\'s right / the centre line)')
-    ap.add_argument('--serve', default='0.40,-0.25')
+    ap.add_argument('--serve', default='0.50,-0.10')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     topic, name = CAM[a.camera]

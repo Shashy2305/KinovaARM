@@ -862,14 +862,16 @@ class ArmControllerNode(Node):
         """Take the arm to a location taught by hand (locations.py), by the same route a side pick uses: swing (joint space, guarded, duration-gated) to the HIGH pre-pose, then straight down to the
         approach pose in front of the object, gripper open. Stage 'pre' only: it stops OUTSIDE whatever the object stands in (the coffee machine). Refuses, before moving, if the gripper holds something,
         the location is missing, the approach pose has no collision-free IK, or the open fingertips would come within MIN_FRONT_CLEARANCE_M of a declared fixed obstacle."""
-        if stage not in ('pre', 'in'):
-            return self._refuse(f'go_to_location: stage {stage!r} is not built yet (only "pre" and "in")')
+        if stage not in ('pre', 'in', 'take'):
+            return self._refuse(f'go_to_location: stage {stage!r} is not built yet (only "pre", "in" and "take")')
         loc = locs.get(name)
         if loc is None:
             return self._refuse(f'go_to_location: no complete location called {name!r} (record it with scripts/teach_location.py)')
         poses = locs.approach_poses(loc)
         if stage == 'in':
             return self._go_in(name, loc, poses)
+        if stage == 'take':
+            return self._take(name, loc, poses)
         gap, what = locs.approach_clearance(poses, locs.fixed_obstacle_rects())
         if gap < locs.MIN_FRONT_CLEARANCE_M:
             return self._refuse(f'go_to_location: at the approach pose the open fingertips would be {gap * 100:.1f} cm from the {what} (need {locs.MIN_FRONT_CLEARANCE_M * 100:.0f} cm)')
@@ -930,6 +932,41 @@ class ArmControllerNode(Node):
         grasp = poses['grasp']
         self.get_logger().info(f'go_to_location {name}: straight in along the tool axis to the grasp pose {np.round(grasp, 3).tolist()} (gripper open)')
         return self._move_verified(float(grasp[0]), float(grasp[1]), float(grasp[2]), f'{name}: in to the object', min_flange_z=float(grasp[2]) - 0.02)
+
+    TAKE_LIFT_M = 0.02            # a cup standing in a coffee tray is lifted this far before it is drawn out (the spout is ~15 cm over the tray: the cup top is ~6 cm under it)
+
+    def _take(self, name, loc, poses):
+        """Stage 'take': the arm is at the grasp pose with the gripper open round the object. Close, check the grip, lift TAKE_LIFT_M, check again, draw the object straight back out along the tool
+        axis to the approach pose (still level) and record what is held, so the place routine can put it down (it keeps the side-held orientation). Refuses, before closing, unless the arm is at the
+        grasp pose and holds nothing. A grip that closed on air opens again and stops."""
+        grasp, pre = poses['grasp'], poses['pre']
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] go_to_location {name} (take): close, lift {self.TAKE_LIFT_M * 100:.0f} cm, back out to {np.round(pre, 3).tolist()}')
+            time.sleep(0.5)
+            return True
+        if self._is_holding():
+            return self._refuse('go_to_location: the gripper is already holding something')
+        try:
+            _, here = self._tf_pose(BASE_LINK, EE_LINK)
+        except Exception as e:
+            return self._refuse(f'go_to_location: cannot read the arm pose ({e})')
+        off = float(np.linalg.norm(np.array(here[:3], float) - grasp))
+        if off > 0.03:
+            return self._refuse(f'go_to_location {name} (take): the arm is {off * 100:.0f} cm from the grasp pose; run stage "in" first')
+        label = str(loc.get('object_label', 'cup'))
+        self.get_logger().info(f'go_to_location {name}: closing the gripper on the {label}')
+        if not self._close_gripper():
+            return False
+        if not self._check_grip(name):
+            return False
+        lifted = float(grasp[2]) + self.TAKE_LIFT_M
+        if not self._move_verified(float(grasp[0]), float(grasp[1]), lifted, f'{name}: lift', min_flange_z=float(grasp[2]) - 0.02):
+            return False
+        if not self._check_grip(f'{name} (lifted)'):
+            return False
+        self._set_held({'label': label, 'object_id': str(loc.get('object_id', name)), 'grasp_z': float(grasp[2]), 'tilt': float(go.SIDE_TILT_DEG),
+                        'az': float(poses['az']), 'j7': self._wrist_angle_now()})
+        return self._move_verified(float(pre[0]), float(pre[1]), lifted, f'{name}: out of the machine', min_flange_z=float(grasp[2]) - 0.02)
 
     def _tool_is_horizontal(self):
         qx, qy = self._actual_tool_quat()[:2]

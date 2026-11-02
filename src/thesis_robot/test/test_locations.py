@@ -78,7 +78,7 @@ def test_go_to_location_refuses_without_moving_for_a_missing_location_a_held_obj
     tip = p['pre_pad'] + 0.03 * p['axis']
     op.write_text(yaml.safe_dump({'obstacles': [{'name': 'box', 'x': float(tip[0]), 'y': float(tip[1]) + 0.03, 'size_x': 0.1, 'size_y': 0.05}]}))      # a box 1.5 cm from the fingertips
     assert node._go_to_location('coffee_tray_grasp') is False
-    assert node._go_to_location('coffee_tray_grasp', 'out') is False                        # only 'pre' and 'in' exist
+    assert node._go_to_location('coffee_tray_grasp', 'out') is False                        # only 'pre', 'in' and 'take' exist
     assert side_world.guarded == [] and side_world.verified == []
 
 
@@ -104,3 +104,37 @@ def test_stage_in_goes_straight_to_the_grasp_pose_only_from_the_approach_pose(no
     (v,) = side_world.verified
     assert np.allclose(v[:3], p['grasp'], atol=2e-3) and v[3] == 'coffee_tray_grasp: in to the object'
     assert side_world.guarded == []                                                                                         # no swing, no home: just the straight run in
+
+
+def test_stage_take_closes_lifts_draws_straight_out_and_records_what_is_held(node, side_world, files, monkeypatch):
+    from thesis_robot import grasp_options as go
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    side_world.verified.clear()
+    side_world.guarded.clear()
+    side_world.grippers.clear()
+    node._held = None
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['grasp']]))
+    monkeypatch.setattr(node, '_check_grip', lambda what: True)
+    state = {'n': 0}
+    monkeypatch.setattr(node, '_is_holding', lambda: state['n'] > 0 and False)           # nothing held before the close
+    assert node._go_to_location('coffee_tray_grasp', 'take') is True
+    assert [g[1] for g in side_world.grippers] == ['close_gripper']
+    lift, out = side_world.verified
+    assert lift[3].endswith(': lift') and lift[2] == pytest.approx(p['grasp'][2] + node.TAKE_LIFT_M, abs=2e-3) and np.allclose(lift[:2], p['grasp'][:2], atol=2e-3)
+    assert out[3].endswith(': out of the machine') and np.allclose(out[:2], p['pre'][:2], atol=2e-3) and out[2] == pytest.approx(lift[2])      # straight back along the axis, level
+    assert node._held['label'] == 'cup' and node._held['tilt'] == pytest.approx(go.SIDE_TILT_DEG) and node._held['az'] == pytest.approx(p['az'])
+    assert node._held['grasp_z'] == pytest.approx(p['grasp'][2])
+
+
+def test_stage_take_refuses_away_from_the_grasp_pose_or_when_a_grip_closes_on_air(node, side_world, files, monkeypatch):
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    side_world.verified.clear()
+    side_world.grippers.clear()
+    node._held = None
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['pre']]))      # still at the approach pose
+    assert node._go_to_location('coffee_tray_grasp', 'take') is False
+    assert side_world.grippers == [] and side_world.verified == []                                                          # nothing was closed
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['grasp']]))
+    monkeypatch.setattr(node, '_check_grip', lambda what: False)                                                            # closed on air
+    assert node._go_to_location('coffee_tray_grasp', 'take') is False
+    assert [g[1] for g in side_world.grippers] == ['close_gripper'] and side_world.verified == [] and node._held is None   # no lift, nothing recorded
