@@ -40,7 +40,7 @@ def main():
     ap.add_argument('--camera', default='realsense', choices=list(CAM))
     ap.add_argument('--cup', default='0.40,0.20')
     ap.add_argument('--front-deg', type=float, default=-90.0, help='direction the machine front faces (-90 = toward the robot\'s right / the centre line)')
-    ap.add_argument('--serve', default='0.50,-0.10')
+    ap.add_argument('--serve', default='0.45,0.0')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     topic, name = CAM[a.camera]
@@ -115,7 +115,7 @@ def main():
     poly(ring2, TABLE_Z, GREEN, 4)
     s = px([srv[0], srv[1], TABLE_Z])
     if s:
-        cv2.putText(img, 'DROP-OFF', (s[0] - 55, s[1] + 62), cv2.FONT_HERSHEY_SIMPLEX, 0.8, GREEN, 2, cv2.LINE_AA)
+        cv2.putText(img, 'START / SERVE', (s[0] - 55, s[1] + 62), cv2.FONT_HERSHEY_SIMPLEX, 0.8, GREEN, 2, cv2.LINE_AA)
     b = px([0.0, 0.0, TABLE_Z])
     if b:
         cv2.circle(img, b, 7, (255, 255, 255), -1)

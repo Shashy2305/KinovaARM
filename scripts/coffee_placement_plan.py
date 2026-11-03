@@ -19,7 +19,7 @@ MACH_W, MACH_D, CUP_FROM_FRONT = 0.208, 0.335, 0.10
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--cup', default='0.40,0.20')
-    ap.add_argument('--serve', default='0.50,-0.10')
+    ap.add_argument('--serve', default='0.45,0.0')
     ap.add_argument('--out', required=True)
     a = ap.parse_args()
     cx, cy = [float(v) for v in a.cup.split(',')]
