@@ -897,15 +897,17 @@ class ArmControllerNode(Node):
         az, high, pre = poses['az'], poses['high'], poses['pre']
         # Same route as a side pick: from the HOME pose go to an upright hover over the flange's place at the high pre-pose (far from the machine: nothing hangs beside it), then swing. From an odd
         # parked pose (joints near their limits) the swing has no solution, so go home first.
-        goal, why = None, None
+        goal, why, swung = None, None, False
         for attempt in range(self.PRE_HOVER_TRIES):
-            # The IK picks a branch at random for the big move home -> hover; some branches (2026-11-03: joints 1/3/5 at 51/116/-143 deg) leave no usable solution for the swing. Go home and try again.
-            self.get_logger().info(f'go_to_location {name}: going home first, then an upright hover over ({high[0]:.3f},{high[1]:.3f})' + (f' (try {attempt + 1}: the last hover left no way to the approach pose)' if attempt else ''))
+            # The IK picks a branch at random for the big moves; some branches (2026-11-03: joints 1/3/5 at 51/116/-143 deg) leave no usable solution for the swing, and some swing the forearm too close
+            # to the table (the safety check refuses that before any motion). Go home and try again, as long as the arm has not moved.
+            self.get_logger().info(f'go_to_location {name}: going home first, then an upright hover over ({high[0]:.3f},{high[1]:.3f})' + (f' (try {attempt + 1}: the last branch left no safe way to the approach pose)' if attempt else ''))
             if not self._safe_home():
                 return False
             hover_z = min(0.38, ws.HOVER_MAX_Z)
             if not self._hover_over(float(high[0]), float(high[1]), hover_z):
                 return False
+            goal = None
             for flip in (False, True):
                 try:
                     goal_i, q_used = self._solve_goal_joints([float(v) for v in high], go.side_quat(az, flip), False)
@@ -918,12 +920,28 @@ class ArmControllerNode(Node):
                     continue
                 goal = goal_i
                 break
-            if goal is not None:
+            if goal is None:
+                continue
+            self.get_logger().info(f'go_to_location {name}: swinging to the high pre-pose (azimuth {az:.0f}), then down to the approach pose {np.round(pre, 3).tolist()}; fingertips {gap * 100:.1f} cm from the {what}')
+            try:
+                _, before = self._tf_pose(BASE_LINK, EE_LINK)
+            except Exception:
+                before = None
+            if self._guarded_move(geom, f'{name}: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
+                swung = True
                 break
+            try:
+                _, after = self._tf_pose(BASE_LINK, EE_LINK)
+                moved = before is None or float(np.linalg.norm(np.array(after[:3], float) - np.array(before[:3], float))) > 0.01
+            except Exception:
+                moved = True
+            if moved:
+                return False
+            why = 'the swing was refused by the safety check'
+            self.get_logger().warn(f'go_to_location {name}: the swing was refused without moving (try {attempt + 1} of {self.PRE_HOVER_TRIES})')
         if goal is None:
             return self._refuse(f'go_to_location: {name}: no way to reach the approach pose ({why}); the arm is waiting at the hover')
-        self.get_logger().info(f'go_to_location {name}: swinging to the high pre-pose (azimuth {az:.0f}), then down to the approach pose {np.round(pre, 3).tolist()}; fingertips {gap * 100:.1f} cm from the {what}')
-        if not self._guarded_move(geom, f'{name}: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
+        if not swung:
             return False
         return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: down to the approach pose', min_flange_z=float(pre[2]) - 0.02)
 

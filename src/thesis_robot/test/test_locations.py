@@ -94,6 +94,45 @@ def test_the_pre_stage_still_refuses_after_its_tries_and_does_not_swing(node, si
     assert side_world.guarded.count('go_home') == node.PRE_HOVER_TRIES and not any('swing' in g for g in side_world.guarded)
 
 
+def test_a_swing_the_safety_check_refuses_without_moving_is_tried_again_from_home_on_a_new_branch(node, side_world, files, monkeypatch):
+    # 2026-11-03: forearm_link would have been at z=0.059 (limit 0.068) on one IK branch; the refusal comes before any motion, so another go home -> hover -> swing is safe
+    side_world.guarded.clear()
+    side_world.verified.clear()
+    real = node._guarded_move
+    state = {'swings': 0}
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.0, 0.0, 0.5]))        # the arm does not move
+
+    def guarded(geom, label, **kw):
+        if 'swing' in label:
+            state['swings'] += 1
+            if state['swings'] == 1:
+                return False
+        return real(geom, label, **kw)
+    monkeypatch.setattr(node, '_guarded_move', guarded)
+    assert node._go_to_location('coffee_tray_grasp') is True
+    assert state['swings'] == 2 and side_world.guarded.count('go_home') == 2
+    # a branch that never works: the stage gives up
+    monkeypatch.setattr(node, '_guarded_move', lambda geom, label, **kw: False if 'swing' in label else real(geom, label, **kw))
+    assert node._go_to_location('coffee_tray_grasp') is False
+
+
+def test_a_swing_that_started_moving_and_failed_is_never_repeated(node, side_world, files, monkeypatch):
+    side_world.guarded.clear()
+    real = node._guarded_move
+    pose = {'p': [0.0, 0.0, 0.5]}
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), list(pose['p'])))
+    n = {'swings': 0}
+
+    def guarded(geom, label, **kw):
+        if 'swing' in label:
+            n['swings'] += 1
+            pose['p'] = [0.2, 0.2, 0.4]                                                      # it moved, then failed
+            return False
+        return real(geom, label, **kw)
+    monkeypatch.setattr(node, '_guarded_move', guarded)
+    assert node._go_to_location('coffee_tray_grasp') is False and n['swings'] == 1
+
+
 def test_the_hover_move_is_asked_again_only_when_it_was_refused_without_moving(node, monkeypatch):
     pose = {'p': [0.0, 0.0, 0.5]}
     monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), list(pose['p'])))
