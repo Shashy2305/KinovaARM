@@ -292,7 +292,7 @@ def test_put_carries_in_lowers_releases_and_backs_out_to_the_approach_pose(node,
     monkeypatch.setattr(node, '_is_holding', lambda: True)
     monkeypatch.setattr(node, '_restore_held', lambda: None)
     monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.45, -0.185, 0.14]))                 # the arm after the pick, cup held toward 90
-    monkeypatch.setattr(node, '_carry_path_blocked', lambda a, b, min_height=None: None)
+    monkeypatch.setattr(node, '_tray_carry_blocked', lambda a, b, h, held: None)
     assert node._go_to_location('coffee_tray_grasp', 'put') is True
     names = [v[3].split(': ', 1)[1] for v in side_world.verified]
     assert names == ['lift to carry height', 'carry to above the approach pose', 'down to the approach pose', 'in to the tray', 'lower onto the tray', 'back out to the approach pose']
@@ -325,7 +325,7 @@ def test_a_failed_step_of_the_put_leaves_the_cup_held_and_never_opens_the_grippe
     monkeypatch.setattr(node, '_is_holding', lambda: True)
     monkeypatch.setattr(node, '_restore_held', lambda: None)
     monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.45, -0.185, 0.14]))
-    monkeypatch.setattr(node, '_carry_path_blocked', lambda a, b, min_height=None: None)
+    monkeypatch.setattr(node, '_tray_carry_blocked', lambda a, b, h, held: None)
     real = node._move_verified
     monkeypatch.setattr(node, '_move_verified', lambda x, y, z, label, **kw: False if 'in to the tray' in label else real(x, y, z, label, **kw))
     assert node._go_to_location('coffee_tray_grasp', 'put') is False
@@ -364,3 +364,17 @@ def test_the_whole_coffee_plan_runs_through_the_executor_in_a_dry_run(node, coff
     finally:
         node.dry_run = False
     assert steps_seen == [('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None)]
+
+
+def test_the_carry_to_the_tray_ignores_the_carried_cup_and_the_machine_but_not_a_mouse_on_the_way(node, side_world, monkeypatch):
+    held = {'label': 'cup', 'object_id': 'cup_03'}
+    monkeypatch.setattr(node, '_pad_midpoint_xy', lambda default: (0.44, -0.05))                     # the pads (and the cup in them) are here
+    node.latest_scene = {
+        'cup_03': {'label': 'cup', 'x': 0.44, 'y': -0.03, 'z': 0.06, 'confidence': 0.95, 'reachable': True, 'stale': False},               # the carried cup's own (old) entry
+        'cup_09': {'label': 'cup', 'x': 0.45, 'y': -0.04, 'z': 0.06, 'confidence': 0.9, 'reachable': True, 'stale': False},                # ... split into a second track
+        'fixed_00': {'label': 'coffee machine', 'x': 0.485, 'y': 0.305, 'z': 0.31, 'confidence': 1.0, 'reachable': False, 'stale': False},
+    }
+    node._scene_time = __import__('time').monotonic()
+    assert node._tray_carry_blocked((0.44, -0.19), (0.44, 0.05), 0.0, held) is None
+    node.latest_scene['bottle_07'] = {'label': 'bottle', 'x': 0.55, 'y': 0.0, 'z': 0.20, 'confidence': 0.95, 'reachable': True, 'stale': False}          # a tall thing 11 cm beside the path
+    assert node._tray_carry_blocked((0.44, -0.19), (0.44, 0.05), 0.0, held) == 'bottle'

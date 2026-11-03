@@ -999,6 +999,19 @@ class ArmControllerNode(Node):
             time.sleep(min(0.5, left))
         return True
 
+    HELD_OWN_ENTRY_M = 0.10       # a scene entry this close to the pads is the carried object itself (its entry is stale, or split into a second track)
+
+    def _tray_carry_blocked(self, start_xy, end_xy, min_height, held):
+        """Label of a scene object the carry to the tray comes too close to, or None. Never the carried object itself (2026-11-02: its own entry at the pick spot blocked the first live run) and never the
+        coffee machine (the approach pose is deliberately in front of it)."""
+        try:
+            pad = self._pad_midpoint_xy(default=start_xy)
+        except Exception:
+            pad = start_xy
+        others = [o for o in self._scene_obstacles(min_height=min_height, exclude_id=(held or {}).get('object_id'))
+                  if o[0] != 'coffee machine' and math.hypot(o[1] - pad[0], o[2] - pad[1]) > self.HELD_OWN_ENTRY_M]
+        return ws.carry_path_blocker(start_xy, end_xy, others, avoid=float(self.get_parameter('carry_avoid_m').value))
+
     PUT_AZ_TOL_DEG = 15.0         # the held object's side azimuth may differ this much from the tray's approach azimuth (a yaw of the whole tool, which does not tilt the cup)
 
     def _put(self, name, loc, poses):
@@ -1024,8 +1037,8 @@ class ArmControllerNode(Node):
         except Exception as e:
             return self._refuse(f'go_to_location: cannot read the arm pose ({e})')
         carry_z = min(0.50, max(float(held['grasp_z']) + self.CARRY_CLEARANCE_M, float(g[2])))
-        blocked = self._carry_path_blocked((float(g[0]), float(g[1])), (float(pre[0]), float(pre[1])), min_height=carry_z - float(held['grasp_z']) - 0.03)
-        if blocked and 'coffee machine' not in str(blocked):
+        blocked = self._tray_carry_blocked((float(g[0]), float(g[1])), (float(pre[0]), float(pre[1])), carry_z - float(held['grasp_z']) - 0.03, held)
+        if blocked:
             return self._refuse(f'go_to_location: the carry to the tray passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
         lifted_z = float(grasp[2]) + self.TAKE_LIFT_M
         self.get_logger().info(f'go_to_location {name}: carrying the {held.get("label")} to the approach pose at flange z={carry_z:.3f}, then in and down')
