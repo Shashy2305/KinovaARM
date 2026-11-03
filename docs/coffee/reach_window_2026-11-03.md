@@ -55,3 +55,7 @@ Fix, applied at runtime on the running controller with the operator's agreement:
 
 This is NOT persistent: restarting robot_bringup (the controller) resets it to false. Re-apply it after every bringup restart (or put `angle_wraparound: true` for joint_3 / joint_7 under `joint_trajectory_controller.gains` in kortex_moveit_config/.../ros2_controllers.yaml). Joints 1 and 5 keep false (they never need more than +-2.88).
 Symptom if it is missing: a move that physically completes but is reported ABORTED after ~12 s, with `Controller is taking too long to execute trajectory` in robot_bringup.log.
+
+### Update (same evening): the runtime parameter did NOT help
+Setting `gains.joint_3/7.angle_wraparound` true on the running controller did not change the outcome: crossing moves were still stopped by MoveIt's time bound (`TIMED_OUT`). It was set back to false. (A persistent fix would mean the yaml plus a bringup restart; not done.)
+Instead the controller code handles it: `_reached_modulo_2pi` accepts a move the controller reported unsuccessful when every joint is within 0.03 rad of the goal modulo 2*pi, and `go_home` aims for the writing of the home angles nearest to the arm (joint 3 at -170 deg goes to -180, not +180). Each crossing move still costs MoveIt's ~12 s time bound.

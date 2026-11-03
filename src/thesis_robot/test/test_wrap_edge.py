@@ -103,3 +103,74 @@ def test_the_goal_solver_tries_the_other_writing_of_the_wrist_angle_and_finds_th
     goal, _q = node._solve_goal_joints([0.4, 0.0, 0.1], (0, 0, 0, 1), False)
     assert goal[6] == pytest.approx(-2.98, abs=0.01) and max(abs(a - b) for a, b in zip(goal, cur)) < 0.1                       # unwrapped back next to where the arm is: a tiny move
     assert any(v > 0 for v in asked) and any(v < 0 for v in asked)                                                              # both writings were tried
+
+
+# ---- 2026-11-03 (evening): moves across 180 deg are reported unsuccessful by the trajectory controller although the arm is at the goal -------------------------------
+class Pt:
+    def __init__(self, positions):
+        self.positions = positions
+        self.time_from_start = type('D', (), {'sec': 1, 'nanosec': 0})()
+
+
+class FakeTraj:
+    joint_names = list(acn.JOINT_NAMES)
+
+    def __init__(self, goal):
+        self.points = [Pt([0.0] * 7), Pt(list(goal))]
+
+
+def set_state(node, q):
+    node._js = dict(zip(acn.JOINT_NAMES, q))
+
+
+def test_a_move_past_180_deg_counts_as_reached_when_the_joints_match_modulo_2pi(node):
+    goal = [0.1, 0.3, 3.30, -1.0, 0.2, 0.5, 3.20]                                  # commanded past +pi on joints 3 and 7
+    set_state(node, [0.1, 0.3, 3.30 - 2 * math.pi, -1.0, 0.2, 0.5, 3.20 - 2 * math.pi])      # the driver reports them wrapped
+    assert node._reached_modulo_2pi(FakeTraj(goal)) is True
+    set_state(node, [0.1, 0.3, 3.30 - 2 * math.pi + 0.02, -1.0, 0.2, 0.5, 3.20 - 2 * math.pi])
+    assert node._reached_modulo_2pi(FakeTraj(goal)) is True                           # within 0.03 rad
+    set_state(node, [0.1, 0.3, 3.30 - 2 * math.pi + 0.08, -1.0, 0.2, 0.5, 3.20 - 2 * math.pi])
+    assert node._reached_modulo_2pi(FakeTraj(goal)) is False                          # a real shortfall is still a failure
+    set_state(node, [0.1, 0.9, 3.30 - 2 * math.pi, -1.0, 0.2, 0.5, 3.20 - 2 * math.pi])
+    assert node._reached_modulo_2pi(FakeTraj(goal)) is False                          # any other joint off: failure
+    node._js = None
+    assert node._reached_modulo_2pi(FakeTraj(goal)) is False                          # no joint state: failure
+
+
+def test_guarded_move_accepts_an_unsuccessful_report_only_when_the_arm_is_at_the_goal(node, monkeypatch):
+    node.dry_run = False
+
+    class MoveIt:
+        pipeline_id = planner_id = ''
+
+        def execute(self, traj):
+            pass
+
+        def wait_until_executed(self):
+            return False                                                              # the controller says: not executed
+    node.moveit2 = MoveIt()
+    goal = [0.1, 0.3, 3.30, -1.0, 0.2, 0.5, 1.0]
+    monkeypatch.setattr(node, '_ensure_safety_scene', lambda geom: None)
+    monkeypatch.setattr(node, '_plan_joint_goal', lambda g, geom, allow_long=False: (FakeTraj(g), 'ok'))
+    monkeypatch.setattr(node, '_smoothed', lambda traj, label: traj)
+    monkeypatch.setattr(node, '_actual_tool_quat', lambda default=None: default)
+    monkeypatch.setattr(acn.time, 'sleep', lambda s: None)
+    set_state(node, [0.1, 0.3, 3.30 - 2 * math.pi, -1.0, 0.2, 0.5, 1.0])
+    assert node._guarded_move({'table_top_z': -0.0125}, 'swing', joint_positions=goal) is True
+    set_state(node, [0.1, 0.3, 1.0, -1.0, 0.2, 0.5, 1.0])                            # stopped half way: still a failure
+    assert node._guarded_move({'table_top_z': -0.0125}, 'swing', joint_positions=goal) is False
+
+
+def test_go_home_aims_for_the_writing_of_the_home_angles_nearest_to_the_arm_and_is_exempt_from_the_long_turn_check(node, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(node, '_current_joint_vector', lambda: [0.0, 0.3, -2.98, -1.0, 0.0, 0.5, 1.5])
+    home = mu.unwrap_to_seed(acn.HOME_JOINTS, [0.0, 0.3, -2.98, -1.0, 0.0, 0.5, 1.5])
+    assert home[2] == pytest.approx(3.14 - 2 * math.pi, abs=1e-6) and abs(home[2] - (-2.98)) < 0.2                      # -3.14, not +3.14 (6.1 rad away)
+    node.dry_run, node.moveit2 = False, FakeMoveIt()
+    far = [0.0, 0.3, 1.0, -0.2, 0.0, -2.0, 1.5]                                     # joints 4 and 6 far from home: go_home may turn them a long way
+    monkeypatch.setattr(node, '_current_joint_vector', lambda: list(far))
+    node._plan_joint_goal(list(acn.HOME_JOINTS), {}, allow_long=True)
+    assert node.moveit2.calls > 0
+    monkeypatch.setattr(node, '_current_joint_vector', lambda: list(far))
+    traj, why = node._plan_joint_goal([0.0, 0.3, 1.0, -0.2, 0.0, 1.5, 1.5], {})       # an ordinary goal 3.5 rad away on joint 6 is refused
+    assert traj is None and 'joint_6' in why

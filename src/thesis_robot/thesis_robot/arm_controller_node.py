@@ -709,11 +709,11 @@ class ArmControllerNode(Node):
 
     TURN_MARGIN_RAD = 0.4         # slack over MAX_JOINT_DELTA_RAD for the check that a joint-space plan does not turn a joint a long way
 
-    def _plan_joint_goal(self, goal, geom):
+    def _plan_joint_goal(self, goal, geom, allow_long=False):
         """Pilz PTP first (joint-space, repeatable); the collision-aware OMPL
         planner only as a fallback. Every candidate path must pass the FK
         check before it is allowed to execute. Returns (trajectory, reason)."""
-        if [round(float(v), 4) for v in goal] != [round(v, 4) for v in HOME_JOINTS]:
+        if not allow_long and [round(float(v), 4) for v in goal] != [round(v, 4) for v in HOME_JOINTS]:
             # (go_home goes to fixed joint angles and may turn a joint a long way; every other goal was chosen NEAR the current angles by _solve_goal_joints / unwrap_to_seed, within MAX_JOINT_DELTA_RAD)
             try:
                 start = self._current_joint_vector()
@@ -759,7 +759,7 @@ class ArmControllerNode(Node):
         try:
             quat_used = None
             if joint_positions is not None:
-                traj, why = self._plan_joint_goal(list(joint_positions), geom)
+                traj, why = self._plan_joint_goal(list(joint_positions), geom, allow_long=(label == 'go_home'))
                 quat_used = list(GRASP_QUAT_XYZW)
             elif cartesian:
                 # keep the orientation the tool ACTUALLY has: a remembered one goes stale after a
@@ -792,8 +792,11 @@ class ArmControllerNode(Node):
                     return False
             self.moveit2.execute(traj)
             if self.moveit2.wait_until_executed() is False:
-                self.get_logger().error(f'{label} not executed')
-                return False
+                if self._reached_modulo_2pi(traj):
+                    self.get_logger().warn(f'{label}: the controller reported the move unsuccessful, but every joint is at the goal (modulo 2*pi: a continuous joint past 180 deg) — accepting it')
+                else:
+                    self.get_logger().error(f'{label} not executed')
+                    return False
             time.sleep(0.3)
             self._tool_quat = self._actual_tool_quat(default=quat_used)
             return True
@@ -801,6 +804,22 @@ class ArmControllerNode(Node):
             self._last_move_error = str(e)
             self.get_logger().error(f'{label} failed: {e}')
             return False
+
+    AT_GOAL_TOL_RAD = 0.03        # a move reported unsuccessful counts as done when every joint is this close to the goal (modulo 2*pi)
+
+    def _reached_modulo_2pi(self, traj):
+        """True when the arm's joints equal the trajectory's last point to within AT_GOAL_TOL_RAD, each difference taken modulo 2*pi. A continuous joint commanded past 180 deg (joints 3 / 7 may go to 3.5 rad)
+        is reported by the driver wrapped to +-180 deg; the trajectory controller's goal check then sees a 2*pi error, never reports success and MoveIt stops the move at its time bound although the arm
+        is at the goal (2026-11-03; setting angle_wraparound at runtime did not change that)."""
+        try:
+            names = list(traj.joint_names)
+            last = list(traj.points[-1].positions)
+            goal = [last[names.index(j)] for j in JOINT_NAMES]
+            now = [self._js[j] for j in JOINT_NAMES]
+        except Exception:
+            return False
+        worst = max(abs((g - c + math.pi) % (2.0 * math.pi) - math.pi) for g, c in zip(goal, now))
+        return worst <= self.AT_GOAL_TOL_RAD
 
     # ── OUTCOME LOG (never allowed to affect a move) ─────────────────
     def _log_note(self, **kw):
@@ -2731,7 +2750,11 @@ class ArmControllerNode(Node):
             self.get_logger().warn(f'go_home: the pre-rise failed ({e}); trying the direct swing')
         for attempt in range(5):
             try:
-                if not self._guarded_move(geom, 'go_home', joint_positions=HOME_JOINTS):
+                try:
+                    home_goal = mu.unwrap_to_seed(HOME_JOINTS, self._current_joint_vector()) or list(HOME_JOINTS)      # joint 3 at 180 deg: the writing next to where it is (-3.14 from -2.98), not the 6 rad way round
+                except RuntimeError:
+                    home_goal = list(HOME_JOINTS)
+                if not self._guarded_move(geom, 'go_home', joint_positions=home_goal):
                     if self._blocked:
                         return False
                     raise RuntimeError('home trajectory not executed')
