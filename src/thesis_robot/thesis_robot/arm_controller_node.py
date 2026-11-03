@@ -1883,7 +1883,7 @@ class ArmControllerNode(Node):
         except RuntimeError as e:
             return self._refuse(str(e))
         goal[6] += delta
-        if abs(goal[6]) > mu.PLANNER_JOINT_LIMIT:
+        if abs(goal[6]) > mu.joint_limit(6):
             return self._refuse(f'rotating the wrist by {math.degrees(delta):+.0f} deg would exceed the joint-7 limit')
         return self._guarded_move(geom, f'rotate wrist {math.degrees(delta):+.0f} deg', joint_positions=goal)
 
