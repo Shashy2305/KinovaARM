@@ -123,7 +123,9 @@ def test_stage_take_closes_lifts_draws_straight_out_and_records_what_is_held(nod
     assert lift[3].endswith(': lift') and lift[2] == pytest.approx(p['grasp'][2] + node.TAKE_LIFT_M, abs=2e-3) and np.allclose(lift[:2], p['grasp'][:2], atol=2e-3)
     assert out[3].endswith(': out of the machine') and np.allclose(out[:2], p['pre'][:2], atol=2e-3) and out[2] == pytest.approx(lift[2])      # straight back along the axis, level
     assert node._held['label'] == 'cup' and node._held['tilt'] == pytest.approx(go.SIDE_TILT_DEG) and node._held['az'] == pytest.approx(p['az'])
-    assert node._held['grasp_z'] == pytest.approx(p['grasp'][2])
+    off = locs.surface_offset(locs.get('coffee_tray_grasp'), -0.0125)
+    assert off == pytest.approx(0.0203, abs=2e-3)                                         # the tray surface is ~2 cm above the table
+    assert node._held['grasp_z'] == pytest.approx(p['grasp'][2] - off)                    # recorded for the cup standing on the TABLE, so the place does not release it 2 cm up
 
 
 def test_stage_take_refuses_away_from_the_grasp_pose_or_when_a_grip_closes_on_air(node, side_world, files, monkeypatch):
@@ -378,3 +380,30 @@ def test_the_carry_to_the_tray_ignores_the_carried_cup_and_the_machine_but_not_a
     assert node._tray_carry_blocked((0.44, -0.19), (0.44, 0.05), 0.0, held) is None
     node.latest_scene['bottle_07'] = {'label': 'bottle', 'x': 0.55, 'y': 0.0, 'z': 0.20, 'confidence': 0.95, 'reachable': True, 'stale': False}          # a tall thing 11 cm beside the path
     assert node._tray_carry_blocked((0.44, -0.19), (0.44, 0.05), 0.0, held) == 'bottle'
+
+
+def test_the_surface_offset_is_the_taught_pad_height_over_the_table_pad_height_never_negative(files):
+    loc = locs.get('coffee_tray_grasp')
+    assert locs.surface_offset(dict(loc, surface_z=0.03), -0.0125) == 0.03                 # stated explicitly
+    assert locs.surface_offset(dict(loc, surface_z='x'), -0.0125) == pytest.approx(locs.surface_offset(loc, -0.0125))
+    low = dict(loc, pad_midpoint=[0.4, 0.2, 0.01])                                        # taught lower than a table pick: no negative offset
+    assert locs.surface_offset(low, -0.0125) == 0.0
+
+
+def test_a_cup_taken_from_the_tray_is_set_down_at_table_height(node, side_world, files, monkeypatch):
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    node._held = None
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['grasp']]))
+    monkeypatch.setattr(node, '_check_grip', lambda what: True)
+    assert node._go_to_location('coffee_tray_grasp', 'take') is True
+    held = dict(node._held)
+    side_world.verified.clear()
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['pre']]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_restore_held', lambda: None)
+    node._held = held
+    node.latest_scene = {}
+    assert node._place(0.45, 0.0) is True
+    lower = [v for v in side_world.verified if v[3] == 'lower'][0]
+    assert lower[2] == pytest.approx(held['grasp_z'] + node.SET_DOWN_GAP_M, abs=2e-3)
+    assert lower[2] < p['grasp'][2] - 0.015                                               # about 2 cm lower than it would have been (0.111): at the table, not above it

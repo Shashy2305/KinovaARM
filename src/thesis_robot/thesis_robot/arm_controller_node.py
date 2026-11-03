@@ -1091,7 +1091,14 @@ class ArmControllerNode(Node):
             return False
         if not self._check_grip(f'{name} (lifted)'):
             return False
-        self._set_held({'label': label, 'object_id': str(loc.get('object_id', name)), 'grasp_z': float(grasp[2]), 'tilt': float(go.SIDE_TILT_DEG),
+        # grasp_z is what the place routine sets the object down by: it must be the flange height for the object standing on the TABLE. In the tray the object stood on a surface 2 cm higher, so subtract it
+        # (2026-11-02: the cup was released 2 cm above the table and fell over).
+        try:
+            geom_, _ = sg.load_geometry()
+            lift_off = locs.surface_offset(loc, geom_['table_top_z']) if geom_ else 0.0
+        except Exception:
+            lift_off = 0.0
+        self._set_held({'label': label, 'object_id': str(loc.get('object_id', name)), 'grasp_z': float(grasp[2]) - lift_off, 'tilt': float(go.SIDE_TILT_DEG),
                         'az': float(poses['az']), 'j7': self._wrist_angle_now()})
         if not self._move_verified(float(pre[0]), float(pre[1]), lifted, f'{name}: out of the machine', min_flange_z=float(grasp[2]) - 0.02):
             return False
@@ -1100,6 +1107,7 @@ class ArmControllerNode(Node):
         held = dict(self._held or {})
         held['j7'] = self._wrist_angle_now()
         self._set_held(held)
+        self.get_logger().info(f'go_to_location {name}: holding the {label}; it will be set down by grasp height {held["grasp_z"]:.3f} (the tray surface is {lift_off * 100:.1f} cm above the table)')
         return True
 
     def _tool_is_horizontal(self):

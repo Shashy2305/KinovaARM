@@ -108,3 +108,14 @@ def coffee_config(path=None):
     except (TypeError, ValueError, IndexError):
         return dict(COFFEE_DEFAULTS)
     return cfg
+
+
+def surface_offset(loc, table_top_z):
+    """How far above the TABLE the surface the object stands on lies (the coffee tray: about 2 cm): the taught pad height minus the pad height of the same object standing on the table. A location may
+    state it as surface_z. Never negative."""
+    if loc.get('surface_z') is not None:
+        try:
+            return max(0.0, float(loc['surface_z']))
+        except (TypeError, ValueError):
+            pass
+    return max(0.0, float(loc['pad_midpoint'][2]) - go.side_pad_z(str(loc.get('object_label', 'cup')), table_top_z))
