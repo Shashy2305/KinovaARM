@@ -740,9 +740,11 @@ class LLMPlannerNode(Node):
                     self._publish_status(f'REJECTED: {gone}')
                     return
             attempts_used = 0
+            grammar_planned = False
             if intent is not None and bool(self.get_parameter('grammar_first').value):
                 direct = cg.build_plan(intent, prompt_scene)
                 if direct:
+                    grammar_planned = True               # an exact plan: the model-padding trim below must not strip its home steps
                     parsed = {'reasoning': f'planned by the command grammar ({intent["kind"]}); the language model was not needed', 'plan': direct}
                     self.get_logger().info(f'plan built by the command grammar ({intent["kind"]}): no model call')
             for attempt in ((1, 2, 3) if parsed is None else ()):
@@ -841,10 +843,12 @@ class LLMPlannerNode(Node):
                 self.get_logger().warn(f'Plan REJECTED: {why_held}')
                 self._publish_status(f'REJECTED: {why_held}')
                 return
-            plan = drop_home_around_pick(plan, command)
+            if not grammar_planned:
+                plan = drop_home_around_pick(plan, command)
             plan = fix_move_to_heights(plan, self.latest_scene, z_floor)
             plan = fix_pick_heights(plan, self.latest_scene, z_floor)
-            plan = trim_pick_extras(plan, command)
+            if not grammar_planned:
+                plan = trim_pick_extras(plan, command)
             plan = normalize_place_here(plan, command)
             plan = normalize_place_aside(plan, command, self.latest_scene)
             plan = fix_place_targets(plan, self.latest_scene)

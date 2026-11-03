@@ -336,12 +336,15 @@ def build_plan(intent, scene):
         if cup is None or locs.get(cfg['tray_location']) is None:
             return None
         tray = cfg['tray_location']
-        return [{'action': 'pick', 'object_id': cup[0], 'approach_z': 0.35, 'side_az': cfg['pick_az']},
+        # Home first and home last: the routine's own moves leave the tool horizontal, and a pick that starts from there has no solution for its first straight rise (2026-11-02, second live run).
+        return [{'action': 'go_home'},
+                {'action': 'pick', 'object_id': cup[0], 'approach_z': 0.35, 'side_az': cfg['pick_az']},
                 {'action': 'go_to_location', 'name': tray, 'stage': 'put'},
                 {'action': 'wait', 'seconds': cfg['wait_s']},
                 {'action': 'go_to_location', 'name': tray, 'stage': 'in'},
                 {'action': 'go_to_location', 'name': tray, 'stage': 'take'},
-                {'action': 'place', 'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1]}]
+                {'action': 'place', 'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1]},
+                {'action': 'go_home'}]
     if k == 'sequence':
         out = []
         for item in intent['items']:
