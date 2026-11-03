@@ -1,7 +1,9 @@
-# The coffee routine ("give me coffee"). serve_xy is where the cup stands to be picked up and where it is delivered: chosen 2026-11-02 from a reach study (the cup is held from the side toward pick_az,
-# and the tray can only be entered toward 90 deg; a side pick toward 90 has an IK solution at about (0.40..0.45, 0.0) and y=0.10, not at y=-0.10 where the earlier drop-off was).
-tray_location: coffee_tray_grasp
-serve_xy: [0.45, 0.0]
-wait_s: 15
 pick_az: 90
 serve_search_m: 0.12
+serve_xy:
+- 0.45
+- 0.0
+tray_location: coffee_tray_grasp
+wait_s: 15
+window_x_m: 0.03
+window_y_m: 0.012
