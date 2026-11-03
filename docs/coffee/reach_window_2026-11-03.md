@@ -44,3 +44,14 @@ Median margin (mm over the limit) along the chain, one IK ask per pose, was erra
 | 0.49 | 0 | 0 | 3 | 3 | 2 |
 
 Coffee settings from this: serve_xy (0.44, 0.03), window x +-3 cm, y +-3 cm.
+
+## Trajectory controller wraparound (2026-11-03, 14:00)
+
+With joints 3 / 7 allowed to 3.5 rad (see above), a move across +-180 deg commands e.g. +3.30 rad while the Kortex driver reports -2.98 rad. The joint_trajectory_controller then saw a 2*pi error against its 0.02 rad goal tolerance, never reported success, and MoveIt stopped the move at its time bound (`TIMED_OUT`, shown by pymoveit2 as ABORTED) although the arm had reached the target (live run 16, hover over (0.399, 0.003, 0.367)).
+Fix, applied at runtime on the running controller with the operator's agreement:
+
+    ros2 param set /joint_trajectory_controller gains.joint_3.angle_wraparound true
+    ros2 param set /joint_trajectory_controller gains.joint_7.angle_wraparound true
+
+This is NOT persistent: restarting robot_bringup (the controller) resets it to false. Re-apply it after every bringup restart (or put `angle_wraparound: true` for joint_3 / joint_7 under `joint_trajectory_controller.gains` in kortex_moveit_config/.../ros2_controllers.yaml). Joints 1 and 5 keep false (they never need more than +-2.88).
+Symptom if it is missing: a move that physically completes but is reported ABORTED after ~12 s, with `Controller is taking too long to execute trajectory` in robot_bringup.log.
