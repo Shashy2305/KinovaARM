@@ -897,31 +897,37 @@ class ArmControllerNode(Node):
         az, high, pre = poses['az'], poses['high'], poses['pre']
         # Same route as a side pick: from the HOME pose go to an upright hover over the flange's place at the high pre-pose (far from the machine: nothing hangs beside it), then swing. From an odd
         # parked pose (joints near their limits) the swing has no solution, so go home first.
-        self.get_logger().info(f'go_to_location {name}: going home first, then an upright hover over ({high[0]:.3f},{high[1]:.3f})')
-        if not self._safe_home():
-            return False
-        hover_z = min(0.38, ws.HOVER_MAX_Z)
-        if not self._move_to(float(high[0]), float(high[1]), hover_z):
-            return False
         goal, why = None, None
-        for flip in (False, True):
-            try:
-                goal_i, q_used = self._solve_goal_joints([float(v) for v in high], go.side_quat(az, flip), False)
-            except Exception as e:
-                why = e
-                continue
-            sol = self._ik(goal_i, [float(v) for v in pre], q_used, 0.3)
-            if sol is None:
-                why = 'the approach pose has no IK solution from the high pre-pose'
-                continue
-            goal = goal_i
-            break
+        for attempt in range(self.PRE_HOVER_TRIES):
+            # The IK picks a branch at random for the big move home -> hover; some branches (2026-11-03: joints 1/3/5 at 51/116/-143 deg) leave no usable solution for the swing. Go home and try again.
+            self.get_logger().info(f'go_to_location {name}: going home first, then an upright hover over ({high[0]:.3f},{high[1]:.3f})' + (f' (try {attempt + 1}: the last hover left no way to the approach pose)' if attempt else ''))
+            if not self._safe_home():
+                return False
+            hover_z = min(0.38, ws.HOVER_MAX_Z)
+            if not self._move_to(float(high[0]), float(high[1]), hover_z):
+                return False
+            for flip in (False, True):
+                try:
+                    goal_i, q_used = self._solve_goal_joints([float(v) for v in high], go.side_quat(az, flip), False)
+                except Exception as e:
+                    why = e
+                    continue
+                sol = self._ik(goal_i, [float(v) for v in pre], q_used, 0.3)
+                if sol is None:
+                    why = 'the approach pose has no IK solution from the high pre-pose'
+                    continue
+                goal = goal_i
+                break
+            if goal is not None:
+                break
         if goal is None:
             return self._refuse(f'go_to_location: {name}: no way to reach the approach pose ({why}); the arm is waiting at the hover')
         self.get_logger().info(f'go_to_location {name}: swinging to the high pre-pose (azimuth {az:.0f}), then down to the approach pose {np.round(pre, 3).tolist()}; fingertips {gap * 100:.1f} cm from the {what}')
         if not self._guarded_move(geom, f'{name}: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
             return False
         return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: down to the approach pose', min_flange_z=float(pre[2]) - 0.02)
+
+    PRE_HOVER_TRIES = 3           # home -> hover -> solve attempts of the 'pre' stage before it refuses
 
     def _go_in(self, name, loc, poses):
         """Stage 'in': from the approach pose, straight in along the tool axis to the taught grasp pose, gripper OPEN (it does not close). Refuses unless the arm is already at the approach pose (so a

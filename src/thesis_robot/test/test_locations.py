@@ -66,6 +66,34 @@ def test_go_to_location_swings_to_the_high_pre_pose_and_comes_down_in_front_of_t
     assert np.allclose(v[:3], p['pre'], atol=2e-3) and v[3] == 'coffee_tray_grasp: down to the approach pose'
 
 
+def test_the_pre_stage_goes_home_and_hovers_again_when_a_hover_branch_leaves_no_way_to_the_approach_pose(node, side_world, files, monkeypatch):
+    # 2026-11-03: the hover came out in an odd joint branch (joints 1/3/5 at 51/116/-143 deg), the swing had no solution, the stage refused; a second go home -> hover is a fresh branch
+    side_world.guarded.clear()
+    side_world.verified.clear()
+    real = node._solve_goal_joints
+    calls = {'n': 0}
+
+    def flaky(position, quat, allow_yaw):
+        calls['n'] += 1
+        if calls['n'] <= 2:                                                                 # both wrist orientations fail on the first hover
+            raise RuntimeError('no collision-free IK solution for that pose')
+        return real(position, quat, allow_yaw)
+    monkeypatch.setattr(node, '_solve_goal_joints', flaky)
+    assert node._go_to_location('coffee_tray_grasp') is True
+    assert side_world.guarded.count('go_home') == 2 and side_world.guarded[-1] == 'coffee_tray_grasp: swing to the high pre-pose'
+
+
+def test_the_pre_stage_still_refuses_after_its_tries_and_does_not_swing(node, side_world, files, monkeypatch):
+    side_world.guarded.clear()
+    side_world.verified.clear()
+
+    def never(position, quat, allow_yaw):
+        raise RuntimeError('no collision-free IK solution for that pose')
+    monkeypatch.setattr(node, '_solve_goal_joints', never)
+    assert node._go_to_location('coffee_tray_grasp') is False
+    assert side_world.guarded.count('go_home') == node.PRE_HOVER_TRIES and not any('swing' in g for g in side_world.guarded)
+
+
 def test_go_to_location_refuses_without_moving_for_a_missing_location_a_held_object_or_a_close_obstacle(node, side_world, files, monkeypatch):
     lp, op = files
     side_world.guarded.clear()
