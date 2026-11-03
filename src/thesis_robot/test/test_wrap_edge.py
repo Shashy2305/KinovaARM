@@ -71,3 +71,35 @@ def test_go_home_may_still_turn_joints_a_long_way(node, monkeypatch):
 
 def test_the_limits_agree_with_the_wider_joints(node):
     assert mu.joint_limit(2) > math.pi and mu.joint_limit(6) > math.pi and acn.ArmControllerNode.EDGE_BAND_RAD < 0.3
+
+
+# ---- equivalent seeds: the IK is not indifferent to how the same angle is written ----------------------------------------------------------------------------
+def test_equivalent_seeds_only_appear_for_joints_3_and_7_near_the_edge():
+    plain = [0.0, 0.3, 1.0, -1.0, 0.2, 0.5, 1.5]
+    assert mu.equivalent_seeds(plain) == [plain]                                                                               # nothing near 180 deg: one seed, as before
+    near7 = [0.0, 0.3, 1.0, -1.0, 0.2, 0.5, -2.98]
+    seeds = mu.equivalent_seeds(near7)
+    assert seeds[0] == near7 and len(seeds) == 2 and seeds[1][6] == pytest.approx(-2.98 + 2 * math.pi) and seeds[1][:6] == near7[:6]
+    both = [0.0, 0.3, 3.0, -1.0, 0.2, 0.5, -3.0]
+    seeds = mu.equivalent_seeds(both)
+    assert len(seeds) == 4 and seeds[0] == both and all(abs(v[2]) <= 3.5 and abs(v[6]) <= 3.5 for v in seeds)
+    assert mu.equivalent_seeds([3.0, 0, 0, 0, 3.0, 0, 0]) == [[3.0, 0, 0, 0, 3.0, 0, 0]]                                         # joints 1 and 5 keep the old limit: no variants
+    out = mu.equivalent_seeds([0, 0, -3.3, 0, 0, 0, 0])
+    assert len(out) == 2 and out[1][2] == pytest.approx(-3.3 + 2 * math.pi)                                                    # -3.3 is also 2.98: both writings are inside 3.5
+    assert mu.equivalent_seeds([0, 0, 2.0, 0, 0, 0, 0]) == [[0, 0, 2.0, 0, 0, 0, 0]]                                           # well inside: no variant
+
+
+def test_the_goal_solver_tries_the_other_writing_of_the_wrist_angle_and_finds_the_clean_solution(node, monkeypatch):
+    node.dry_run, node.moveit2 = False, object()
+    cur = [0.1, 0.3, 1.0, -1.0, 0.2, 0.5, -2.98]                                                                               # joint 7 right at the edge, written on the negative side
+    monkeypatch.setattr(node, '_current_joint_vector', lambda: list(cur))
+    asked = []
+    good = [0.1, 0.3, 1.0, -1.0, 0.2, 0.5, 3.30]                                                                               # the clean answer, written on the positive side
+
+    def ik(seed, position, quat, timeout_s=0.15):
+        asked.append(round(seed[6], 2))
+        return list(good) if seed[6] > 0 else [0.1, 0.3, 1.0, -1.0, 0.2, 0.5 + 3.5, 1.0]                                      # the negative writing comes back as a far-away branch
+    monkeypatch.setattr(node, '_ik', ik)
+    goal, _q = node._solve_goal_joints([0.4, 0.0, 0.1], (0, 0, 0, 1), False)
+    assert goal[6] == pytest.approx(-2.98, abs=0.01) and max(abs(a - b) for a, b in zip(goal, cur)) < 0.1                       # unwrapped back next to where the arm is: a tiny move
+    assert any(v > 0 for v in asked) and any(v < 0 for v in asked)                                                              # both writings were tried

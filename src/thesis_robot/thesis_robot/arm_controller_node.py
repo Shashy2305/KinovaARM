@@ -658,12 +658,13 @@ class ArmControllerNode(Node):
         solution; if the best one found is still too big, sweep again with a
         longer per-solve timeout before refusing."""
         seed = self._current_joint_vector()
+        seeds = mu.equivalent_seeds(seed)                  # (just [seed] unless joint 3 / 7 sits near +-180 deg)
         best = None
         for timeout_s in (0.15, 0.4):
             for yaw in (mu.yaw_candidates_deg() if allow_yaw else [0]):
                 q = mu.rotate_about_tool_z(quat, yaw)
-                for _ in range(2):
-                    sol = self._ik(seed, position, q, timeout_s)
+                for _, ik_seed in ((n, v) for n in range(2) for v in seeds):
+                    sol = self._ik(ik_seed, position, q, timeout_s)
                     if sol is None:
                         continue
                     sol = mu.unwrap_to_seed(sol, seed)

@@ -84,6 +84,23 @@ def unwrap_to_seed(solution, seed, limit=None):
     return out
 
 
+EDGE_SEED_BAND_RAD = 2.6      # a widened joint (3 / 7) this far from zero has an equivalent angle (+-2*pi) that is also inside its limit
+
+
+def equivalent_seeds(seed):
+    """The seed first, then the seeds that describe the SAME arm pose with joint 3 and/or joint 7 written 2*pi apart (only for a joint near +-pi, where the other writing is still inside
+    joint_limit). The IK service is not indifferent to how the same angle is written (2026-11-03: the same wrist pose, seeded -2.98 rad, was solved cleanly 1 time in 10, seeded +3.30 rad 10 in 10)."""
+    variants = [[float(v) for v in seed]]
+    for i in CONTINUOUS_JOINT_IDX:
+        if joint_limit(i) <= PLANNER_JOINT_LIMIT or abs(seed[i]) < EDGE_SEED_BAND_RAD:
+            continue
+        other = seed[i] - math.copysign(2.0 * math.pi, seed[i])
+        if abs(other) > joint_limit(i):
+            continue
+        variants += [v[:i] + [float(other)] + v[i + 1:] for v in variants]
+    return variants
+
+
 def joint_deltas(solution, seed):
     return [abs(a - b) for a, b in zip(solution, seed)]
 
