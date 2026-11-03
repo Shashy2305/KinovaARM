@@ -94,6 +94,24 @@ def test_the_pre_stage_still_refuses_after_its_tries_and_does_not_swing(node, si
     assert side_world.guarded.count('go_home') == node.PRE_HOVER_TRIES and not any('swing' in g for g in side_world.guarded)
 
 
+def test_the_hover_move_is_asked_again_only_when_it_was_refused_without_moving(node, monkeypatch):
+    pose = {'p': [0.0, 0.0, 0.5]}
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), list(pose['p'])))
+    results = iter([False, False, True])                                                    # refused twice (2.7 rad > 2.6), then it works
+    monkeypatch.setattr(node, '_move_to', lambda x, y, z, **kw: next(results))
+    assert node._hover_over(0.44, -0.11, 0.38) is True
+    monkeypatch.setattr(node, '_move_to', lambda x, y, z, **kw: False)
+    assert node._hover_over(0.44, -0.11, 0.38) is False                                     # refused every time: gives up after HOVER_MOVE_TRIES
+    calls = {'n': 0}
+
+    def moved_then_failed(x, y, z, **kw):
+        calls['n'] += 1
+        pose['p'] = [0.1, 0.1, 0.45]                                                        # the arm moved before the failure: never repeat it
+        return False
+    monkeypatch.setattr(node, '_move_to', moved_then_failed)
+    assert node._hover_over(0.44, -0.11, 0.38) is False and calls['n'] == 1
+
+
 def test_go_to_location_refuses_without_moving_for_a_missing_location_a_held_object_or_a_close_obstacle(node, side_world, files, monkeypatch):
     lp, op = files
     side_world.guarded.clear()

@@ -904,7 +904,7 @@ class ArmControllerNode(Node):
             if not self._safe_home():
                 return False
             hover_z = min(0.38, ws.HOVER_MAX_Z)
-            if not self._move_to(float(high[0]), float(high[1]), hover_z):
+            if not self._hover_over(float(high[0]), float(high[1]), hover_z):
                 return False
             for flip in (False, True):
                 try:
@@ -926,6 +926,26 @@ class ArmControllerNode(Node):
         if not self._guarded_move(geom, f'{name}: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
             return False
         return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: down to the approach pose', min_flange_z=float(pre[2]) - 0.02)
+
+    HOVER_MOVE_TRIES = 3          # the move from home to the hover is refused before any motion when the random IK branch needs too big a joint change: ask again
+
+    def _hover_over(self, x, y, z):
+        """move_to the hover, asking again when the move was refused WITHOUT the arm moving (the IK's random branch needed too big a joint change). A move that started and failed is not repeated."""
+        for attempt in range(self.HOVER_MOVE_TRIES):
+            try:
+                _, before = self._tf_pose(BASE_LINK, EE_LINK)
+            except Exception:
+                return self._move_to(x, y, z)
+            if self._move_to(x, y, z):
+                return True
+            try:
+                _, after = self._tf_pose(BASE_LINK, EE_LINK)
+            except Exception:
+                return False
+            if float(np.linalg.norm(np.array(after[:3], float) - np.array(before[:3], float))) > 0.01:
+                return False
+            self.get_logger().warn(f'hover: refused without moving (try {attempt + 1} of {self.HOVER_MOVE_TRIES})')
+        return False
 
     PRE_HOVER_TRIES = 3           # home -> hover -> solve attempts of the 'pre' stage before it refuses
 
