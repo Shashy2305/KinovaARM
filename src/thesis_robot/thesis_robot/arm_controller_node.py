@@ -651,6 +651,25 @@ class ArmControllerNode(Node):
         sol = dict(zip(res.solution.joint_state.name, res.solution.joint_state.position))
         return [sol[j] for j in JOINT_NAMES]
 
+    CHAIN_IK_TRIES = 4              # IK asks per pose of a side pick's chain, looking for a branch whose links clear the table
+    CHAIN_LINK_MARGIN_M = 0.003     # ... by at least this much over the safety limit (a branch 1 mm over it is refused at execution when the real path differs a little)
+
+    def _chain_links_clear(self, q_from, q_to, geom):
+        """(True, 'ok') when every guarded link stays CHAIN_LINK_MARGIN_M above its table limit at q_to and half way (joint space) between q_from and q_to; else (False, reason). When the forward
+        kinematics cannot be asked it passes: the check at execution still stands."""
+        try:
+            mid = mu.unwrap_to_seed(list(q_to), list(q_from))
+            configs = [list(q_to)] + ([[(a + b) / 2.0 for a, b in zip(q_from, mid)]] if mid is not None else [])
+            for q in configs:
+                pos = self._fk_link_positions(JOINT_NAMES, q)
+                lowered = {link: (x, y, z - self.CHAIN_LINK_MARGIN_M) for link, (x, y, z) in pos.items()}
+                ok, why = sg.check_link_positions(lowered, geom)
+                if not ok:
+                    return False, why
+        except Exception as e:
+            self.get_logger().warn(f'chain link check skipped ({e})')
+        return True, 'ok'
+
     def _solve_goal_joints(self, position, quat, allow_yaw):
         """The IK solution (and tool orientation) that moves the joints the
         least from where the arm is now -- see motion_utils. The IK solver
@@ -1623,13 +1642,24 @@ class ArmControllerNode(Node):
                     else:
                         chain += [('carry to the place spot', place_fl + np.array([0.0, 0.0, 0.10])), ('set-down at the place spot', place_fl)]
                 for name, pos in ([] if bad else chain):
-                    sol = self._ik(seed, [float(v) for v in pos], q_used, 0.3)
-                    if sol is not None and name.startswith(('carry', 'set-down')):
-                        sol = mu.unwrap_to_seed(sol, seed)
-                        if sol is None or max(mu.joint_deltas(sol, seed)) > mu.MAX_JOINT_DELTA_RAD:
-                            sol = None                                    # reachable only with a joint swing the carry would refuse
+                    sol, why_low = None, None
+                    for _try in range(self.CHAIN_IK_TRIES):
+                        cand = self._ik(seed, [float(v) for v in pos], q_used, 0.3)
+                        if cand is not None and name.startswith(('carry', 'set-down')):
+                            cand = mu.unwrap_to_seed(cand, seed)
+                            if cand is None or max(mu.joint_deltas(cand, seed)) > mu.MAX_JOINT_DELTA_RAD:
+                                cand = None                                # reachable only with a joint swing the carry would refuse
+                        if cand is None:
+                            continue
+                        # The IK picks a branch at random and some leave the forearm / wrist links a millimetre under their table limit (2026-11-03: three live picks refused at execution for 0.067 vs
+                        # 0.068 m). Look at the arm links on this branch NOW, before the swing, and ask again for a clear one.
+                        ok_links, why_low = self._chain_links_clear(seed, cand, geom)
+                        if ok_links:
+                            sol = cand
+                            break
+                        sol = None
                     if sol is None:
-                        bad = name
+                        bad = name + (f' ({why_low})' if why_low else '')
                         break
                     seed = sol
                 if bad:

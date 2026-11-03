@@ -60,6 +60,7 @@ class World:
             '_check_grip': self.check_grip,
             '_move_verified': self.move_verified,
             '_transform_to_robot_frame': lambda x, y, z: (x, y, z),
+            '_chain_links_clear': lambda q_from, q_to, geom: (True, 'ok'),        # (forward kinematics is not faked here; test_chain_clearance.py tests the check itself)
         }.items():
             monkeypatch.setattr(node, name, fn)
         monkeypatch.setattr(acn.sg, 'load_geometry', lambda *a, **k: (TABLE, None))
@@ -796,7 +797,7 @@ def test_a_side_direction_whose_lift_has_no_solution_is_skipped_for_the_next_one
 
     def ik(seed, pos, quat, timeout_s=0.15):
         state['n'] += 1
-        return None if state['n'] % 3 == 0 and state['n'] <= 3 else [0.0] * 7           # the 3rd call (the lift of the first direction) fails once
+        return None if 3 <= state['n'] < 3 + acn.ArmControllerNode.CHAIN_IK_TRIES else [0.0] * 7      # the lift of the first direction fails every time it is asked (a pose is asked up to CHAIN_IK_TRIES times)
     monkeypatch.setattr(node, '_ik', ik)
     assert run_cup_pick(node) is True
     assert state['n'] >= 6                                                              # the first direction was abandoned, the second validated in full

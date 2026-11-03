@@ -1,9 +1,9 @@
 pick_az: 90
 serve_search_m: 0.12
 serve_xy:
-- 0.41
+- 0.44
 - 0.03
 tray_location: coffee_tray_grasp
 wait_s: 15
 window_x_m: 0.03
-window_y_m: 0.05
+window_y_m: 0.03
