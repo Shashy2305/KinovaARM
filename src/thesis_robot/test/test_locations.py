@@ -329,9 +329,10 @@ def test_give_me_coffee_is_recognised_in_its_usual_forms():
 def test_the_coffee_plan_is_pick_put_wait_in_take_place_with_the_configured_spot_and_wait(coffee_files):
     intent = cg.parse('give me coffee')
     plan = cg.build_plan(intent, COFFEE_SCENE)
-    assert [(s['action'], s.get('stage')) for s in plan] == [('go_home', None), ('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None), ('go_home', None)]
-    assert plan[1]['object_id'] == 'cup_03' and plan[1]['side_az'] == 90.0
-    assert plan[3]['seconds'] == 15.0 and (plan[6]['x'], plan[6]['y']) == (0.45, 0.0)
+    assert [(s['action'], s.get('stage')) for s in plan] == [('go_home', None), ('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None), ('go_home', None), ('check_placed', None)]
+    assert plan[1]['object_id'] == 'cup_03' and plan[1]['side_az'] == 90.0 and 'near' not in plan[1]                 # a cup inside the window is picked as before, no staging
+    assert plan[3]['seconds'] == 15.0 and (plan[6]['x'], plan[6]['y']) == (0.45, 0.0) and plan[6]['learn'] == 'serve'
+    assert plan[8]['label'] == 'cup' and (plan[8]['x'], plan[8]['y']) == (0.45, 0.0)                                  # the last step looks for the cup where it was put
     assert cg.check(intent, plan, COFFEE_SCENE) == (True, '') and cg.no_reachable_reason(intent, COFFEE_SCENE) is None
     assert cg.check(intent, plan[:3], COFFEE_SCENE)[0] is False
 
@@ -339,9 +340,11 @@ def test_the_coffee_plan_is_pick_put_wait_in_take_place_with_the_configured_spot
 def test_the_coffee_command_is_refused_before_anything_moves_without_a_cup_at_the_spot_or_a_taught_tray(coffee_files, tmp_path, monkeypatch):
     intent = cg.parse('give me coffee')
     no_cup = {k: v for k, v in COFFEE_SCENE.items() if k != 'cup_03'}
-    assert 'no cup at the serving spot' in cg.no_reachable_reason(intent, no_cup)
-    far = dict(COFFEE_SCENE, cup_03=dict(COFFEE_SCENE['cup_03'], x=0.30, y=-0.30))
-    assert 'no cup at the serving spot' in cg.no_reachable_reason(intent, far)
+    assert 'no cup the arm can reach' in cg.no_reachable_reason(intent, no_cup)
+    unreachable = dict(COFFEE_SCENE, cup_03=dict(COFFEE_SCENE['cup_03'], x=0.30, y=-0.60, reachable=False))
+    assert 'no cup the arm can reach' in cg.no_reachable_reason(intent, unreachable)
+    far = dict(COFFEE_SCENE, cup_03=dict(COFFEE_SCENE['cup_03'], x=0.30, y=-0.30))                                    # 2026-11-03: a reachable cup anywhere is fine, it is brought to the spot first
+    assert cg.no_reachable_reason(intent, far) is None
     monkeypatch.setattr(locs, 'LOCATIONS_FILE', str(tmp_path / 'missing.yaml'))
     assert 'has not been taught' in cg.no_reachable_reason(intent, COFFEE_SCENE)
 
@@ -490,7 +493,7 @@ def test_the_whole_coffee_plan_runs_through_the_executor_in_a_dry_run(node, coff
         node._execute(json.dumps({'command': 'give me coffee', 'plan': plan, 'model': 'grammar'}))
     finally:
         node.dry_run = False
-    assert steps_seen == [('go_home', None), ('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None), ('go_home', None)]
+    assert steps_seen == [('go_home', None), ('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None), ('go_home', None), ('check_placed', None)]
 
 
 def test_the_carry_to_the_tray_ignores_the_carried_cup_and_the_machine_but_not_a_mouse_on_the_way(node, side_world, monkeypatch):
@@ -537,7 +540,7 @@ def test_a_cup_taken_from_the_tray_is_set_down_at_table_height(node, side_world,
 def test_the_model_padding_cleaners_would_strip_the_coffee_routines_home_steps_so_the_planner_skips_them_for_grammar_plans():
     from thesis_robot import llm_planner_node as lp
     plan = cg.build_plan(cg.parse('give me coffee'), COFFEE_SCENE)
-    assert plan[0]['action'] == 'go_home' and plan[-1]['action'] == 'go_home'
+    assert plan[0]['action'] == 'go_home' and plan[-2]['action'] == 'go_home'
     stripped = lp.trim_pick_extras(lp.drop_home_around_pick(list(plan), 'give me coffee'), 'give me coffee')
     assert [s['action'] for s in stripped].count('go_home') < 2                      # why the planner must not run these on a plan the grammar built itself
     src = open(lp.__file__).read()

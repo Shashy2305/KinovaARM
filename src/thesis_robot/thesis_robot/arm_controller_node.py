@@ -14,6 +14,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, JointState
 from std_msgs.msg import String
 
+from thesis_robot import coffee_learn as learn
 from thesis_robot import locations as locs
 from thesis_robot import motion_utils as mu
 from thesis_robot import outcome_log as ol
@@ -145,6 +146,7 @@ class ArmControllerNode(Node):
         self.center_max_iter = self.get_parameter('center_max_iter').value
         self.hover_above_m = self.get_parameter('hover_above_m').value
         self.require_wrist_center = self.get_parameter('require_wrist_center').value
+        self._learn_commanded = {}   # learn key -> (x, y) the arm was last COMMANDED to put an object at (the measurement after the run is compared with it)
         self._gentle_scale = 1.0   # < 1 while an object is being set down or let go: the retimer then slows every move (see _gentle)
         self._held = None          # {'label', 'object_id', 'grasp_z'} while carrying something (use _set_held: it tells the planner)
         self._wrist_dets = None    # (monotonic receive time, {frame_id, stamp, detections})
@@ -322,9 +324,19 @@ class ArmControllerNode(Node):
         elif act == 'pick':
             approach_z = step.get('approach_z')
             self._pick_side_az = float(step['side_az']) if step.get('side_az') is not None else None
+            oid = step.get('object_id')
+            if step.get('near') and not (self.dry_run or self.moveit2 is None):
+                # an object that was moved (the staged cup) is found again by where it is: its id changes when the cameras see it again
+                try:
+                    found = self._nearest_object(step.get('label') or (self.latest_scene.get(oid) or {}).get('label'), float(step['near'][0]), float(step['near'][1]), within=self.NEAR_PICK_M)
+                except (TypeError, ValueError, IndexError):
+                    found = None
+                if found is not None:
+                    if found[0] != oid:
+                        self.get_logger().info(f'pick: the {found[1].get("label")} near ({step["near"][0]:.2f},{step["near"][1]:+.2f}) is now {found[0]} (it was {oid})')
+                    oid = found[0]
             try:
-                return self._pick(step.get('object_id'),
-                                  0.15 if approach_z is None else approach_z)
+                return self._pick(oid, 0.15 if approach_z is None else approach_z)
             finally:
                 self._pick_side_az = None
         elif act == 'wait':
@@ -345,8 +357,23 @@ class ArmControllerNode(Node):
             return self._withdraw()
         elif act == 'go_to_location':
             return self._go_to_location(step.get('name'), step.get('stage', 'pre'))
+        elif act == 'stage_object':
+            return self._stage_object(step)
+        elif act == 'check_placed':
+            return self._check_placed(step)
         elif act == 'place':
-            return self._place(step.get('x'), step.get('y'), step.get('z'), bool(step.get('here')))
+            x, y = step.get('x'), step.get('y')
+            if step.get('learn') and x is not None and y is not None and not step.get('here'):
+                # the learned placement error is subtracted: the arm is commanded to where the object should land MINUS how far it has been landing off
+                try:
+                    cx, cy = learn.corrected(str(step['learn']), (float(x), float(y)))
+                    if (cx, cy) != (float(x), float(y)):
+                        self.get_logger().info(f'place: commanded to ({cx:.3f},{cy:+.3f}) for a target of ({float(x):.3f},{float(y):+.3f}) (learned placement offset)')
+                    self._learn_commanded[str(step['learn'])] = (cx, cy)
+                    x, y = cx, cy
+                except (TypeError, ValueError):
+                    pass
+            return self._place(x, y, step.get('z'), bool(step.get('here')))
         elif act == 'open_gripper':
             return self._open_gripper()
         elif act == 'close_gripper':
@@ -820,6 +847,102 @@ class ArmControllerNode(Node):
         except Exception as e:
             self.get_logger().warn(f'could not read the tool orientation from TF ({e})')
             return list(default) if default is not None else list(self._tool_quat)
+
+    NEAR_PICK_M = 0.10            # a pick by position takes the nearest fresh object of the class within this distance
+    SCENE_SETTLE_S = 3.5          # after the arm has gone home: time for the cameras to see what it set down
+
+    def _nearest_object(self, label, x, y, within=None):
+        """(object_id, entry, distance) of the fresh object of this class nearest to (x, y) in the scene, or None. `within` limits the distance."""
+        best = None
+        for oid, o in self.latest_scene.items():
+            if not isinstance(o, dict) or o.get('label') != label or o.get('stale') or o.get('x') is None or o.get('y') is None:
+                continue
+            d = math.hypot(float(o['x']) - x, float(o['y']) - y)
+            if (within is None or d <= within) and (best is None or d < best[2]):
+                best = (oid, o, d)
+        return best
+
+    def _settle_scene(self):
+        if not (self.dry_run or self.moveit2 is None):
+            time.sleep(self.SCENE_SETTLE_S)
+
+    def _stage_object(self, step):
+        """Bring an object (the coffee cup) to a spot where the next step can reach it: pick it up wherever it is (any grasp that works), put it down at (x, y) (corrected by what earlier runs learned),
+        go home so the cameras see it, look it up again, and repeat (up to `tries`) until it stands within tol_x / tol_y of the spot. An object already there is left alone. Stops, with nothing
+        held, when a pick or place fails or the object is not found."""
+        label = str(step.get('label') or 'cup')
+        try:
+            tx, ty = float(step['x']), float(step['y'])
+            tol_x, tol_y = float(step.get('tol_x', 0.04)), float(step.get('tol_y', 0.02))
+            tries = max(1, min(5, int(step.get('tries', 3))))
+        except (KeyError, TypeError, ValueError):
+            return self._refuse('stage_object: needs a label and a numeric x / y')
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] stage_object: bring the {label} to ({tx:.2f},{ty:+.2f}) if it is not within {tol_x * 100:.0f} x {tol_y * 100:.0f} cm of it')
+            time.sleep(0.5)
+            return True
+        approach_z = step.get('approach_z')
+        for attempt in range(1, tries + 1):
+            found = self._nearest_object(label, tx, ty)
+            if found is None:
+                return self._refuse(f'stage_object: no fresh {label} in the scene')
+            oid, ent, _d = found
+            if abs(float(ent['x']) - tx) <= tol_x and abs(float(ent['y']) - ty) <= tol_y:
+                self.get_logger().info(f'stage_object: the {label} ({oid}) stands at ({float(ent["x"]):.3f},{float(ent["y"]):+.3f}), inside the window: ready' + (f' after {attempt - 1} move(s)' if attempt > 1 else ''))
+                return True
+            self.get_logger().info(f'stage_object: the {label} ({oid}) is at ({float(ent["x"]):.3f},{float(ent["y"]):+.3f}), outside the window around ({tx:.2f},{ty:+.2f}): bringing it there (attempt {attempt} of {tries})')
+            self._publish_pp_status(f'staging the {label} ({attempt}/{tries})')
+            self._pick_side_az = None
+            self._next_place_xy = (tx, ty)
+            try:
+                if not self._pick(oid, 0.15 if approach_z is None else approach_z):
+                    return False
+            finally:
+                self._next_place_xy = None
+            cx, cy = learn.corrected('stage', (tx, ty))
+            self._learn_commanded['stage'] = (cx, cy)
+            if not self._place(cx, cy):
+                return False
+            if not self._safe_home():
+                return False
+            self._settle_scene()
+            after = self._nearest_object(label, tx, ty, within=0.15)
+            if after is not None:
+                used, text = learn.update('stage', (cx, cy), (float(after[1]['x']), float(after[1]['y'])))
+                self.get_logger().info(f'stage_object: {text}')
+        found = self._nearest_object(label, tx, ty)
+        if found is not None and abs(float(found[1]['x']) - tx) <= tol_x and abs(float(found[1]['y']) - ty) <= tol_y:
+            return True
+        return self._refuse(f'stage_object: the {label} still is not inside the window around ({tx:.2f},{ty:+.2f}) after {tries} attempts')
+
+    def _check_placed(self, step):
+        """After the routine: is there a cup where it was put? A cup that tipped over is no longer seen as a cup, so none near the spot means it fell (or was knocked away): fails the step, which the
+        dashboard shows. When it is there, the distance to where the arm was commanded to put it feeds the learned placement offset (coffee_learn): the next run is corrected by it."""
+        label = str(step.get('label') or 'cup')
+        try:
+            tx, ty = float(step['x']), float(step['y'])
+        except (KeyError, TypeError, ValueError):
+            return self._refuse('check_placed: needs a label and a numeric x / y')
+        if self.dry_run or self.moveit2 is None:
+            self.get_logger().info(f'  [DRY RUN] check_placed: is there a {label} near ({tx:.2f},{ty:+.2f})')
+            time.sleep(0.3)
+            return True
+        self._settle_scene()
+        found = self._nearest_object(label, tx, ty, within=0.15)
+        if found is None:
+            msg = f'ALERT: no {label} standing within 15 cm of ({tx:.2f},{ty:+.2f}) after the run: it may have tipped over or been knocked away'
+            self.get_logger().error(msg)
+            self._publish_pp_status(msg)
+            self._log_event('check_placed', found=False, target=[tx, ty])
+            return False
+        ox, oy = float(found[1]['x']), float(found[1]['y'])
+        self.get_logger().info(f'check_placed: the {label} stands at ({ox:.3f},{oy:+.3f}), {math.hypot(ox - tx, oy - ty) * 100:.1f} cm from the target ({tx:.2f},{ty:+.2f})')
+        self._log_event('check_placed', found=True, target=[tx, ty], observed=[round(ox, 4), round(oy, 4)])
+        key = step.get('learn')
+        if key and str(key) in self._learn_commanded:
+            used, text = learn.update(str(key), self._learn_commanded[str(key)], (ox, oy))
+            self.get_logger().info(f'check_placed: {text}')
+        return True
 
     def _lookup_object(self, object_id):
         """Latest base_link position of object_id from /scene_snapshot,

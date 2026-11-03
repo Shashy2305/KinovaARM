@@ -204,7 +204,7 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
         if locs.get(cfg['tray_location']) is None:
             return f'the coffee tray location {cfg["tray_location"]!r} has not been taught (scripts/teach_location.py record {cfg["tray_location"]})'
         if _coffee_cup(scene, cfg) is None:
-            return f'there is no cup at the serving spot ({cfg["serve_xy"][0]:.2f}, {cfg["serve_xy"][1]:+.2f}): stand a cup there, handle toward the robot\'s base or away from the sides, and try again'
+            return 'there is no cup the arm can reach on the table: put one within reach and try again'
         return None
     if intent.get('kind') == 'sequence':
         for i, item in enumerate(intent['items'], 1):
@@ -222,11 +222,17 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
 
 
 def _coffee_cup(scene, cfg):
-    """(object_id, entry) of the fresh, reachable cup standing at the serving spot (within serve_search_m of it), nearest first, or None."""
+    """(object_id, entry) of the fresh, reachable cup nearest to the serving spot, from anywhere on the table (2026-11-03: the cup no longer has to stand at one spot; one that is outside the window the
+    side pick reaches is first brought to the spot), or None."""
     sx, sy = cfg['serve_xy']
-    near = [(math.hypot(o['x'] - sx, o['y'] - sy), oid, o) for oid, o in _objects(scene, 'cup') if o.get('x') is not None]
-    near = [t for t in near if t[0] <= cfg['serve_search_m']]
-    return (sorted(near, key=lambda t: t[0])[0][1], sorted(near, key=lambda t: t[0])[0][2]) if near else None
+    near = sorted(((math.hypot(o['x'] - sx, o['y'] - sy), oid, o) for oid, o in _objects(scene, 'cup') if o.get('x') is not None), key=lambda t: t[0])
+    return (near[0][1], near[0][2]) if near else None
+
+
+def in_coffee_window(entry, cfg):
+    """True when the cup stands where a side pick toward the tray azimuth is reliable: within window_x / window_y of the serving spot (see locations.coffee_config)."""
+    sx, sy = cfg['serve_xy']
+    return abs(float(entry['x']) - sx) <= cfg['window_x_m'] and abs(float(entry['y']) - sy) <= cfg['window_y_m']
 
 
 def best_object(scene, label, exclude=None, colour=None):
@@ -336,15 +342,24 @@ def build_plan(intent, scene):
         if cup is None or locs.get(cfg['tray_location']) is None:
             return None
         tray = cfg['tray_location']
+        serve = {'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1]}
+        staging = []
+        if not in_coffee_window(cup[1], cfg):
+            # A cup anywhere else is brought to the serving spot first (any grasp that works), looked up again there, and picked from the side by position: its id changes when it is seen again.
+            staging = [{'action': 'stage_object', 'object_id': cup[0], 'label': 'cup', **serve, 'tol_x': cfg['window_x_m'], 'tol_y': cfg['window_y_m'], 'tries': cfg['stage_tries'], 'approach_z': 0.35}]
+        side_pick = {'action': 'pick', 'object_id': cup[0], 'approach_z': 0.35, 'side_az': cfg['pick_az']}
+        if staging:
+            side_pick.update({'near': [serve['x'], serve['y']], 'label': 'cup'})
         # Home first and home last: the routine's own moves leave the tool horizontal, and a pick that starts from there has no solution for its first straight rise (2026-11-02, second live run).
-        return [{'action': 'go_home'},
-                {'action': 'pick', 'object_id': cup[0], 'approach_z': 0.35, 'side_az': cfg['pick_az']},
+        return [{'action': 'go_home'}] + staging + [
+                side_pick,
                 {'action': 'go_to_location', 'name': tray, 'stage': 'put'},
                 {'action': 'wait', 'seconds': cfg['wait_s']},
                 {'action': 'go_to_location', 'name': tray, 'stage': 'in'},
                 {'action': 'go_to_location', 'name': tray, 'stage': 'take'},
-                {'action': 'place', 'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1]},
-                {'action': 'go_home'}]
+                {'action': 'place', 'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1], 'learn': 'serve'},
+                {'action': 'go_home'},
+                {'action': 'check_placed', 'label': 'cup', **serve, 'learn': 'serve'}]
     if k == 'sequence':
         out = []
         for item in intent['items']:

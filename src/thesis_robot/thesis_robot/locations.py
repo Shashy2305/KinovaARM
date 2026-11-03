@@ -104,7 +104,8 @@ def approach_clearance(poses, rects):
 
 
 COFFEE_FILE = os.path.expanduser('~/.ros/coffee.yaml')
-COFFEE_DEFAULTS = {'tray_location': 'coffee_tray_grasp', 'serve_xy': [0.50, -0.10], 'wait_s': 15.0, 'pick_az': 90.0, 'serve_search_m': 0.12}
+COFFEE_DEFAULTS = {'tray_location': 'coffee_tray_grasp', 'serve_xy': [0.50, -0.10], 'wait_s': 15.0, 'pick_az': 90.0, 'serve_search_m': 0.12,
+                   'window_x_m': 0.04, 'window_y_m': 0.02, 'stage_tries': 3}   # window: how far from serve_xy a cup may stand for the side pick (the IK scan of 2026-11-03: reachable only there)
 
 
 def coffee_config(path=None):
@@ -120,6 +121,9 @@ def coffee_config(path=None):
         cfg['wait_s'] = max(0.0, min(120.0, float(cfg['wait_s'])))
         cfg['pick_az'] = float(cfg['pick_az'])
         cfg['serve_search_m'] = float(cfg['serve_search_m'])
+        cfg['window_x_m'] = max(0.005, float(cfg['window_x_m']))
+        cfg['window_y_m'] = max(0.005, float(cfg['window_y_m']))
+        cfg['stage_tries'] = max(1, min(5, int(cfg['stage_tries'])))
     except (TypeError, ValueError, IndexError):
         return dict(COFFEE_DEFAULTS)
     return cfg
