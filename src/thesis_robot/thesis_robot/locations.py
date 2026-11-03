@@ -50,6 +50,7 @@ def approach_poses(loc):
     return {'high': high, 'pre': pre, 'grasp': grasp, 'axis': axis, 'az': az, 'pad': np.array(pad), 'pre_pad': pre_pad}
 
 
+TAKE_IN_M = 0.012        # ... and this much further IN along the tool axis (the operator saw the take close on the near edge of the cup)
 TAKE_DEPTH_M = 0.02      # the take grip closes this far lower on the object than the taught pose (see take_pose)
 
 
@@ -58,7 +59,10 @@ def take_pose(loc, poses):
     The object is put down by the taught pose, whose pads sit only millimetres under its rim (the side pick grips just under the rim); a few millimetres of difference (cup height, tray
     surface) then leaves the closing fingers above the rim and the grip closes on air (2026-11-03). Gripping 2 cm lower is robust to that and the carried height is recorded from this pose."""
     depth = max(0.0, min(0.05, float(loc.get('take_depth_m', TAKE_DEPTH_M))))
-    return poses['grasp'] - np.array([0.0, 0.0, depth])
+    deeper = max(0.0, min(0.03, float(loc.get('take_in_m', TAKE_IN_M))))
+    axis = np.array([poses['axis'][0], poses['axis'][1], 0.0], float)
+    axis = axis / max(1e-9, np.linalg.norm(axis))
+    return poses['grasp'] - np.array([0.0, 0.0, depth]) + deeper * axis
 
 
 def fixed_obstacle_rects(path=None):

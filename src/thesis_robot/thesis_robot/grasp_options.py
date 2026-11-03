@@ -92,6 +92,15 @@ def side_eligible(label, table_top_z=0.0, width_m=None):
     return ws.too_wide_for_gripper(label, width_m) is None
 
 
+SIDE_IN_EXTRA_M = {'cup': 0.012}    # a cup is gripped this much DEEPER than where the camera puts its centre: the wrist camera sees a mug's handle as part of it, which pulls the centre toward the
+                                    # gripper, and the pads then closed on the near edge (2026-11-03, seen by the operator: "it needs to go more in")
+
+
+def side_in_extra(label):
+    """How far past the seen centre the pad midpoint goes along the tool axis for a side grasp of this kind of object (0 when nothing is known)."""
+    return float(SIDE_IN_EXTRA_M.get(label, 0.0))
+
+
 def side_pad_z(label, table_top_z):
     """Height of the pad midpoint: just under the rim of a short object, in the straight lower body of a tall one."""
     h = ws.OBJECT_HEIGHT_M.get(label, ws.DEFAULT_HEIGHT_M)

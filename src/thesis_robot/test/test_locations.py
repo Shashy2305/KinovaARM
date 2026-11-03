@@ -219,10 +219,14 @@ def test_the_take_grips_the_cup_lower_than_the_taught_pose_and_the_put_keeps_the
     loc = locs.get('coffee_tray_grasp')
     p = locs.approach_poses(loc)
     t = locs.take_pose(loc, p)
-    assert t[2] == pytest.approx(p['grasp'][2] - locs.TAKE_DEPTH_M) and np.allclose(t[:2], p['grasp'][:2])
+    assert t[2] == pytest.approx(p['grasp'][2] - locs.TAKE_DEPTH_M)
+    ax = np.array([p['axis'][0], p['axis'][1]]) / np.linalg.norm(p['axis'][:2])
+    assert np.allclose(t[:2] - p['grasp'][:2], locs.TAKE_IN_M * ax, atol=1e-9)                                  # and 1.2 cm further in along the tool axis (the take closed on the near edge of the cup)
     assert locs.take_pose(dict(loc, take_depth_m=0.035), p)[2] == pytest.approx(p['grasp'][2] - 0.035)       # per-location override
     assert locs.take_pose(dict(loc, take_depth_m=0.5), p)[2] == pytest.approx(p['grasp'][2] - 0.05)          # capped: never far below the taught pose
     assert locs.take_pose(dict(loc, take_depth_m=-1.0), p)[2] == pytest.approx(p['grasp'][2])                # never above it
+    assert np.allclose(locs.take_pose(dict(loc, take_in_m=0.0), p)[:2], p['grasp'][:2])
+    assert np.linalg.norm(locs.take_pose(dict(loc, take_in_m=0.5), p)[:2] - p['grasp'][:2]) == pytest.approx(0.03)   # capped at 3 cm
 
 
 def test_stage_take_refuses_away_from_the_grasp_pose_or_when_a_grip_closes_on_air(node, side_world, files, monkeypatch):
@@ -514,3 +518,84 @@ def test_the_model_padding_cleaners_would_strip_the_coffee_routines_home_steps_s
     assert [s['action'] for s in stripped].count('go_home') < 2                      # why the planner must not run these on a plan the grammar built itself
     src = open(lp.__file__).read()
     assert 'if not grammar_planned:\n                plan = drop_home_around_pick' in src and 'if not grammar_planned:\n                plan = trim_pick_extras' in src
+
+
+# ---- 2026-11-03: deeper grip, gentle set-down -----------------------------------------------------------------------------------------------------------------
+def _spy_moves(node, monkeypatch):
+    """Record (label, speed scale) of every verified move and of the settle pause, then run the fake move."""
+    seen = {'moves': [], 'settles': 0}
+    real = node._move_verified
+
+    def spy(x, y, z, label, **kw):
+        seen['moves'].append((label, node._gentle_scale, (x, y, z)))
+        return real(x, y, z, label, **kw)
+    monkeypatch.setattr(node, '_move_verified', spy)
+    monkeypatch.setattr(node, '_settle', lambda: seen.__setitem__('settles', seen['settles'] + 1))
+    return seen
+
+
+def test_the_set_down_is_slow_and_pauses_after_the_release_then_the_speed_is_back_to_normal(node, side_world, files, monkeypatch):
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    node._held = None
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in locs.take_pose(locs.get('coffee_tray_grasp'), p)]))
+    monkeypatch.setattr(node, '_check_grip', lambda what: True)
+    assert node._go_to_location('coffee_tray_grasp', 'take') is True
+    held = dict(node._held)
+    seen = _spy_moves(node, monkeypatch)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['pre']]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_restore_held', lambda: None)
+    node._held = held
+    node.latest_scene = {}
+    assert node._place(0.45, 0.0) is True
+    slow = {label: scale for label, scale, _ in seen['moves']}
+    assert slow['lower'] == pytest.approx(node.GENTLE_VEL_SCALE) and node.GENTLE_VEL_SCALE < 0.5
+    assert [scale for label, scale, _ in seen['moves'] if label.startswith('retreat')][0] == pytest.approx(node.GENTLE_VEL_SCALE)
+    assert slow['carry'] == 1.0                                                              # the carry itself is not slowed
+    assert seen['settles'] == 1 and node._gentle_scale == 1.0                                # one pause after the fingers open; normal speed again afterwards
+
+
+def test_a_cup_held_deeper_than_its_centre_is_set_down_with_the_pads_that_far_short_of_the_spot(node, side_world, files, monkeypatch):
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    node._held = None
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in locs.take_pose(locs.get('coffee_tray_grasp'), p)]))
+    monkeypatch.setattr(node, '_check_grip', lambda what: True)
+    assert node._go_to_location('coffee_tray_grasp', 'take') is True
+    held = dict(node._held)
+    assert held['in_extra'] == pytest.approx(locs.TAKE_IN_M, abs=1e-6)                        # the take recorded how much deeper than the taught pad midpoint it closed
+    seen = _spy_moves(node, monkeypatch)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['pre']]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_restore_held', lambda: None)
+    node._held = dict(held, in_extra=0.0)
+    node.latest_scene = {}
+    assert node._place(0.45, 0.0) is True
+    plain = [xyz for label, _s, xyz in seen['moves'] if label == 'lower'][0]
+    seen['moves'].clear()
+    node._held = dict(held, in_extra=0.012)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['pre']]))
+    assert node._place(0.45, 0.0) is True
+    deeper = [xyz for label, _s, xyz in seen['moves'] if label == 'lower'][0]
+    from thesis_robot import grasp_options as go
+    a = go.side_axis(held['az'])
+    assert (deeper[0] - plain[0], deeper[1] - plain[1]) == pytest.approx((-0.012 * a[0], -0.012 * a[1]), abs=1e-6)     # its centre lands on the spot: the pads stop 1.2 cm short
+
+
+def test_the_tray_put_shifts_the_pads_back_by_how_deep_the_cup_was_gripped(node, side_world, coffee_files, monkeypatch):
+    from thesis_robot import grasp_options as go
+    p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    tilt = go.SIDE_TILT_DEG
+    seen = _spy_moves(node, monkeypatch)
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [0.45, -0.185, 0.14]))
+    monkeypatch.setattr(node, '_is_holding', lambda: True)
+    monkeypatch.setattr(node, '_restore_held', lambda: None)
+    monkeypatch.setattr(node, '_tray_carry_blocked', lambda a, b, h, held: None)
+    ends = []
+    for extra in (0.0, 0.012):
+        seen['moves'].clear()
+        node._held = {'label': 'cup', 'object_id': 'c', 'grasp_z': 0.107, 'tilt': tilt, 'az': p['az'], 'j7': 0.0, 'in_extra': extra}
+        assert node._go_to_location('coffee_tray_grasp', 'put') is True
+        ends.append([xyz for label, _s, xyz in seen['moves'] if label.endswith('lower onto the tray')][0])
+    a = np.array(p['axis'][:2]) / np.linalg.norm(p['axis'][:2])
+    assert np.allclose(np.array(ends[1][:2]) - np.array(ends[0][:2]), -0.012 * a, atol=1e-6)
+    assert np.allclose(ends[0][:2], p['grasp'][:2], atol=1e-6)                               # a cup gripped at its centre goes to the taught pose unchanged

@@ -145,6 +145,7 @@ class ArmControllerNode(Node):
         self.center_max_iter = self.get_parameter('center_max_iter').value
         self.hover_above_m = self.get_parameter('hover_above_m').value
         self.require_wrist_center = self.get_parameter('require_wrist_center').value
+        self._gentle_scale = 1.0   # < 1 while an object is being set down or let go: the retimer then slows every move (see _gentle)
         self._held = None          # {'label', 'object_id', 'grasp_z'} while carrying something (use _set_held: it tells the planner)
         self._wrist_dets = None    # (monotonic receive time, {frame_id, stamp, detections})
         self._wrist_K = None
@@ -781,6 +782,7 @@ class ArmControllerNode(Node):
             vs = float(self.get_parameter('smooth_vel_scale').value)
             if swing >= float(self.get_parameter('smooth_free_min_rad').value):
                 vs = max(vs, float(self.get_parameter('smooth_free_vel_scale').value))
+            vs *= getattr(self, '_gentle_scale', 1.0)
             r = ts.smooth(pos, JOINT_VMAX, JOINT_AMAX,
                           vel_scale=vs,
                           acc_scale=float(self.get_parameter('smooth_acc_scale').value),
@@ -1084,6 +1086,12 @@ class ArmControllerNode(Node):
         blocked = self._tray_carry_blocked((float(g[0]), float(g[1])), (float(pre[0]), float(pre[1])), carry_z - float(held['grasp_z']) - 0.03, held)
         if blocked:
             return self._refuse(f'go_to_location: the carry to the tray passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
+        in_extra = float(held.get('in_extra', 0.0) or 0.0)
+        if in_extra:
+            # gripped `in_extra` deeper than its centre: the pads stop that far short of the taught spot, so the cup's centre lands on it
+            shift = np.array([poses['axis'][0], poses['axis'][1], 0.0], float)
+            shift = in_extra * shift / max(1e-9, np.linalg.norm(shift))
+            grasp, pre = grasp - shift, pre - shift
         lifted_z = float(grasp[2]) + self.TAKE_LIFT_M
         self.get_logger().info(f'go_to_location {name}: carrying the {held.get("label")} to the approach pose at flange z={carry_z:.3f}, then in and down')
         steps = []
@@ -1093,7 +1101,7 @@ class ArmControllerNode(Node):
             ('carry', lambda: self._move_verified(float(pre[0]), float(pre[1]), carry_z, f'{name}: carry to above the approach pose')),
             ('down', lambda: self._move_verified(float(pre[0]), float(pre[1]), lifted_z, f'{name}: down to the approach pose', min_flange_z=float(grasp[2]) - 0.02)),
             ('in', lambda: self._move_verified(float(grasp[0]), float(grasp[1]), lifted_z, f'{name}: in to the tray', min_flange_z=float(grasp[2]) - 0.02)),
-            ('lower', lambda: self._move_verified(float(grasp[0]), float(grasp[1]), float(grasp[2]), f'{name}: lower onto the tray', min_flange_z=float(grasp[2]) - 0.02)),
+            ('lower', lambda: self._lower_gently(float(grasp[0]), float(grasp[1]), float(grasp[2]), f'{name}: lower onto the tray', float(grasp[2]) - 0.02)),
         ]
         for label, action in steps:
             if not action():
@@ -1102,7 +1110,9 @@ class ArmControllerNode(Node):
         if not self._open_gripper():
             return False
         self._set_held(None)
-        return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: back out to the approach pose', min_flange_z=float(grasp[2]) - 0.02)
+        self._settle()
+        with self._gentle():
+            return self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), f'{name}: back out to the approach pose', min_flange_z=float(grasp[2]) - 0.02)
 
     TAKE_LIFT_M = 0.02            # a cup standing in a coffee tray is lifted this far before it is drawn out (the spout is ~15 cm over the tray: the cup top is ~6 cm under it)
 
@@ -1142,8 +1152,9 @@ class ArmControllerNode(Node):
             lift_off = locs.surface_offset(loc, geom_['table_top_z']) if geom_ else 0.0
         except Exception:
             lift_off = 0.0
+        in_extra = float(np.linalg.norm((np.array(grasp, float) - poses['grasp'])[:2]))      # taken this far past the taught pad midpoint (take_in_m)
         self._set_held({'label': label, 'object_id': str(loc.get('object_id', name)), 'grasp_z': float(grasp[2]) - lift_off, 'tilt': float(go.SIDE_TILT_DEG),
-                        'az': float(poses['az']), 'j7': self._wrist_angle_now()})
+                        'az': float(poses['az']), 'j7': self._wrist_angle_now(), 'in_extra': in_extra})
         if not self._move_verified(float(pre[0]), float(pre[1]), lifted, f'{name}: out of the machine', min_flange_z=float(grasp[2]) - 0.02):
             return False
         # Joint 7 moved by ~14 deg during the draw-out although the tool orientation was kept (the arm is redundant): the place routine turns the wrist back whenever joint 7 differs from the record,
@@ -1413,7 +1424,10 @@ class ArmControllerNode(Node):
         def descend_side(az):
             """Side grasp toward azimuth az. True = done, False = it moved and failed, None = no solution (nothing moved, try the next option)."""
             pad_z = go.side_pad_z(label, geom['table_top_z'])
-            high, pre, grasp_fl, axis = go.side_poses(centred['xy'], pad_z, az)
+            a_xy = go.side_axis(az)[:2]
+            extra = go.side_in_extra(label)                                   # the pads go this much deeper than the seen centre (a handle pulls the seen centre toward the gripper)
+            seat = (centred['xy'][0] + extra * a_xy[0], centred['xy'][1] + extra * a_xy[1])
+            high, pre, grasp_fl, axis = go.side_poses(seat, pad_z, az)
             if not all(go.flange_inside(p) for p in (high, pre, grasp_fl)):
                 self.get_logger().info(f'pick: side grasp toward {az:.0f}: the flange would leave the table side of the base')
                 return None
@@ -1433,7 +1447,7 @@ class ArmControllerNode(Node):
                 # 'needs a 3.9 rad single-joint reconfiguration', and it stayed in the gripper). Better to pick it another way than to find out with the cup in the fingers.
                 nxt = getattr(self, '_next_place_xy', None)
                 if nxt is not None:
-                    _h, _p, place_fl, _a = go.side_poses(nxt, pad_z, az)
+                    _h, _p, place_fl, _a = go.side_poses((nxt[0] - extra * a_xy[0], nxt[1] - extra * a_xy[1]), pad_z, az)
                     if not go.flange_inside(place_fl):
                         bad = 'place spot (the flange would leave the table side of the base)'
                     else:
@@ -1468,7 +1482,7 @@ class ArmControllerNode(Node):
                 except RuntimeError:
                     moved = True
                 return False if moved else None
-            tilt_state['on'] = {'tilt': go.SIDE_TILT_DEG, 'az': az, 'pre': pre, 'grasp': grasp_fl, 'side': True}
+            tilt_state['on'] = {'tilt': go.SIDE_TILT_DEG, 'az': az, 'pre': pre, 'grasp': grasp_fl, 'side': True, 'in_extra': extra}
             self._side_swing_done = True
             return (self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), 'side: down beside the object', min_flange_z=float(pre[2]) - 0.02)
                     and self._move_verified(float(grasp_fl[0]), float(grasp_fl[1]), float(grasp_fl[2]), 'side: in around the object', min_flange_z=float(grasp_fl[2]) - 0.02))
@@ -1634,6 +1648,7 @@ class ArmControllerNode(Node):
         self._set_held({'label': label, 'object_id': object_id,
                         'grasp_z': float(lean['grasp'][2]) if lean else grasp_z,
                         'tilt': float(lean['tilt']) if lean else 0.0, 'az': float(lean['az']) if lean else 0.0,
+                        'in_extra': float(lean.get('in_extra', 0.0)) if lean else 0.0,
                         'j7': self._wrist_angle_now()})
         self._training('commit', label=label)
         self._log_end(True)
@@ -2205,6 +2220,30 @@ class ArmControllerNode(Node):
         return ws.carry_path_blocker(start_xy, end_xy, self._scene_obstacles(min_height=h),
                                      avoid=float(self.get_parameter('carry_avoid_m').value))
 
+    GENTLE_VEL_SCALE = 0.35       # speed factor while an object is lowered onto its spot and while the open gripper first backs away from it
+    PLACE_SETTLE_S = 0.8          # pause after the fingers open, so the object has settled before anything moves again
+
+    def _gentle(self):
+        """Context manager: every move inside runs at GENTLE_VEL_SCALE of the normal speed (2026-11-03: the cup was set down too hard, seen by the operator)."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def ctx():
+            prev, self._gentle_scale = self._gentle_scale, self.GENTLE_VEL_SCALE
+            try:
+                yield
+            finally:
+                self._gentle_scale = prev
+        return ctx()
+
+    def _lower_gently(self, x, y, z, label, min_flange_z):
+        with self._gentle():
+            return self._move_verified(x, y, z, label, min_flange_z=min_flange_z)
+
+    def _settle(self):
+        if not (self.dry_run or self.moveit2 is None):
+            time.sleep(self.PLACE_SETTLE_S)
+
     def _move_verified(self, x, y, z, label, xy_tol=0.015, z_tol=0.01, min_flange_z=None):
         """Straight-line move that must END where asked: a cartesian path that stops short would
         otherwise leave the following steps (descend, release) at the wrong place."""
@@ -2280,6 +2319,11 @@ class ArmControllerNode(Node):
         if not (sg.PLAN_X_RANGE[0] <= tx <= sg.PLAN_X_RANGE[1] and sg.PLAN_Y_RANGE[0] <= ty <= sg.PLAN_Y_RANGE[1]):
             return self._refuse(f'place: ({tx:.3f},{ty:.3f}) is outside the workspace')
         fx, fy = tx + off[0], ty + off[1]                  # flange target that puts the object on (tx, ty)
+        in_extra = float((self._held or {}).get('in_extra', 0.0) or 0.0) if held_tilt >= 45.0 and not (here or x is None or y is None) else 0.0      # ('here': lowered where it is, no shift)
+        if in_extra and self._held and 'az' in self._held:
+            # the object was gripped `in_extra` deeper than its centre: its centre sits that far past the pad midpoint, so the pads stop that far short of the spot
+            a_h = go.side_axis(float(self._held['az']))
+            fx, fy = fx - in_extra * a_h[0], fy - in_extra * a_h[1]
         grasp_z = self._held['grasp_z'] if self._held else float(z)
         # A low object was grasped below the normal fingertip floor (low_pick_tip_clearance_m); put it
         # down at the same height, not 2-3 cm above the table.
@@ -2373,7 +2417,10 @@ class ArmControllerNode(Node):
             return False
 
         steps.append(('check the opening fingers are clear of the neighbours', place_fingers_clear))
-        steps.append(('lower', lambda: self._move_verified(fx, fy, set_z, 'lower', min_flange_z=low_floor)))
+        def lower_gently():
+            with self._gentle():
+                return self._move_verified(fx, fy, set_z, 'lower', min_flange_z=low_floor)
+        steps.append(('lower', lower_gently))
         for name, action in steps:
             self._publish_pp_status(f'place: {name}')
             if not action():
@@ -2386,6 +2433,7 @@ class ArmControllerNode(Node):
         if not self._open_gripper():
             return False
         self._set_held(None)
+        self._settle()
         self._publish_pp_status('place: retreat')
         if horizontal_hold:
             # back out along the tool axis, the way the fingers came in: they slide off the cup sideways, nothing lifts or drags it
@@ -2395,7 +2443,9 @@ class ArmControllerNode(Node):
                 # Try shorter runs; if none has a solution, lift straight up (the cup is down and the gripper open: the pads slide up its sides).
                 for dist in (go.STANDOFF_M, 0.12, 0.09):
                     bx, by, bz = fx - dist * a[0], fy - dist * a[1], set_z - dist * a[2]
-                    if self._move_verified(bx, by, bz, f'retreat ({dist * 100:.0f} cm back along the tool axis)', min_flange_z=low_floor):
+                    with self._gentle():
+                        backed = self._move_verified(bx, by, bz, f'retreat ({dist * 100:.0f} cm back along the tool axis)', min_flange_z=low_floor)
+                    if backed:
                         # then up to the high pose the pick came down from (the mirror of its approach): leaving the arm parked low with the tool horizontal left it against its joint limits (2026-10-29)
                         if not self._move_verified(bx, by, bz + go.HIGH_CLEAR_M, 'rise after the retreat'):
                             self.get_logger().warn('place: the object is down and the gripper is clear; rising after the retreat was not possible from here')

@@ -559,7 +559,9 @@ def test_a_side_pick_swings_to_the_high_pre_pose_comes_down_beside_the_cup_and_g
     (pos, quat, flip), = side_world.ik_calls
     az = go.AZIMUTHS and node._held['az']
     pad_z = go.side_pad_z('cup', TABLE['table_top_z'])
-    high, pre, grasp, a = go.side_poses((0.40, 0.0), pad_z, az)
+    a_xy, e = go.side_axis(az), go.side_in_extra('cup')
+    assert e == pytest.approx(0.012)                                                # the pads go 1.2 cm deeper than the seen centre (a mug's handle pulls the seen centre toward the gripper)
+    high, pre, grasp, a = go.side_poses((0.40 + e * a_xy[0], 0.0 + e * a_xy[1]), pad_z, az)
     assert np.allclose(pos, high, atol=2e-3) and np.allclose(quat, go.side_quat(az), atol=1e-3)
     # straight down to the pre pose, then straight in to the grasp (both verified moves)
     assert [v[3] for v in side_world.verified] == ['side: down beside the object', 'side: in around the object']
@@ -1040,7 +1042,9 @@ def _place_flanges(go, nxt, up=True):
     pad_z = go.side_pad_z('cup', TABLE['table_top_z'])
     out = set()
     for az in go.AZIMUTHS:
-        fl = go.side_poses(nxt, pad_z, az)[2]
+        a = go.side_axis(az)
+        e = go.side_in_extra('cup')                                    # a cup is gripped deeper than its seen centre, so the pads stop that far short of the spot
+        fl = go.side_poses((nxt[0] - e * a[0], nxt[1] - e * a[1]), pad_z, az)[2]
         out.add(tuple(round(float(v), 3) for v in fl))
         out.add(tuple(round(float(v), 3) for v in fl + np.array([0.0, 0.0, 0.10])))
     return out
