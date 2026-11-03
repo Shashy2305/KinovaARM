@@ -600,9 +600,27 @@ class ArmControllerNode(Node):
         if self._js is None or time.time() - self._js_time > 1.0:
             raise RuntimeError('joint states are missing or stale — is the arm connected?')
         try:
-            return [self._js[j] for j in JOINT_NAMES]
+            q = [self._js[j] for j in JOINT_NAMES]
         except KeyError as e:
             raise RuntimeError(f'joint state is missing {e}')
+        return self._continue_branch(q)
+
+    EDGE_BAND_RAD = 0.15          # within this of +-pi a continuous joint's reading can flip sign between two reads
+
+    def _continue_branch(self, q):
+        """The driver reports continuous joints wrapped to +-pi, so a joint sitting at 180 deg reads +3.1416 now and -3.1416 a moment later (side poses put joints 3 / 7 right there). A plan whose goal was
+        chosen next to one reading and whose start state is the other would turn the joint a full 2*pi. Keep each such joint on the branch its previous reading was on (it may read up to pi + the band)."""
+        prev = getattr(self, '_cont_prev', None)
+        if prev is None:
+            prev = self._cont_prev = {}
+        out = list(q)
+        for i in mu.CONTINUOUS_JOINT_IDX:
+            v, p = out[i], prev.get(i)
+            if p is not None and abs(v) > math.pi - self.EDGE_BAND_RAD and abs(p) > math.pi - self.EDGE_BAND_RAD and v * p < 0.0:
+                v += math.copysign(2.0 * math.pi, p)
+            out[i] = v
+            prev[i] = v
+        return out
 
     def _ik(self, seed, position, quat, timeout_s=0.15):
         """One IK solve (collision-aware, seeded from `seed`) via /compute_ik;
@@ -669,10 +687,24 @@ class ArmControllerNode(Node):
             f'IK: max joint change {best[0]:.2f} rad, total {best[1]:.2f} rad')
         return best[2], best[3]
 
+    TURN_MARGIN_RAD = 0.4         # slack over MAX_JOINT_DELTA_RAD for the check that a joint-space plan does not turn a joint a long way
+
     def _plan_joint_goal(self, goal, geom):
         """Pilz PTP first (joint-space, repeatable); the collision-aware OMPL
         planner only as a fallback. Every candidate path must pass the FK
         check before it is allowed to execute. Returns (trajectory, reason)."""
+        if [round(float(v), 4) for v in goal] != [round(v, 4) for v in HOME_JOINTS]:
+            # (go_home goes to fixed joint angles and may turn a joint a long way; every other goal was chosen NEAR the current angles by _solve_goal_joints / unwrap_to_seed, within MAX_JOINT_DELTA_RAD)
+            try:
+                start = self._current_joint_vector()
+            except RuntimeError as e:
+                return None, str(e)
+            worst = max(range(len(goal)), key=lambda i: abs(float(goal[i]) - float(start[i])))
+            if abs(float(goal[worst]) - float(start[worst])) > mu.MAX_JOINT_DELTA_RAD + self.TURN_MARGIN_RAD:
+                why = (f'{JOINT_NAMES[worst]} would turn {abs(float(goal[worst]) - float(start[worst])):.1f} rad (from {float(start[worst]):+.2f} to {float(goal[worst]):+.2f}; '
+                       f'limit {mu.MAX_JOINT_DELTA_RAD + self.TURN_MARGIN_RAD:.1f}): a wrap-around at +-180 deg?')
+                self.get_logger().error(f'plan refused: {why}')
+                return None, why
         attempts = [('pilz_industrial_motion_planner', 'PTP')] + [('', '')] * 3
         reason = 'planning failed'
         for pipeline, planner in attempts:
