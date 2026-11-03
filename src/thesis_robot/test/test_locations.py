@@ -102,30 +102,42 @@ def test_stage_in_goes_straight_to_the_grasp_pose_only_from_the_approach_pose(no
     monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['pre']]))      # at the approach pose
     assert node._go_to_location('coffee_tray_grasp', 'in') is True
     (v,) = side_world.verified
-    assert np.allclose(v[:3], p['grasp'], atol=2e-3) and v[3] == 'coffee_tray_grasp: in to the object'
+    assert np.allclose(v[:3], locs.take_pose(locs.get('coffee_tray_grasp'), p), atol=2e-3) and v[3] == 'coffee_tray_grasp: in to the object'
     assert side_world.guarded == []                                                                                         # no swing, no home: just the straight run in
 
 
 def test_stage_take_closes_lifts_draws_straight_out_and_records_what_is_held(node, side_world, files, monkeypatch):
     from thesis_robot import grasp_options as go
     p = locs.approach_poses(locs.get('coffee_tray_grasp'))
+    t = locs.take_pose(locs.get('coffee_tray_grasp'), p)
     side_world.verified.clear()
     side_world.guarded.clear()
     side_world.grippers.clear()
     node._held = None
-    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['grasp']]))
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in t]))
     monkeypatch.setattr(node, '_check_grip', lambda what: True)
     state = {'n': 0}
     monkeypatch.setattr(node, '_is_holding', lambda: state['n'] > 0 and False)           # nothing held before the close
     assert node._go_to_location('coffee_tray_grasp', 'take') is True
     assert [g[1] for g in side_world.grippers] == ['close_gripper']
     lift, out = side_world.verified
-    assert lift[3].endswith(': lift') and lift[2] == pytest.approx(p['grasp'][2] + node.TAKE_LIFT_M, abs=2e-3) and np.allclose(lift[:2], p['grasp'][:2], atol=2e-3)
+    assert lift[3].endswith(': lift') and lift[2] == pytest.approx(t[2] + node.TAKE_LIFT_M, abs=2e-3) and np.allclose(lift[:2], t[:2], atol=2e-3)
     assert out[3].endswith(': out of the machine') and np.allclose(out[:2], p['pre'][:2], atol=2e-3) and out[2] == pytest.approx(lift[2])      # straight back along the axis, level
     assert node._held['label'] == 'cup' and node._held['tilt'] == pytest.approx(go.SIDE_TILT_DEG) and node._held['az'] == pytest.approx(p['az'])
     off = locs.surface_offset(locs.get('coffee_tray_grasp'), -0.0125)
     assert off == pytest.approx(0.0203, abs=2e-3)                                         # the tray surface is ~2 cm above the table
-    assert node._held['grasp_z'] == pytest.approx(p['grasp'][2] - off)                    # recorded for the cup standing on the TABLE, so the place does not release it 2 cm up
+    assert node._held['grasp_z'] == pytest.approx(t[2] - off)                    # recorded for the cup standing on the TABLE, so the place does not release it 2 cm up
+
+
+def test_the_take_grips_the_cup_lower_than_the_taught_pose_and_the_put_keeps_the_taught_height(node, side_world, files, monkeypatch):
+    # 2026-11-03: the pick and the put hold the cup with the pads ~3 mm under the rim; closing at that height missed the cup (fingers above the rim, grip closed on air)
+    loc = locs.get('coffee_tray_grasp')
+    p = locs.approach_poses(loc)
+    t = locs.take_pose(loc, p)
+    assert t[2] == pytest.approx(p['grasp'][2] - locs.TAKE_DEPTH_M) and np.allclose(t[:2], p['grasp'][:2])
+    assert locs.take_pose(dict(loc, take_depth_m=0.035), p)[2] == pytest.approx(p['grasp'][2] - 0.035)       # per-location override
+    assert locs.take_pose(dict(loc, take_depth_m=0.5), p)[2] == pytest.approx(p['grasp'][2] - 0.05)          # capped: never far below the taught pose
+    assert locs.take_pose(dict(loc, take_depth_m=-1.0), p)[2] == pytest.approx(p['grasp'][2])                # never above it
 
 
 def test_stage_take_refuses_away_from_the_grasp_pose_or_when_a_grip_closes_on_air(node, side_world, files, monkeypatch):
@@ -195,7 +207,7 @@ def test_withdraw_backs_out_along_the_tool_axis_then_up_and_never_while_holding(
 def test_take_records_the_wrist_angle_after_the_draw_out(node, side_world, files, monkeypatch):
     p = locs.approach_poses(locs.get('coffee_tray_grasp'))
     node._held = None
-    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['grasp']]))
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in locs.take_pose(locs.get('coffee_tray_grasp'), p)]))
     monkeypatch.setattr(node, '_check_grip', lambda what: True)
     angles = iter([1.47, 1.22])                                                            # joint 7 moves while the tool orientation is kept
     monkeypatch.setattr(node, '_wrist_angle_now', lambda: next(angles))
@@ -393,7 +405,7 @@ def test_the_surface_offset_is_the_taught_pad_height_over_the_table_pad_height_n
 def test_a_cup_taken_from_the_tray_is_set_down_at_table_height(node, side_world, files, monkeypatch):
     p = locs.approach_poses(locs.get('coffee_tray_grasp'))
     node._held = None
-    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in p['grasp']]))
+    monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in locs.take_pose(locs.get('coffee_tray_grasp'), p)]))
     monkeypatch.setattr(node, '_check_grip', lambda what: True)
     assert node._go_to_location('coffee_tray_grasp', 'take') is True
     held = dict(node._held)

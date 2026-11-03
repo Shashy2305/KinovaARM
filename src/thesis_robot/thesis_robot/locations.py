@@ -50,6 +50,17 @@ def approach_poses(loc):
     return {'high': high, 'pre': pre, 'grasp': grasp, 'axis': axis, 'az': az, 'pad': np.array(pad), 'pre_pad': pre_pad}
 
 
+TAKE_DEPTH_M = 0.02      # the take grip closes this far lower on the object than the taught pose (see take_pose)
+
+
+def take_pose(loc, poses):
+    """Flange position where an object standing at the taught pose is gripped to be TAKEN out: the taught grasp pose, lowered by the location's take_depth_m (default TAKE_DEPTH_M).
+    The object is put down by the taught pose, whose pads sit only millimetres under its rim (the side pick grips just under the rim); a few millimetres of difference (cup height, tray
+    surface) then leaves the closing fingers above the rim and the grip closes on air (2026-11-03). Gripping 2 cm lower is robust to that and the carried height is recorded from this pose."""
+    depth = max(0.0, min(0.05, float(loc.get('take_depth_m', TAKE_DEPTH_M))))
+    return poses['grasp'] - np.array([0.0, 0.0, depth])
+
+
 def fixed_obstacle_rects(path=None):
     """[(name, x_min, x_max, y_min, y_max)] for the declared fixed obstacles: the rectangle when the file gives size_x / size_y, else the bounding square of its circle."""
     try:

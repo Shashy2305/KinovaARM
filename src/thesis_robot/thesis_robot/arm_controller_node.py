@@ -927,7 +927,7 @@ class ArmControllerNode(Node):
         """Stage 'in': from the approach pose, straight in along the tool axis to the taught grasp pose, gripper OPEN (it does not close). Refuses unless the arm is already at the approach pose (so a
         wrong start cannot turn this into a swing), the gripper holds nothing and is open."""
         if self.dry_run or self.moveit2 is None:
-            self.get_logger().info(f'  [DRY RUN] go_to_location {name} (in): to {np.round(poses["grasp"], 3).tolist()}')
+            self.get_logger().info(f'  [DRY RUN] go_to_location {name} (in): to {np.round(locs.take_pose(loc, poses), 3).tolist()}')
             time.sleep(0.5)
             return True
         if self._is_holding():
@@ -939,8 +939,8 @@ class ArmControllerNode(Node):
         off = float(np.linalg.norm(np.array(here[:3], float) - poses['pre']))
         if off > 0.03:
             return self._refuse(f'go_to_location {name} (in): the arm is {off * 100:.0f} cm from the approach pose; run stage "pre" first')
-        grasp = poses['grasp']
-        self.get_logger().info(f'go_to_location {name}: straight in along the tool axis to the grasp pose {np.round(grasp, 3).tolist()} (gripper open)')
+        grasp = locs.take_pose(loc, poses)
+        self.get_logger().info(f'go_to_location {name}: straight in along the tool axis to the take pose {np.round(grasp, 3).tolist()} (gripper open)')
         return self._move_verified(float(grasp[0]), float(grasp[1]), float(grasp[2]), f'{name}: in to the object', min_flange_z=float(grasp[2]) - 0.02)
 
     WITHDRAW_RUN_M = 0.21         # the longest run back along the tool axis (the coffee tray's standoff)
@@ -1066,7 +1066,7 @@ class ArmControllerNode(Node):
         """Stage 'take': the arm is at the grasp pose with the gripper open round the object. Close, check the grip, lift TAKE_LIFT_M, check again, draw the object straight back out along the tool
         axis to the approach pose (still level) and record what is held, so the place routine can put it down (it keeps the side-held orientation). Refuses, before closing, unless the arm is at the
         grasp pose and holds nothing. A grip that closed on air opens again and stops."""
-        grasp, pre = poses['grasp'], poses['pre']
+        grasp, pre = locs.take_pose(loc, poses), poses['pre']
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(f'  [DRY RUN] go_to_location {name} (take): close, lift {self.TAKE_LIFT_M * 100:.0f} cm, back out to {np.round(pre, 3).tolist()}')
             time.sleep(0.5)
