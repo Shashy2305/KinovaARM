@@ -447,7 +447,31 @@ def test_a_pick_with_side_az_uses_that_side_grasp_only_and_never_falls_back_to_t
         node._held = None
         monkeypatch.setattr(node, '_ik', lambda seed, pos, quat, timeout_s=0.15: None)
         assert run_cup_pick(node) is False
-        assert side_world.guarded == [] and node._held is None
+        assert side_world.guarded == ['go_home', 'go_home'] and node._held is None       # three tries, each from home (a fresh hover), nothing else moved: never a swing and never from above
+        assert not any('swing' in g or 'descent' in g for g in side_world.guarded) and side_world.verified == []
+    finally:
+        node._pick_side_az = None
+
+
+def test_a_side_pick_with_no_solution_from_the_hover_goes_home_and_succeeds_on_the_next_try(node, side_world, monkeypatch):
+    # 2026-11-03: the home -> hover move had picked an odd joint branch with no solution for any side pose; the next go home -> hover was fine
+    from test_pick_place_flow import run_cup_pick
+    node._pick_side_az = 90.0
+    real = node._ik
+    state = {'blocked': True}
+    monkeypatch.setattr(node, '_ik', lambda seed, pos, quat, timeout_s=0.15: None if state['blocked'] else real(seed, pos, quat, timeout_s))
+    homes = []
+    real_home = node._safe_home
+
+    def home():
+        homes.append(1)
+        state['blocked'] = False                                                              # a new hover, a new branch
+        return real_home()
+    monkeypatch.setattr(node, '_safe_home', home)
+    try:
+        side_world.guarded.clear()
+        assert run_cup_pick(node) is True
+        assert len(homes) == 1 and node._held['az'] == pytest.approx(90.0)
     finally:
         node._pick_side_az = None
 

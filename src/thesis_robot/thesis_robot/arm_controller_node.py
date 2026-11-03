@@ -845,11 +845,12 @@ class ArmControllerNode(Node):
         closes on air or loses the object on the lift is retried once (the object is looked up again)."""
         self._tried_rho = []                          # closing directions tried so far, relative to the object
         self._tried_methods = []                      # grasp methods tried so far (a retry prefers another)
-        for attempt in (1, 2):
+        for attempt in (1, 2, 3):
             pos = self._lookup_object(object_id)
             if pos is None:
                 return False
             self._pick_attempt = attempt
+            self._side_no_solution = False                # set by descend_side when no side pose had an IK solution from the hover (nothing but the hover moved)
             self._side_swing_done = False                 # set by descend_side once the swing to the high pre-pose SUCCEEDED
             ok, failed = self._pick_once(object_id, pos, approach_z)
             if ok:
@@ -858,6 +859,19 @@ class ArmControllerNode(Node):
             # was touched, so the safe thing is the other method. The retry already prefers one (avoid_methods in choose_method); the arm goes home first from the horizontal pose.
             # Only when the SWING itself succeeded: a swing that failed after the arm had moved (2026-10-29: a 28 s swing aborted with the arm's body on the table) still stops the pick.
             side_aborted = failed == 'descend' and list(getattr(self, '_tried_methods', []))[-1:] == ['side'] and bool(getattr(self, '_side_swing_done', False))
+            # No IK solution for ANY side pose from the hover (2026-11-03: the home -> hover move had picked an odd joint branch; the same cup was reachable on the next go home -> hover): nothing but the
+            # hover has moved, so go home and ask again, up to three attempts in all.
+            if failed == 'descend' and getattr(self, '_side_no_solution', False) and not getattr(self, '_side_swing_done', False) and attempt < 3:
+                self.get_logger().warn(f'pick {object_id}: no side pose had a solution from that hover — going home and trying again (attempt {attempt + 1} of 3)')
+                self._publish_pp_status(f'pick {object_id}: retrying from home')
+                time.sleep(1.0)
+                try:
+                    if not (self.dry_run or self.moveit2 is None) and not self._safe_home():
+                        return False
+                except Exception as e:
+                    self.get_logger().warn(f'pick: could not go home before the retry ({e})')
+                    return False
+                continue
             if (failed in ('check the grip', 'check it is still held', 'check the grip (3 cm up)') or side_aborted) and attempt == 1:
                 why = 'the side grasp could not get in' if side_aborted else f'the grip failed ({failed})'
                 self.get_logger().warn(f'pick {object_id}: {why} — trying once more' + (' with a top grasp' if side_aborted else ''))
@@ -1468,6 +1482,7 @@ class ArmControllerNode(Node):
                 break
             if goal is None:
                 self.get_logger().info(f'pick: side grasp toward {az:.0f}: no IK solution ({why})')
+                self._side_no_solution = True
                 return None
             self.get_logger().info(f'pick: side grasp toward azimuth {az:.0f}: pads at z={pad_z:.3f} just under the rim' + (' (wrist turned 180 deg)' if flipped else ''))
             self._log_event('tilt', tilt=round(go.SIDE_TILT_DEG, 1), az=round(az, 1), flipped=flipped, asked=round(go.SIDE_TILT_DEG, 1), side=True)
