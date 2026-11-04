@@ -59,3 +59,21 @@ Symptom if it is missing: a move that physically completes but is reported ABORT
 ### Update (same evening): the runtime parameter did NOT help
 Setting `gains.joint_3/7.angle_wraparound` true on the running controller did not change the outcome: crossing moves were still stopped by MoveIt's time bound (`TIMED_OUT`). It was set back to false. (A persistent fix would mean the yaml plus a bringup restart; not done.)
 Instead the controller code handles it: `_reached_modulo_2pi` accepts a move the controller reported unsuccessful when every joint is within 0.03 rad of the goal modulo 2*pi, and `go_home` aims for the writing of the home angles nearest to the arm (joint 3 at -170 deg goes to -180, not +180). Each crossing move still costs MoveIt's ~12 s time bound.
+
+## Tray entry azimuths and delivery points (IK + FK link clearance, 3 tries each, 2026-11-03 evening)
+
+Tray entry (taught pad (0.441, 0.291, 0.090)), standoff 0.22: az 60 3/3, 75 3/3, 90 3/3, 105 2/3, 45/120/135 0/3. (Standoff 0.17: 75 and 105 3/3, 60 and 90 1/3; fingertip gap to the machine 3.2-4.1 cm, so 0.22 is the safer standoff.)
+
+A side-held cup set down at a point, tool az within 60-105:
+
+| point | az60 | az75 | az90 | az105 |
+|---|---|---|---|---|
+| white cup spot (0.23, -0.48) | 0 | 0 | 0 | 0 |
+| (0.30, -0.35) | 0 | 0 | 0 | 0 |
+| (0.40, -0.20) | 2 | 0 | 0 | 0 |
+| (0.44, -0.10) | 3 | 1 | 0 | 0 |
+| (0.44, +0.03) serve now | 2 | 3 | 3 | 0 |
+| (0.40, +0.15) | 1 | 2 | 1 | 3 |
+| (0.30, +0.30) | 0 | 1 | 3 | 1 |
+
+Touch-down set-down (commit ede8ba6): joint efforts at rest have std 0.015-0.023 Nm; the base touching the table is detected at a 0.35 Nm change of joints 2/4/6.
