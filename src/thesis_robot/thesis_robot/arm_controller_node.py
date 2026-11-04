@@ -579,6 +579,8 @@ class ArmControllerNode(Node):
     def _on_joint_state(self, msg):
         self._js = dict(zip(msg.name, msg.position))
         self._js_time = time.time()
+        if msg.effort and len(msg.effort) == len(msg.name):
+            self._je = dict(zip(msg.name, msg.effort))
         # A held-object record is wrong once the fingers are open (someone opened the gripper from the dashboard / by hand, or the object fell): it would keep the planner
         # refusing picks ("put it down first") for something that is no longer there.
         f = self._js.get('finger_joint')
@@ -2440,6 +2442,59 @@ class ArmControllerNode(Node):
         return ws.carry_path_blocker(start_xy, end_xy, self._scene_obstacles(min_height=h),
                                      avoid=float(self.get_parameter('carry_avoid_m').value))
 
+    TOUCH_START_ABOVE_M = 0.010   # the touch-down starts this far over where the object should stand ...
+    TOUCH_STEP_M = 0.002          # ... lowers it in steps of this ...
+    TOUCH_MAX_BELOW_M = 0.006     # ... and never goes further below that height than this
+    TOUCH_DELTA_NM = 0.35         # the object has touched down when a joint torque differs by this from its value before the first step (rest noise is ~0.02 Nm; a base just touching a table with a 0.4 m lever: ~0.3-1 Nm)
+    TOUCH_JOINTS = ('joint_2', 'joint_4', 'joint_6')
+
+    def _effort_vector(self, seconds=0.25):
+        """Mean joint torques (Nm) of TOUCH_JOINTS over `seconds` of /joint_states, or None when the arm reports none."""
+        t_end, rows = time.monotonic() + seconds, []
+        while time.monotonic() < t_end:
+            je = getattr(self, '_je', None)
+            if je and all(j in je for j in self.TOUCH_JOINTS):
+                rows.append([float(je[j]) for j in self.TOUCH_JOINTS])
+            time.sleep(0.02)
+        if not rows:
+            return None
+        return [sum(col) / len(rows) for col in zip(*rows)]
+
+    def _touch_down(self, x, y, z_target, min_flange_z, label='lower'):
+        """Lower the held object onto its spot until it TOUCHES (2026-11-03: set down from a little too high it slammed onto the table; the heights it works from are inferred, the joint torques are
+        measured). Goes to TOUCH_START_ABOVE_M over z_target, then down in TOUCH_STEP_M steps, comparing the torques of joints 2 / 4 / 6 with their values before the first step; stops at the first
+        step that changes one by TOUCH_DELTA_NM, or at z_target - TOUCH_MAX_BELOW_M (never below min_flange_z). Without torque readings it is the plain move to z_target. True when the arm is where it
+        stopped (touching or not); False when a move failed."""
+        if self.dry_run or self.moveit2 is None:
+            return self._move_verified(x, y, z_target, label, min_flange_z=min_flange_z)
+        z_stop = max(z_target - self.TOUCH_MAX_BELOW_M, float(min_flange_z) if min_flange_z is not None else -1.0)
+        z_top = max(z_target + self.TOUCH_START_ABOVE_M, z_stop)
+        base = None
+        if getattr(self, '_je', None):
+            if not self._move_verified(x, y, z_top, f'{label} (above the spot)', min_flange_z=min_flange_z):
+                return False
+            time.sleep(0.4)
+            base = self._effort_vector()
+        if base is None:
+            return self._move_verified(x, y, z_target, label, min_flange_z=min_flange_z)
+        z = z_top
+        while z > z_stop + 1e-6:
+            z = max(z_stop, z - self.TOUCH_STEP_M)
+            if not self._move_verified(x, y, z, f'{label} step', min_flange_z=min_flange_z):
+                return False
+            time.sleep(0.2)
+            now = self._effort_vector(0.2)
+            if now is None:
+                break
+            worst = max(abs(a - b) for a, b in zip(now, base))
+            if worst >= self.TOUCH_DELTA_NM:
+                self.get_logger().info(f'{label}: touched down at flange z={z:.3f} ({(z_target - z) * 1000:+.0f} mm from the computed height {z_target:.3f}; torque change {worst:.2f} Nm)')
+                self._log_event('touch_down', z=round(z, 4), computed=round(float(z_target), 4), torque_nm=round(worst, 3))
+                return True
+        self.get_logger().info(f'{label}: no touch-down felt down to z={z:.3f} (computed height {z_target:.3f}); releasing there')
+        self._log_event('touch_down', z=round(z, 4), computed=round(float(z_target), 4), torque_nm=None)
+        return True
+
     GENTLE_VEL_SCALE = 0.35       # speed factor while an object is lowered onto its spot and while the open gripper first backs away from it
     PLACE_SETTLE_S = 0.8          # pause after the fingers open, so the object has settled before anything moves again
 
@@ -2458,7 +2513,7 @@ class ArmControllerNode(Node):
 
     def _lower_gently(self, x, y, z, label, min_flange_z):
         with self._gentle():
-            return self._move_verified(x, y, z, label, min_flange_z=min_flange_z)
+            return self._touch_down(x, y, z, min_flange_z, label)
 
     def _settle(self):
         if not (self.dry_run or self.moveit2 is None):
@@ -2639,7 +2694,7 @@ class ArmControllerNode(Node):
         steps.append(('check the opening fingers are clear of the neighbours', place_fingers_clear))
         def lower_gently():
             with self._gentle():
-                return self._move_verified(fx, fy, set_z, 'lower', min_flange_z=low_floor)
+                return self._touch_down(fx, fy, set_z, low_floor, 'lower')
         steps.append(('lower', lower_gently))
         for name, action in steps:
             self._publish_pp_status(f'place: {name}')
