@@ -1534,6 +1534,7 @@ class ArmControllerNode(Node):
             return False, 'position'
         geom, _ = sg.load_geometry()
         label = (self.latest_scene.get(object_id) or {}).get('label', 'object')
+        self._grip_label = label                          # what the grip checks of this pick judge the finger reading against
         wide = ws.too_wide_for_gripper(label)
         if wide:
             self._refuse(f'pick: the {label} is about {wide[0] * 100:.0f} cm across and the open gripper spans {wide[1] * 100:.1f} cm, '
@@ -2414,14 +2415,34 @@ class ArmControllerNode(Node):
                 self._attempt.grip_reading(what, (self._js or {}).get('finger_joint'))
         except Exception:
             pass
-        if self._is_holding():
-            return True
         f = (self._js or {}).get('finger_joint')
+        label = getattr(self, '_grip_label', None)
+        self.get_logger().info(f'grip check ({what}): finger joint {f if f is None else round(float(f), 3)} for a {label}')
+        if self._is_holding() and self._grip_plausible(label):
+            return True
+        if self._is_holding():
+            self.get_logger().error(f'pick {what}: the fingers stopped at {float(f):.3f}, too far closed for the body of a {label} (a rim or handle pinch) — opening it again and stopping')
+            self._publish_pp_status(f'pick {what}: not holding the {label} by its body')
+            self._open_gripper()
+            return False
         self.get_logger().error(
             f'pick {what}: nothing in the gripper (finger joint {f}) — opening it again and stopping')
         self._publish_pp_status(f'pick {what}: nothing in the gripper')
         self._open_gripper()
         return False
+
+    # Where the finger joint stops on the BODY of an object (0 open, 0.695 fully closed; about 140 mm * (1 - f / 0.695)): a cup 7-9 cm across stops at 0.27-0.35 (measured 0.295 and 0.327 on the blue
+    # mug); a pinch of a rim or handle (0.5-1.5 cm) stops at 0.58-0.67 and used to count as "holding" (2026-11-05: the white cup was lifted by its handle and dropped during the carry).
+    GRIP_FINGER_RANGE = {'cup': (0.15, 0.46), 'mug': (0.15, 0.46)}
+
+    def _grip_plausible(self, label):
+        """False only when the finger reading is known and outside the range of an object's body; unknown readings or labels pass (the plain holding test still applies)."""
+        try:
+            f = float(self._js['finger_joint'])
+        except (TypeError, KeyError, ValueError):
+            return True
+        lo_hi = self.GRIP_FINGER_RANGE.get(label)
+        return True if lo_hi is None else lo_hi[0] <= f <= lo_hi[1]
 
     def _is_holding(self):
         """True while the fingers are closed on something: partly closed, not fully (missed)."""
@@ -2761,7 +2782,20 @@ class ArmControllerNode(Node):
             # (a side-held cup that is already over its spot is simply lowered: the lift is only to clear things on the way, and with the tool horizontal the arm can be too close to a joint
             # limit to go up at all, 2026-10-29)
             steps.append(('lift', lambda: self._move_verified(g[0], g[1], carry_z, 'lift')))
+        held_label_now = (self._held or {}).get('label')
+
+        def still_held():
+            """After the lift and before the long carry: is the object still in the fingers by its body? An object that fell, or hangs by its handle, must not be carried across the table."""
+            time.sleep(0.3)
+            f = (self._js or {}).get('finger_joint')
+            self.get_logger().info(f'grip check (before the carry): finger joint {f if f is None else round(float(f), 3)} for a {held_label_now}')
+            in_band = f is not None and 0.08 < float(f) < 0.65
+            if self._is_holding() and (not in_band or self._grip_plausible(held_label_now)):          # (a reading outside the holding band is the plain test's business; it was checked at the start of the place)
+                return True
+            self._publish_pp_status('place: the object is not held by its body any more')
+            return self._refuse(f'place: the {held_label_now} is not held by its body any more (finger joint {f}); not carrying it')
         if far:
+            steps.append(('check the object is still held', still_held))
             if via is not None:
                 steps.append(('carry (around an obstacle)', lambda: self._move_verified(via[0], via[1], carry_z, 'carry-via')))
             steps.append(('carry', lambda: self._move_verified(fx, fy, carry_z, 'carry')))
