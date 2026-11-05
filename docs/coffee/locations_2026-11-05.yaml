@@ -1,0 +1,67 @@
+coffee_tray_grasp:
+  approach_azimuth_deg: 90.0
+  finger: 0.2664
+  flange:
+  - 0.4066
+  - 0.1033
+  - 0.096
+  flange_quat_xyzw:
+  - 0.04549
+  - 0.71708
+  - 0.6906
+  - 0.08254
+  joints_rad:
+  - 0.1333
+  - 1.255
+  - -3.1014
+  - -1.9459
+  - 1.5347
+  - 1.5786
+  - 1.684
+  note: cup in the Keurig tray, gripper closed on it (taught by jogging, 2026-11-02)
+  object_label: cup
+  pad_midpoint:
+  - 0.4413
+  - 0.2913
+  - 0.0898
+  recorded: '2026-11-02 13:49:33'
+  standoff_m: 0.22
+  surface_z: 0.0283
+  taught_azimuth_deg: 79.6
+  tool_axis:
+  - 0.1812
+  - 0.9829
+  - -0.0325
+  tool_tilt_below_horizontal_deg: 1.9
+coffee_tray_pre:
+  approach_azimuth_deg: 79.6
+  finger: 0.0036
+  flange:
+  - 0.3703
+  - -0.0955
+  - 0.1262
+  flange_quat_xyzw:
+  - -0.7337
+  - 0.09003
+  - -0.03959
+  - 0.67232
+  joints_rad:
+  - 0.861
+  - 1.1967
+  - 2.8459
+  - -1.8402
+  - -0.9403
+  - -1.3178
+  - 1.2505
+  note: open gripper at the approach pose in front of the Keurig tray, reached by
+    go_to_location (2026-11-02)
+  pad_midpoint:
+  - 0.402
+  - 0.078
+  - 0.1097
+  recorded: '2026-11-02 14:07:05'
+  tool_axis:
+  - 0.1791
+  - 0.9794
+  - -0.0928
+  tool_tilt_below_horizontal_deg: 5.3
