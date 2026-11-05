@@ -92,8 +92,14 @@ def parse_fixed_obstacles(data):
     out = []
     for o in (data or {}).get('obstacles') or []:
         try:
-            out.append({'name': str(o.get('name', 'large object')), 'x': float(o['x']), 'y': float(o['y']),
-                        'radius': float(o.get('radius', 0.12)), 'height': float(o.get('height', 0.30))})
+            item = {'name': str(o.get('name', 'large object')), 'x': float(o['x']), 'y': float(o['y']),
+                    'radius': float(o.get('radius', 0.12)), 'height': float(o.get('height', 0.30))}
+            for key in ('size_x', 'size_y'):                  # the true rectangle, when the file gives it (the dashboards draw a box of that size)
+                if o.get(key) is not None:
+                    item[key] = float(o[key])
+            if o.get('color'):
+                item['color'] = str(o['color'])               # the colour the dashboards draw it in (a Keurig is red); the cameras are not asked
+            out.append(item)
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
     return out
@@ -462,7 +468,8 @@ class SceneGraphNode(Node):
         top = table_top if table_top is not None else -0.0125
         for i, o in enumerate(self._fixed_obstacles()):
             snapshot[f'fixed_{i:02d}'] = {'label': o['name'], 'x': o['x'], 'y': o['y'], 'z': round(top + o['height'], 3), 'confidence': 1.0,
-                                          'reachable': False, 'stale': False, 'fixed': True, 'radius': o['radius']}
+                                          'reachable': False, 'stale': False, 'fixed': True, 'radius': o['radius'],
+                                          **{k: o[k] for k in ('size_x', 'size_y', 'color') if k in o}}
 
         self.snapshot_pub.publish(String(data=json.dumps(snapshot)))
 

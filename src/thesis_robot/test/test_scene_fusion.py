@@ -287,3 +287,10 @@ def test_the_published_colour_changes_only_after_the_new_one_keeps_winning():
     assert [hold('blue') for _ in range(9)] == ['grey'] * 9              # the count starts again after grey won once
     assert hold('blue') == 'blue'                                        # the 10th in a row switches
     assert hold(None) == 'blue'                                          # no evidence keeps the current colour
+
+
+def test_a_fixed_obstacle_passes_its_footprint_and_colour_on_so_the_dashboards_draw_a_red_box():
+    out = sgn.parse_fixed_obstacles({'obstacles': [{'name': 'coffee machine', 'x': 0.485, 'y': 0.305, 'radius': 0.16, 'size_x': 0.18, 'size_y': 0.225, 'height': 0.33, 'color': 'red'},
+                                                   {'name': 'stand', 'x': 0.1, 'y': 0.2}]})
+    assert out[0]['size_x'] == 0.18 and out[0]['size_y'] == 0.225 and out[0]['color'] == 'red'
+    assert 'size_x' not in out[1] and 'color' not in out[1]                           # an entry without them is unchanged (a plain circle)

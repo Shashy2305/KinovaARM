@@ -87,6 +87,16 @@ export function SceneView({ scene, unknown }: { scene: RosStatus['scene_snapshot
             const [px, py] = toPx(obj.x, obj.y)
             const color = obj.reachable ? 'var(--color-green)' : 'var(--color-text-faint)'
             const fill = colourHex(obj.color)
+            if (obj.size_x && obj.size_y) {                      // a fixed obstacle (the coffee machine): its real footprint, in its own colour
+              const wpx = (obj.size_x / (VIEW_X[1] - VIEW_X[0])) * W
+              const hpx = (obj.size_y / (VIEW_Y[1] - VIEW_Y[0])) * H
+              return (
+                <g key={id}>
+                  <rect x={px - wpx / 2} y={py - hpx / 2} width={wpx} height={hpx} fill={fill ?? '#c53030'} fillOpacity={0.75} stroke={fill ?? '#c53030'} strokeWidth={1.5} />
+                  <text x={px + wpx / 2 + 3} y={py + 3} fontSize="8" fill={fill ?? '#c53030'} fontFamily="monospace">{objectName(obj.label, null)}</text>
+                </g>
+              )
+            }
             return (
               <g key={id} opacity={obj.stale ? 0.35 : 1}>
                 <circle cx={px} cy={py} r={obj.reachable ? 5.5 : 4} fill={fill ?? color} stroke={obj.reachable ? 'var(--color-green)' : 'var(--color-text-faint)'} strokeWidth={1.5} />

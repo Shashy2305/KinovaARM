@@ -10,6 +10,11 @@ export interface SceneObject {
   stale: boolean
   color?: string | null
   relations?: string[]
+  /** a big fixed thing on the table (the coffee machine): its true footprint, so the maps draw a box instead of a dot */
+  fixed?: boolean
+  size_x?: number
+  size_y?: number
+  radius?: number
 }
 
 export interface RosStatus {

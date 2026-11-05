@@ -17,7 +17,7 @@ interface Pose {
   workspace?: { x: number[]; y: number[] }
   table_top_z?: number | null
 }
-interface SceneObj { label: string; x: number; y: number; z: number | null; reachable?: boolean; stale?: boolean; color?: string | null }
+interface SceneObj { label: string; x: number; y: number; z: number | null; reachable?: boolean; stale?: boolean; color?: string | null; size_x?: number; size_y?: number }
 
 const CHAIN = ['base_link', 'shoulder_link', 'half_arm_1_link', 'half_arm_2_link', 'forearm_link', 'spherical_wrist_1_link', 'spherical_wrist_2_link', 'bracelet_link', 'end_effector_link', 'robotiq_140_base_link']
 const FINGERS: [string, string][] = [['robotiq_140_base_link', 'left_outer_finger'], ['left_outer_finger', 'left_inner_finger_pad'], ['robotiq_140_base_link', 'right_outer_finger'], ['right_outer_finger', 'right_inner_finger_pad']]
@@ -125,9 +125,16 @@ export function RobotView({ scene = null, height = 420 }: { scene?: Record<strin
         const h = HEIGHT[o.label] ?? 0.06
         const hex = colourHex(o.color)
         const col = hex ? new THREE.Color(hex) : new THREE.Color(o.reachable ? 0x4fd18b : 0x7a828c)             // its own colour when the cameras know it
-        const m = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, h, 20), new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: o.reachable ? 0.95 : 0.5 }))
-        m.rotation.x = Math.PI / 2
-        m.position.set(o.x, o.y, -0.0125 + h / 2)
+        let m: THREE.Mesh
+        if (o.size_x && o.size_y) {                                   // a fixed obstacle (the coffee machine): a box of its real footprint and height
+          const bh = o.z != null ? Math.max(0.05, o.z + 0.0125) : 0.3
+          m = new THREE.Mesh(new THREE.BoxGeometry(o.size_x, o.size_y, bh), new THREE.MeshStandardMaterial({ color: hex ? col : new THREE.Color(0xc53030), transparent: true, opacity: 0.85 }))
+          m.position.set(o.x, o.y, -0.0125 + bh / 2)
+        } else {
+          m = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, h, 20), new THREE.MeshStandardMaterial({ color: col, transparent: true, opacity: o.reachable ? 0.95 : 0.5 }))
+          m.rotation.x = Math.PI / 2
+          m.position.set(o.x, o.y, -0.0125 + h / 2)
+        }
         objects.add(m)
         const lab = textSprite(objectName(o.label, o.color), o.reachable ? '#4fd18b' : '#9aa3ad')
         lab.position.set(o.x, o.y, -0.0125 + h + 0.05)
