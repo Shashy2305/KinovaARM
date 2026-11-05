@@ -59,3 +59,26 @@ def test_a_side_held_cup_that_slipped_is_not_carried_across_the_table(node, side
     node._held = dict(held)
     finger(node, 0.31)                                                                     # a proper grip: carried as before
     assert node._place(0.45, 0.0) is True
+
+
+# ---- 2026-11-05: the camera's plane height is the cup's measured top; a cup gets a third grip attempt ------------------------------------------------------------------
+def test_the_camera_plane_is_the_measured_cup_top_during_a_cup_pick_and_the_class_height_otherwise(node):
+    from thesis_robot import wrist_servo as ws
+    geom = {'table_top_z': -0.0125}
+    node._measured_top_z = None
+    assert node._plane_z('cup', geom) == pytest.approx(ws.center_plane_height('cup', -0.0125))        # the class says 9 cm: top at 0.0775
+    node._measured_top_z = 0.061                                                                       # the white cup measures 7.4 cm
+    assert node._plane_z('cup', geom) == pytest.approx(0.061)
+    assert node._plane_z('mouse', geom) == pytest.approx(ws.center_plane_height('mouse', -0.0125))     # only cups
+    node._measured_top_z = None
+
+
+def test_a_cup_gets_a_third_grip_attempt_other_objects_two(node, world, monkeypatch):
+    node.latest_scene = {'cup_00': {'label': 'cup', 'x': 0.40, 'y': 0.0, 'z': 0.045, 'confidence': 0.95, 'reachable': True, 'stale': False}}
+    world.grips[:] = [False, False, True, True, True]                                                  # the first two grips close on air, the third holds
+    node._measured_top_z = None
+    seen = []
+    real = node._pick_once
+    monkeypatch.setattr(node, '_pick_once', lambda oid, pos, az: (seen.append(1) or real(oid, pos, az)))
+    monkeypatch.setattr(node, '_recover_before_retry', lambda: None)
+    assert node._pick('cup_00', 0.35) is True and len(seen) == 3

@@ -1133,7 +1133,10 @@ class ArmControllerNode(Node):
                     self.get_logger().warn(f'pick: could not go home before the retry ({e})')
                     return False
                 continue
-            if (failed in ('check the grip', 'check it is still held', 'check the grip (3 cm up)') or side_aborted) and attempt == 1:
+            # A grip that closed on air or on a handle may be tried a third time (each attempt looks at the cup again, and the second one chooses another closing direction): 2026-11-05, the white cup's
+            # first top-down grasp missed three times in four, the next one held.
+            max_grip_attempts = 3 if getattr(self, '_grip_label', None) in ('cup', 'mug') else 2           # (every other object: two, as before)
+            if ((failed in ('check the grip', 'check it is still held', 'check the grip (3 cm up)') and attempt < max_grip_attempts) or (side_aborted and attempt == 1)):
                 why = 'the side grasp could not get in' if side_aborted else f'the grip failed ({failed})'
                 self.get_logger().warn(f'pick {object_id}: {why} — trying once more' + (' with a top grasp' if side_aborted else ''))
                 self._publish_pp_status(f'pick {object_id}: retrying' + (' (top grasp)' if side_aborted else ''))
@@ -1535,6 +1538,11 @@ class ArmControllerNode(Node):
         geom, _ = sg.load_geometry()
         label = (self.latest_scene.get(object_id) or {}).get('label', 'object')
         self._grip_label = label                          # what the grip checks of this pick judge the finger reading against
+        try:
+            top0 = float(sg.load_geometry()[0]['table_top_z'])
+            self._measured_top_z = float(pos[2]) if label in ('cup', 'mug') and abs(float(pos[2]) - (top0 + ws.OBJECT_HEIGHT_M.get(label, 0.09))) < 0.035 else None
+        except Exception:
+            self._measured_top_z = None
         wide = ws.too_wide_for_gripper(label)
         if wide:
             self._refuse(f'pick: the {label} is about {wide[0] * 100:.0f} cm across and the open gripper spans {wide[1] * 100:.1f} cm, '
@@ -2006,6 +2014,15 @@ class ArmControllerNode(Node):
 
     BODY_SHIFT_MIN_M, BODY_SHIFT_MAX_M = 0.004, 0.045
 
+    def _plane_z(self, label, geom):
+        """The height of the plane the wrist camera's rays are intersected with to turn a pixel into a table position. For a cup being picked this is the cup's MEASURED top (the scene estimate, set by
+        the pick), not the class height: the class says 9 cm, the cups measure 7.4-7.6 cm, and because the camera sits beside the tool axis a plane 1.6 cm too high puts the estimate 1.0-1.4 cm off along the
+        view direction (2026-11-05: the fingers came down on the handle side of the white cup)."""
+        top = getattr(self, '_measured_top_z', None)
+        if top is not None and label in ('cup', 'mug'):
+            return float(top)
+        return ws.center_plane_height(label, geom['table_top_z'])
+
     def _body_centre_shift(self, label, geom):
         """(dx, dy) in base_link from the centre of the detection BOX to the centre of the object's round BODY (the wrist detector's 'bu'/'bv': the thickest part of the mask), from the latest wrist
         detection of `label`; None when there is none, it is old, or the shift is implausible. A cup's handle pulls the box centre 1-2 cm toward itself, and a top-down grasp centred there came down around
@@ -2018,7 +2035,7 @@ class ArmControllerNode(Node):
         msg = item[1]
         try:
             R_bc, t_bc = self._tf_pose(BASE_LINK, msg['frame_id'], msg.get('stamp'))
-            plane_z = ws.center_plane_height(label, geom['table_top_z'])
+            plane_z = self._plane_z(label, geom)
             here = self._pad_midpoint_xy(default=None)
             got = ws.match_detection(self._wrist_xy_candidates(msg, R_bc, t_bc, plane_z), label, here, self.TRACK_TOL_M)
             if got is None:
@@ -2084,7 +2101,7 @@ class ArmControllerNode(Node):
         model, 'orient_deg'/'elong') that is the `label` object: same matching as the centring (class or,
         failing that, position). Only frames received after `after` (monotonic, default: now) count."""
         geom, _ = sg.load_geometry()
-        plane_z = ws.center_plane_height(label, geom['table_top_z']) if geom else None
+        plane_z = self._plane_z(label, geom) if geom else None
         t0 = time.monotonic()
         after = t0 if after is None else after
         while time.monotonic() - t0 < timeout:
@@ -2375,7 +2392,7 @@ class ArmControllerNode(Node):
         if geom is None:
             self.get_logger().error('center_over: no table geometry recorded')
             return False, None
-        plane_z = ws.center_plane_height(label, geom['table_top_z'])
+        plane_z = self._plane_z(label, geom)
         if self.dry_run or self.moveit2 is None:
             self.get_logger().info(f'  [DRY RUN] centre over {label} (wrist camera, plane z={plane_z:.3f})')
             time.sleep(0.3)
