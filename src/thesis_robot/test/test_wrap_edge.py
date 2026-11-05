@@ -70,7 +70,7 @@ def test_go_home_may_still_turn_joints_a_long_way(node, monkeypatch):
 
 
 def test_the_limits_agree_with_the_wider_joints(node):
-    assert mu.joint_limit(2) > math.pi and mu.joint_limit(6) > math.pi and acn.ArmControllerNode.EDGE_BAND_RAD < 0.3
+    assert all(mu.joint_limit(i) > math.pi for i in (0, 2, 4, 6)) and acn.ArmControllerNode.EDGE_BAND_RAD < 0.3
 
 
 # ---- equivalent seeds: the IK is not indifferent to how the same angle is written ----------------------------------------------------------------------------
@@ -83,7 +83,7 @@ def test_equivalent_seeds_only_appear_for_joints_3_and_7_near_the_edge():
     both = [0.0, 0.3, 3.0, -1.0, 0.2, 0.5, -3.0]
     seeds = mu.equivalent_seeds(both)
     assert len(seeds) == 4 and seeds[0] == both and all(abs(v[2]) <= 3.5 and abs(v[6]) <= 3.5 for v in seeds)
-    assert mu.equivalent_seeds([3.0, 0, 0, 0, 3.0, 0, 0]) == [[3.0, 0, 0, 0, 3.0, 0, 0]]                                         # joints 1 and 5 keep the old limit: no variants
+    assert len(mu.equivalent_seeds([3.0, 0, 0, 0, 3.0, 0, 0])) == 4                                                           # joints 1 and 5 are continuous with the wide limit too (2026-11-05): variants appear
     out = mu.equivalent_seeds([0, 0, -3.3, 0, 0, 0, 0])
     assert len(out) == 2 and out[1][2] == pytest.approx(-3.3 + 2 * math.pi)                                                    # -3.3 is also 2.98: both writings are inside 3.5
     assert mu.equivalent_seeds([0, 0, 2.0, 0, 0, 0, 0]) == [[0, 0, 2.0, 0, 0, 0, 0]]                                           # well inside: no variant

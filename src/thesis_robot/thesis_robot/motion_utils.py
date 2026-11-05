@@ -24,9 +24,10 @@ PLANNER_JOINT_LIMIT = 2.88
 # 2026-11-03: joints 3 and 7 may go further. A side pick toward the coffee tray needs joint 3 / 7 between about 165 and 195 deg (the arm's home has joint 3 at 179.9 deg): both of their
 # equivalents lay outside +-2.88, so the pick was refused for any cup more than ~1 cm off the one good spot. Measured: Pilz PTP plans these joints well past 3.5 rad (plan-only probe), the
 # Kortex hardware interface reports angles wrapped to +-pi and wraps commands modulo 360 deg, and the installed joint_trajectory_controller normalises the position error of continuous joints
-# (angle_wraparound). Joints 1 and 5 never needed more and keep the old limit.
+# (angle_wraparound). 2026-11-05: joints 1 and 5 are widened too: the tray put (pads 1.2 cm further in, after the sign fix) reaches the tray with joint 1 at -2.73 rad on the branch the arm takes, and the
+# move in had no solution inside +-2.88 (IK from the arm's real joints: 0 clean solutions with the old limit, 8 of 12 with 3.5).
 JOINT_LIMIT_WIDE = 3.5
-CONTINUOUS_JOINT_LIMITS = {0: PLANNER_JOINT_LIMIT, 2: JOINT_LIMIT_WIDE, 4: PLANNER_JOINT_LIMIT, 6: JOINT_LIMIT_WIDE}
+CONTINUOUS_JOINT_LIMITS = {0: JOINT_LIMIT_WIDE, 2: JOINT_LIMIT_WIDE, 4: JOINT_LIMIT_WIDE, 6: JOINT_LIMIT_WIDE}
 
 
 def joint_limit(i):
