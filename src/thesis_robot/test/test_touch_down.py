@@ -136,3 +136,23 @@ def test_noise_of_a_few_tenths_of_a_newton_metre_per_step_is_not_a_jump(node, mo
     assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower', relieve_m=0.0015) is True
     assert st['moves'][-1][0] == pytest.approx(t - 0.012)                                                    # went to the bottom: no false trigger, no relieve
     assert acn.ArmControllerNode.TOUCH_JUMP_NM >= 0.5 and acn.ArmControllerNode.TOUCH_RELIEVE_M < 0.003
+
+
+def test_a_step_without_an_ik_solution_is_asked_again_before_the_lowering_gives_up(node, monkeypatch):
+    # 2026-11-05: one 2 mm step of a set-down had no IK solution and the place failed with the mug in the gripper; the same step worked on the retry
+    t = 0.071
+    st = world(node, monkeypatch, contact_z=t - 0.004)
+    real = node._move_verified
+    fails = {'left': 2}
+
+    def flaky(x, y, z, label, **kw):
+        if label.endswith('step') and z < t and fails['left'] > 0:
+            fails['left'] -= 1
+            return False                                                                   # nothing moved
+        return real(x, y, z, label, **kw)
+    monkeypatch.setattr(node, '_move_verified', flaky)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and fails['left'] == 0
+    assert st['moves'][-1][0] == pytest.approx(t - 0.004)                                  # and it went on to the touch
+    st = world(node, monkeypatch, contact_z=None, fail_at=t - 0.002)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is False                       # a step that keeps failing still fails the lowering (the mug stays held)
+    assert [m for m in st['moves'] if m[0] <= t - 0.002 + 1e-9].__len__() == acn.ArmControllerNode.TOUCH_STEP_TRIES
