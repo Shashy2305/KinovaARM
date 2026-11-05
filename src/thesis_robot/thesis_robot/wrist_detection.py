@@ -255,6 +255,9 @@ class WristDetection(Node):
                                     ang, elong = ws.polygon_orientation(poly)
                                     det['orient_deg'] = round(ang, 1)
                                     det['elong'] = round(elong, 2)
+                                    bc = ws.body_centre(poly)               # the centre of the round body, without a handle (see wrist_servo.body_centre)
+                                    if bc is not None:
+                                        det['bu'], det['bv'], det['body_r'] = round(bc[0], 1), round(bc[1], 1), round(bc[2], 1)
                             except Exception:
                                 pass
                             if shape_on and shape_left > 0 and conf >= shape_min_conf and poly is not None:

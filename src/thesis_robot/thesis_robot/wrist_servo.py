@@ -330,6 +330,32 @@ MIN_ELONGATION = 1.2           # axis ratio above which an object has a "long si
 MIN_TURN_DEG = 12.0            # smaller corrections are not worth a (slow) wrist turn
 
 
+def body_centre(poly):
+    """(u, v, radius_px) of the thickest part of an object's outline: the point of the mask farthest from its edge. For a cup seen from above with its handle sticking out this is the centre of the round BODY,
+    not of the bounding box (a handle pulls the box centre 1-2 cm toward itself; 2026-11-05: the fingers of a top-down grasp then came down around the handle, closed through its loop and read air).
+    None for an outline that is too small or not usable. `poly` is a list of (x, y) pixel points."""
+    try:
+        import cv2
+        pts = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+        if len(pts) < 5:
+            return None
+        x0, y0 = np.floor(pts.min(axis=0)).astype(int) - 2
+        x1, y1 = np.ceil(pts.max(axis=0)).astype(int) + 3
+        w, h = int(x1 - x0), int(y1 - y0)
+        if w < 8 or h < 8 or w * h > 4_000_000:
+            return None
+        mask = np.zeros((h, w), np.uint8)
+        cv2.fillPoly(mask, [np.round(pts - np.array([x0, y0], np.float32)).astype(np.int32)], 255)
+        dt = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+        r = float(dt.max())
+        if r < 3.0:
+            return None
+        ys, xs = np.nonzero(dt >= 0.92 * r)                     # the plateau of the thickest part: its middle (one peak pixel would jump around)
+        return float(xs.mean() + x0), float(ys.mean() + y0), r
+    except Exception:
+        return None
+
+
 def polygon_orientation(poly):
     """(angle_deg, elongation) of a filled polygon [(x, y), ...] in image coordinates (y down): the direction
     of its major axis in (-90, 90] degrees from image x, and sqrt(lambda_major / lambda_minor) of its area

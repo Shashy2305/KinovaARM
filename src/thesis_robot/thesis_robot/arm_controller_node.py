@@ -1806,6 +1806,11 @@ class ArmControllerNode(Node):
             return descend_legacy()
 
         def descend_legacy(force_top=False):
+            if label in ('cup', 'mug'):
+                shift = self._body_centre_shift(label, geom)
+                if shift is not None:
+                    centred['xy'] = (centred['xy'][0] + shift[0], centred['xy'][1] + shift[1])
+                    self.get_logger().info(f'pick: the fingers are moved {math.hypot(*shift) * 100:.1f} cm ({shift[0] * 100:+.1f}, {shift[1] * 100:+.1f}) from the middle of the cup with its handle to the middle of its round body')
             tplan = self._tilt_for(label, centred['xy'], object_id) if not (force_top or self.dry_run or self.moveit2 is None) else None
             if tplan is None:
                 return descend_vertical()
@@ -1998,6 +2003,36 @@ class ArmControllerNode(Node):
             if xy is not None:
                 out.append((d, xy))
         return out
+
+    BODY_SHIFT_MIN_M, BODY_SHIFT_MAX_M = 0.004, 0.045
+
+    def _body_centre_shift(self, label, geom):
+        """(dx, dy) in base_link from the centre of the detection BOX to the centre of the object's round BODY (the wrist detector's 'bu'/'bv': the thickest part of the mask), from the latest wrist
+        detection of `label`; None when there is none, it is old, or the shift is implausible. A cup's handle pulls the box centre 1-2 cm toward itself, and a top-down grasp centred there came down around
+        the handle and closed through its loop (2026-11-05, twice in a row)."""
+        if self.dry_run or self.moveit2 is None or self._wrist_K is None:
+            return None
+        item = self._wrist_dets
+        if not item or time.monotonic() - item[0] > 2.5:
+            return None
+        msg = item[1]
+        try:
+            R_bc, t_bc = self._tf_pose(BASE_LINK, msg['frame_id'], msg.get('stamp'))
+            plane_z = ws.center_plane_height(label, geom['table_top_z'])
+            here = self._pad_midpoint_xy(default=None)
+            got = ws.match_detection(self._wrist_xy_candidates(msg, R_bc, t_bc, plane_z), label, here, self.TRACK_TOL_M)
+            if got is None:
+                return None
+            d, box_xy = got
+            if d.get('bu') is None or d.get('bv') is None:
+                return None
+            body = ws.pixel_to_plane_xy(d['bu'], d['bv'], self._wrist_K, R_bc, t_bc, plane_z)
+            if body is None:
+                return None
+        except Exception:
+            return None
+        shift = (float(body[0]) - float(box_xy[0]), float(body[1]) - float(box_xy[1]))
+        return shift if self.BODY_SHIFT_MIN_M <= math.hypot(*shift) <= self.BODY_SHIFT_MAX_M else None
 
     def _wrist_target_xy(self, label, expected_xy, after, plane_z, timeout=3.0, same_tol=None):
         """Where the wrist camera places `label` on the table plane: (x, y) in
