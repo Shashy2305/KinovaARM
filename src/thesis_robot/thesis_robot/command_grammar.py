@@ -94,7 +94,18 @@ def _o(group):
 COFFEE_ASK = (r"^(?:(?:give|get|make|bring|fetch|pour|serve) me|(?:i )?(?:want|would like|need)|can i have|could i have|may i have|make)(?: a| an| some| my| the| another| one)?(?: cup of| mug of| fresh| hot)* ?coffee(?: (?:now|again))?$"
               r"|^coffee$|^(?:make|brew) (?:a |some |the )?coffee$")
 
+# "give me coffee in the white cup (and put it back where it was)" / "use the white cup for coffee and bring it back": the coffee routine with a named cup, and optionally the cup is brought back to where it stood
+# (2026-11-05, the professor's long plan: pick the white cup where it is, take it through the coffee machine, return it to the same spot).
+_RETURN = (r"(?:(?:,| and| then| and then| after that| afterwards| after) ?)+(?:(?:put|bring|take|keep|place|send|carry|move|set)(?: it| the cup| the mug)? back|return(?: it| the cup| the mug)?(?: back)?)"
+           r"(?: to where it was| where it was| to where it came from| to its (?:place|spot|original (?:place|spot|position|location))| to the (?:same|original) (?:place|spot|position)| where you found it| where you got it)?")
+_COFFEE_BEG = r"(?:(?:give|get|make|bring|fetch|pour|serve) me|(?:i )?(?:want|would like|need)|make)(?: a| an| some| my| the| another| one)?(?: cup of| mug of| fresh| hot)* ?coffee"
+_CUP_NAMED = r"(?:the |a |my |that |this )?(?:(?P<cc>" + _COLOUR_WORDS + r") )?(?:cup|mug)"
+COFFEE_IN = r"^" + _COFFEE_BEG + r" (?:in|with|using|into) " + _CUP_NAMED + r"(?P<ret>" + _RETURN + r")?$"
+COFFEE_USE = r"^(?:use|take|grab|get) " + _CUP_NAMED + r" (?:to make|for|to brew|to pour|to get) (?:me )?(?:a |some |the )?(?:cup of |mug of )?coffee(?P<ret>" + _RETURN + r")?$"
+
 PATTERNS = [
+    ('coffee', re.compile(COFFEE_IN)),
+    ('coffee', re.compile(COFFEE_USE)),
     ('coffee', re.compile(COFFEE_ASK)),
     ('go_home', re.compile(r'^(?:(?:go|return|come|move|send it|bring it|get|take it)(?: it| the arm| back)*(?: to)?(?: the)? )?home(?: position)?$')),
     # "put it down", "put the cup back on the table" (2026-10-26: the second was not recognised, nothing checked the model's plan and a lone go_home was approved with the cup still in the gripper)
@@ -130,7 +141,9 @@ def parse(command):
                     'a_color': COLOURS.get(g.get('a_c')) if g.get('a_c') else None,
                     'b_color': COLOURS.get(g.get('b_c')) if g.get('b_c') else None,
                     'side': _side_word(g.get('side')),
-                    'zone': _zone_from_groups(g) if kind == 'pick_place_zone' else None}
+                    'zone': _zone_from_groups(g) if kind == 'pick_place_zone' else None,
+                    'cup_colour': COLOURS.get(g.get('cc')) if g.get('cc') else None,
+                    'return': bool(g.get('ret'))}
     return None
 
 
@@ -203,8 +216,9 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
         cfg = locs.coffee_config()
         if locs.get(cfg['tray_location']) is None:
             return f'the coffee tray location {cfg["tray_location"]!r} has not been taught (scripts/teach_location.py record {cfg["tray_location"]})'
-        if _coffee_cup(scene, cfg) is None:
-            return 'there is no cup the arm can reach on the table: put one within reach and try again'
+        colour = intent.get('cup_colour')
+        if _coffee_cup(scene, cfg, colour) is None:
+            return (f'there is no {colour} cup the arm can reach on the table' if colour else 'there is no cup the arm can reach on the table') + ': put one within reach and try again'
         return None
     if intent.get('kind') == 'sequence':
         for i, item in enumerate(intent['items'], 1):
@@ -221,11 +235,11 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
     return None
 
 
-def _coffee_cup(scene, cfg):
+def _coffee_cup(scene, cfg, colour=None):
     """(object_id, entry) of the fresh, reachable cup nearest to the serving spot, from anywhere on the table (2026-11-03: the cup no longer has to stand at one spot; one that is outside the window the
-    side pick reaches is first brought to the spot), or None."""
+    side pick reaches is first brought to the spot), or None. With a colour only a cup the cameras call that colour qualifies."""
     sx, sy = cfg['serve_xy']
-    near = sorted(((math.hypot(o['x'] - sx, o['y'] - sy), oid, o) for oid, o in _objects(scene, 'cup') if o.get('x') is not None), key=lambda t: t[0])
+    near = sorted(((math.hypot(o['x'] - sx, o['y'] - sy), oid, o) for oid, o in _objects(scene, 'cup', colour) if o.get('x') is not None), key=lambda t: t[0])
     return (near[0][1], near[0][2]) if near else None
 
 
@@ -338,20 +352,25 @@ def build_plan(intent, scene):
     k = intent['kind']
     if k == 'coffee':
         cfg = locs.coffee_config()
-        cup = _coffee_cup(scene, cfg)
+        colour = intent.get('cup_colour')
+        cup = _coffee_cup(scene, cfg, colour)
         if cup is None or locs.get(cfg['tray_location']) is None:
             return None
         tray = cfg['tray_location']
         serve = {'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1]}
+        origin = [round(float(cup[1]['x']), 3), round(float(cup[1]['y']), 3)]          # where the cup stands now: with "put it back" it is returned there
+        named = {'colour': colour} if colour else {}
         staging = []
-        if not in_coffee_window(cup[1], cfg):
+        outside = not in_coffee_window(cup[1], cfg)
+        if outside:
             # A cup anywhere else is brought to the serving spot first (any grasp that works), looked up again there, and picked from the side by position: its id changes when it is seen again.
-            staging = [{'action': 'stage_object', 'object_id': cup[0], 'label': 'cup', **serve, 'tol_x': cfg['window_x_m'], 'tol_y': cfg['window_y_m'], 'tries': cfg['stage_tries'], 'approach_z': 0.35}]
+            staging = [{'action': 'stage_object', 'object_id': cup[0], 'label': 'cup', **named, 'from': origin, **serve, 'tol_x': cfg['window_x_m'], 'tol_y': cfg['window_y_m'],
+                        'tries': cfg['stage_tries'], 'approach_z': 0.35}]
         side_pick = {'action': 'pick', 'object_id': cup[0], 'approach_z': 0.35, 'side_az': cfg['pick_az']}
         if staging:
-            side_pick.update({'near': [serve['x'], serve['y']], 'label': 'cup'})
+            side_pick.update({'near': [serve['x'], serve['y']], 'label': 'cup', **named})
         # Home first and home last: the routine's own moves leave the tool horizontal, and a pick that starts from there has no solution for its first straight rise (2026-11-02, second live run).
-        return [{'action': 'go_home'}] + staging + [
+        plan = [{'action': 'go_home'}] + staging + [
                 side_pick,
                 {'action': 'go_to_location', 'name': tray, 'stage': 'put'},
                 {'action': 'wait', 'seconds': cfg['wait_s']},
@@ -359,7 +378,14 @@ def build_plan(intent, scene):
                 {'action': 'go_to_location', 'name': tray, 'stage': 'take'},
                 {'action': 'place', 'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1], 'learn': 'serve'},
                 {'action': 'go_home'},
-                {'action': 'check_placed', 'label': 'cup', **serve, 'learn': 'serve'}]
+                {'action': 'check_placed', 'label': 'cup', **named, **serve, 'learn': 'serve'}]
+        if intent.get('return') and outside:
+            # ... and "put it back": the same stage step in the other direction, from the serving spot to where the cup stood (the side-held route cannot reach that far, so it is carried from above), then a check
+            plan += [{'action': 'stage_object', 'object_id': cup[0], 'label': 'cup', **named, 'from': [serve['x'], serve['y']], 'x': origin[0], 'y': origin[1], 'tol_x': 0.04, 'tol_y': 0.04,
+                      'tries': cfg['stage_tries'], 'approach_z': 0.35, 'to_origin': True},
+                     {'action': 'go_home'},
+                     {'action': 'check_placed', 'label': 'cup', **named, 'x': origin[0], 'y': origin[1]}]
+        return plan
     if k == 'sequence':
         out = []
         for item in intent['items']:

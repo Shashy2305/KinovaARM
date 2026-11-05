@@ -328,7 +328,8 @@ class ArmControllerNode(Node):
             if step.get('near') and not (self.dry_run or self.moveit2 is None):
                 # an object that was moved (the staged cup) is found again by where it is: its id changes when the cameras see it again
                 try:
-                    found = self._nearest_object(step.get('label') or (self.latest_scene.get(oid) or {}).get('label'), float(step['near'][0]), float(step['near'][1]), within=self.NEAR_PICK_M)
+                    found = self._nearest_object(step.get('label') or (self.latest_scene.get(oid) or {}).get('label'), float(step['near'][0]), float(step['near'][1]), within=self.NEAR_PICK_M,
+                                                 colour=step.get('colour'))
                 except (TypeError, ValueError, IndexError):
                     found = None
                 if found is not None:
@@ -978,11 +979,14 @@ class ArmControllerNode(Node):
     NEAR_PICK_M = 0.10            # a pick by position takes the nearest fresh object of the class within this distance
     SCENE_SETTLE_S = 3.5          # after the arm has gone home: time for the cameras to see what it set down
 
-    def _nearest_object(self, label, x, y, within=None):
-        """(object_id, entry, distance) of the fresh object of this class nearest to (x, y) in the scene, or None. `within` limits the distance."""
+    def _nearest_object(self, label, x, y, within=None, colour=None):
+        """(object_id, entry, distance) of the fresh object of this class nearest to (x, y) in the scene, or None. `within` limits the distance; `colour` keeps only objects the cameras call that colour
+        (2026-11-05: with two cups on the table the nearest one is not always the one that was asked for)."""
         best = None
         for oid, o in self.latest_scene.items():
             if not isinstance(o, dict) or o.get('label') != label or o.get('stale') or o.get('x') is None or o.get('y') is None:
+                continue
+            if colour and o.get('color') != colour:
                 continue
             d = math.hypot(float(o['x']) - x, float(o['y']) - y)
             if (within is None or d <= within) and (best is None or d < best[2]):
@@ -1009,10 +1013,17 @@ class ArmControllerNode(Node):
             time.sleep(0.5)
             return True
         approach_z = step.get('approach_z')
+        colour = step.get('colour')
+        what = f'{colour} {label}' if colour else label
+        src = step.get('from')                         # where the cup is now, when the command names it (the first look then goes there, not to the nearest cup to the target)
         for attempt in range(1, tries + 1):
-            found = self._nearest_object(label, tx, ty)
+            try:
+                look = (float(src[0]), float(src[1])) if (src and attempt == 1) else (tx, ty)
+            except (TypeError, ValueError, IndexError):
+                look = (tx, ty)
+            found = self._nearest_object(label, look[0], look[1], colour=colour)
             if found is None:
-                return self._refuse(f'stage_object: no fresh {label} in the scene')
+                return self._refuse(f'stage_object: no fresh {what} in the scene')
             oid, ent, _d = found
             if abs(float(ent['x']) - tx) <= tol_x and abs(float(ent['y']) - ty) <= tol_y:
                 self.get_logger().info(f'stage_object: the {label} ({oid}) stands at ({float(ent["x"]):.3f},{float(ent["y"]):+.3f}), inside the window: ready' + (f' after {attempt - 1} move(s)' if attempt > 1 else ''))
@@ -1033,11 +1044,11 @@ class ArmControllerNode(Node):
             if not self._safe_home():
                 return False
             self._settle_scene()
-            after = self._nearest_object(label, tx, ty, within=0.15)
+            after = self._nearest_object(label, tx, ty, within=0.15, colour=colour)
             if after is not None:
                 used, text = learn.update('stage', (cx, cy), (float(after[1]['x']), float(after[1]['y'])))
                 self.get_logger().info(f'stage_object: {text}')
-        found = self._nearest_object(label, tx, ty)
+        found = self._nearest_object(label, tx, ty, colour=colour)
         if found is not None and abs(float(found[1]['x']) - tx) <= tol_x and abs(float(found[1]['y']) - ty) <= tol_y:
             return True
         return self._refuse(f'stage_object: the {label} still is not inside the window around ({tx:.2f},{ty:+.2f}) after {tries} attempts')
@@ -1055,7 +1066,7 @@ class ArmControllerNode(Node):
             time.sleep(0.3)
             return True
         self._settle_scene()
-        found = self._nearest_object(label, tx, ty, within=0.15)
+        found = self._nearest_object(label, tx, ty, within=0.15, colour=step.get('colour'))
         if found is None:
             msg = f'ALERT: no {label} standing within 15 cm of ({tx:.2f},{ty:+.2f}) after the run: it may have tipped over or been knocked away'
             self.get_logger().error(msg)
@@ -2557,6 +2568,12 @@ class ArmControllerNode(Node):
         while z > z_stop + 1e-6:
             z = max(z_stop, z - self.TOUCH_STEP_M)
             if not self._touch_step(x, y, z, f'{label} step', min_flange_z):
+                if z <= z_target + 0.0005:
+                    # At or under the computed height the next step has no IK solution on this branch (2026-11-05: z=0.063, twice; the retry found the touch at 0.065): that is as low as the arm can go
+                    # here, so the object is let go from the height it has (it is at most a few mm up), instead of failing with the mug in the gripper.
+                    self.get_logger().warn(f'{label}: no way lower than z={z + self.TOUCH_STEP_M:.3f} (computed height {z_target:.3f}); releasing there')
+                    self._log_event('touch_down', z=round(z + self.TOUCH_STEP_M, 4), computed=round(float(z_target), 4), torque_nm=None, floor='no_ik')
+                    return True
                 return False
             time.sleep(0.2)
             now = self._effort_vector(0.2)

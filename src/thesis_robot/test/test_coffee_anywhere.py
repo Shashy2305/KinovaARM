@@ -68,7 +68,7 @@ def test_a_wild_measurement_is_not_used_and_the_correction_is_capped(tmp_path):
 
 
 # ---- the controller ---------------------------------------------------------------------------------------------------------------------------------------------
-def stub_world(node, monkeypatch, cups_after):
+def stub_world(node, monkeypatch, cups_after, colour='blue'):
     """_pick / _place / _safe_home as fakes. `cups_after`: the cup position the scene shows after each place (a list; the last one repeats)."""
     node.dry_run, node.moveit2 = False, object()
     log = {'picks': [], 'places': []}
@@ -83,7 +83,7 @@ def stub_world(node, monkeypatch, cups_after):
     def place(x=None, y=None, z=None, here=False):
         log['places'].append((x, y))
         px, py = seq.pop(0) if len(seq) > 1 else seq[0]
-        node.latest_scene = {'cup_new': cup(px, py)}
+        node.latest_scene = {'cup_new': cup(px, py, color=colour)}
         return True
     monkeypatch.setattr(node, '_pick', pick)
     monkeypatch.setattr(node, '_place', place)
@@ -195,3 +195,102 @@ def test_the_whole_staged_coffee_plan_runs_through_the_executor_in_a_dry_run(nod
     finally:
         node.dry_run = False
     assert seen[:3] == ['go_home', 'stage_object', 'pick'] and seen[-1] == 'check_placed' and len(seen) == 10
+
+
+# ---- 2026-11-05: the professor's long plan: the white cup from where it stands, through the coffee machine, and back there ------------------------------------------------
+WHITE_FAR = {'cup_00': cup(0.217, -0.485, color='white'), 'cup_02': cup(0.44, 0.03, color='blue')}
+
+
+def test_named_cup_and_put_it_back_phrasings_are_recognised(coffee_files):
+    for text, colour, back in (('give me coffee in the white cup and put it back where it was', 'white', True),
+                               ('make coffee in the white cup then bring it back', 'white', True),
+                               ('please give me a coffee in the white mug and return it to where it was', 'white', True),
+                               ('use the white cup to make coffee and put it back', 'white', True),
+                               ('give me coffee in the white cup', 'white', False),
+                               ('get me a cup of coffee in the blue mug', 'blue', False),
+                               ('give me coffee in a cup', None, False)):
+        i = cg.parse(text)
+        assert i and i['kind'] == 'coffee' and i['cup_colour'] == colour and i['return'] is back, text
+    plain = cg.parse('give me coffee')
+    assert plain['kind'] == 'coffee' and plain['cup_colour'] is None and plain['return'] is False
+    assert cg.parse('pick up the white cup')['kind'] == 'pick'                                  # other commands unchanged
+
+
+def test_the_white_cup_plan_brings_it_through_the_machine_and_back_to_where_it_stood(coffee_files):
+    intent = cg.parse('give me coffee in the white cup and put it back where it was')
+    plan = cg.build_plan(intent, WHITE_FAR)
+    acts = [(s['action'], s.get('stage')) for s in plan]
+    assert acts == [('go_home', None), ('stage_object', None), ('pick', None), ('go_to_location', 'put'), ('wait', None), ('go_to_location', 'in'), ('go_to_location', 'take'), ('place', None),
+                    ('go_home', None), ('check_placed', None), ('stage_object', None), ('go_home', None), ('check_placed', None)]
+    out, back = plan[1], plan[10]
+    assert out['object_id'] == 'cup_00' and out['colour'] == 'white' and out['from'] == [0.217, -0.485] and (out['x'], out['y']) == (0.45, 0.0)       # to the serving spot
+    assert plan[2]['near'] == [0.45, 0.0] and plan[2]['colour'] == 'white' and plan[2]['side_az'] == 90.0
+    assert back['colour'] == 'white' and back['from'] == [0.45, 0.0] and (back['x'], back['y']) == (0.217, -0.485) and back['to_origin'] is True    # and back to where it stood
+    assert plan[9]['learn'] == 'serve' and plan[9]['colour'] == 'white' and (plan[12]['x'], plan[12]['y']) == (0.217, -0.485) and 'learn' not in plan[12]
+    assert cg.check(intent, plan, WHITE_FAR) == (True, '') and cg.no_reachable_reason(intent, WHITE_FAR) is None
+
+
+def test_a_cup_already_at_the_serving_spot_needs_no_return_and_a_missing_colour_is_said_plainly(coffee_files):
+    intent = cg.parse('give me coffee in the white cup and put it back')
+    here = {'cup_00': cup(0.451, 0.01, color='white')}
+    plan = cg.build_plan(intent, here)
+    assert [s['action'] for s in plan].count('stage_object') == 0 and plan[-1]['action'] == 'check_placed'      # it stands at the spot: nothing to bring and nothing to return
+    assert 'no white cup' in cg.no_reachable_reason(intent, {'cup_02': cup(0.44, 0.03, color='blue')})
+    # the plain command still takes the nearest cup of any colour, as before
+    plain = cg.build_plan(cg.parse('give me coffee'), WHITE_FAR)
+    assert plain[1]['object_id'] == 'cup_02' and 'colour' not in plain[1] and not any(s.get('to_origin') for s in plain)
+
+
+def test_staging_picks_the_named_colour_from_where_it_is_not_the_nearest_cup_to_the_spot(node, monkeypatch):
+    log = stub_world(node, monkeypatch, [(0.45, 0.0)], colour='white')
+    node.latest_scene = {'cup_00': cup(0.217, -0.485, color='white'), 'cup_02': cup(0.47, 0.06, color='blue')}          # the blue one is nearer to the serving spot
+    step = dict(STAGE, object_id='cup_00', colour='white', **{'from': [0.217, -0.485]})
+    assert node._dispatch(step) is True
+    assert log['picks'] == [('cup_00', None, (0.45, 0.0))] and log['places'] == [(0.45, 0.0)]                          # the white one was picked
+    assert node.latest_scene['cup_new']['color'] == 'white'
+
+
+def test_the_return_trip_looks_for_the_cup_at_the_serving_spot_and_ends_when_it_stands_at_the_origin(node, monkeypatch):
+    node.dry_run, node.moveit2 = False, object()
+    monkeypatch.setattr(node, '_settle_scene', lambda: None)
+    monkeypatch.setattr(node, '_safe_home', lambda: True)
+    node.latest_scene = {'cup_00': cup(0.451, 0.005, color='white'), 'cup_02': cup(0.22, -0.47, color='blue')}     # the white cup at the serving spot; a blue cup stands NEAR the origin
+    picked = []
+    monkeypatch.setattr(node, '_pick', lambda oid, approach_z=0.15: picked.append(oid) or True)
+
+    def place(x=None, y=None, z=None, here=False):
+        node.latest_scene = {'cup_07': cup(x + 0.004, y - 0.006, color='white'), 'cup_02': cup(0.22, -0.47, color='blue')}
+        return True
+    monkeypatch.setattr(node, '_place', place)
+    step = {'action': 'stage_object', 'object_id': 'cup_00', 'label': 'cup', 'colour': 'white', 'from': [0.45, 0.0], 'x': 0.217, 'y': -0.485, 'tol_x': 0.04, 'tol_y': 0.04, 'tries': 3, 'approach_z': 0.35,
+            'to_origin': True}
+    assert node._dispatch(step) is True
+    assert picked == ['cup_00']                                                                                          # the white cup, although the blue one is closer to the origin
+
+
+def test_check_placed_looks_for_the_named_colour_only(node, monkeypatch):
+    node.dry_run, node.moveit2 = False, object()
+    monkeypatch.setattr(node, '_settle_scene', lambda: None)
+    statuses = []
+    monkeypatch.setattr(node, '_publish_pp_status', lambda t: statuses.append(t))
+    node.latest_scene = {'cup_x': cup(0.22, -0.48, color='blue')}                                                       # a blue cup stands there, the white one is not
+    step = {'action': 'check_placed', 'label': 'cup', 'colour': 'white', 'x': 0.217, 'y': -0.485}
+    assert node._dispatch(step) is False and any('ALERT' in t for t in statuses)
+    node.latest_scene = {'cup_y': cup(0.22, -0.48, color='white')}
+    assert node._dispatch(step) is True
+
+
+def test_the_whole_white_cup_plan_runs_through_the_executor_in_a_dry_run(node, coffee_files, monkeypatch):
+    node.dry_run = True
+    node.latest_scene = dict(WHITE_FAR)
+    node._scene_time = __import__('time').monotonic()
+    seen = []
+    real = node._dispatch
+    monkeypatch.setattr(node, '_dispatch', lambda step: (seen.append(step['action']) or real(step)))
+    try:
+        plan = cg.build_plan(cg.parse('give me coffee in the white cup and put it back where it was'), node.latest_scene)
+        node.executing = True
+        node._execute(json.dumps({'command': 'white cup', 'plan': plan, 'model': 'grammar'}))
+    finally:
+        node.dry_run = False
+    assert len(seen) == 13 and seen.count('stage_object') == 2 and seen.count('check_placed') == 2

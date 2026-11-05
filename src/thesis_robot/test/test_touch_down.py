@@ -51,7 +51,7 @@ def test_without_contact_it_stops_12_mm_under_the_computed_height_never_below_th
 
 def test_a_failed_step_fails_the_lowering_and_a_missing_torque_signal_means_the_plain_move(node, monkeypatch):
     t = 0.071
-    world(node, monkeypatch, contact_z=None, fail_at=t - 0.002)
+    world(node, monkeypatch, contact_z=None, fail_at=t + 0.004)
     assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is False
     st = world(node, monkeypatch, contact_z=None)
     node._je = None                                                                                                     # the arm reports no efforts
@@ -153,6 +153,9 @@ def test_a_step_without_an_ik_solution_is_asked_again_before_the_lowering_gives_
     monkeypatch.setattr(node, '_move_verified', flaky)
     assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and fails['left'] == 0
     assert st['moves'][-1][0] == pytest.approx(t - 0.004)                                  # and it went on to the touch
+    st = world(node, monkeypatch, contact_z=None, fail_at=t + 0.004)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is False                       # a step ABOVE the computed height that keeps failing still fails the lowering (the mug stays held)
+    assert [m for m in st['moves'] if m[0] <= t + 0.004 + 1e-9].__len__() == acn.ArmControllerNode.TOUCH_STEP_TRIES
     st = world(node, monkeypatch, contact_z=None, fail_at=t - 0.002)
-    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is False                       # a step that keeps failing still fails the lowering (the mug stays held)
-    assert [m for m in st['moves'] if m[0] <= t - 0.002 + 1e-9].__len__() == acn.ArmControllerNode.TOUCH_STEP_TRIES
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True                         # at or under it: that is as low as the arm goes here: released from where it is (2026-11-05)
+    assert st['moves'][-1][0] == pytest.approx(t - 0.002) and not any(z < t - 0.002 - 1e-9 for z, _ in st['moves'])
