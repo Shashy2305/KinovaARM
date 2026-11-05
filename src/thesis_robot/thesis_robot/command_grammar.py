@@ -217,8 +217,18 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
         if locs.get(cfg['tray_location']) is None:
             return f'the coffee tray location {cfg["tray_location"]!r} has not been taught (scripts/teach_location.py record {cfg["tray_location"]})'
         colour = intent.get('cup_colour')
-        if _coffee_cup(scene, cfg, colour) is None:
+        cup = _coffee_cup(scene, cfg, colour)
+        if cup is None:
             return (f'there is no {colour} cup the arm can reach on the table' if colour else 'there is no cup the arm can reach on the table') + ': put one within reach and try again'
+        if not in_coffee_window(cup[1], cfg):
+            # the cup is brought to the serving spot first: something else standing there is in the way (2026-11-05: the planner moved the place target 15 cm away instead, and the routine went wrong)
+            sx, sy = cfg['serve_xy']
+            for oid, o in scene.items():
+                if oid == cup[0] or not isinstance(o, dict) or o.get('stale') or o.get('fixed') or o.get('x') is None or o.get('label') in (None, 'coffee machine'):
+                    continue
+                if math.hypot(float(o['x']) - sx, float(o['y']) - sy) < cfg['serve_clear_m']:
+                    what = f'{o["color"]} {o["label"]}' if o.get('color') and o.get('color') != 'unknown' else str(o['label'])
+                    return f'the serving spot ({sx:.2f}, {sy:+.2f}) is taken by a {what}: move it away first, the {colour + " " if colour else ""}cup has to be put down there'
         return None
     if intent.get('kind') == 'sequence':
         for i, item in enumerate(intent['items'], 1):

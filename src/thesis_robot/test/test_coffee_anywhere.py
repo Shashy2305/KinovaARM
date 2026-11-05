@@ -227,7 +227,7 @@ def test_the_white_cup_plan_brings_it_through_the_machine_and_back_to_where_it_s
     assert plan[2]['near'] == [0.45, 0.0] and plan[2]['colour'] == 'white' and plan[2]['side_az'] == 90.0
     assert back['colour'] == 'white' and back['from'] == [0.45, 0.0] and (back['x'], back['y']) == (0.217, -0.485) and back['to_origin'] is True    # and back to where it stood
     assert plan[9]['learn'] == 'serve' and plan[9]['colour'] == 'white' and (plan[12]['x'], plan[12]['y']) == (0.217, -0.485) and 'learn' not in plan[12]
-    assert cg.check(intent, plan, WHITE_FAR) == (True, '') and cg.no_reachable_reason(intent, WHITE_FAR) is None
+    assert cg.check(intent, plan, WHITE_FAR) == (True, '') and 'taken by a blue cup' in cg.no_reachable_reason(intent, WHITE_FAR)      # (the plan builds; the blue cup on the serving spot is refused separately)
 
 
 def test_a_cup_already_at_the_serving_spot_needs_no_return_and_a_missing_colour_is_said_plainly(coffee_files):
@@ -305,3 +305,14 @@ def test_the_planner_does_not_rewrite_a_grammar_plan_because_the_command_says_pu
     assert len(damaged) < len(plan)                                                    # why the planner must not run it on a plan the grammar built itself (it kept one place)
     src = open(lp.__file__).read()
     assert 'if not grammar_planned:\n                # (2026-11-05' in src and 'plan = normalize_place_here(plan, command)' in src
+
+
+def test_a_cup_standing_on_the_serving_spot_blocks_a_staged_coffee_run_with_a_plain_reason(coffee_files):
+    intent = cg.parse('give me coffee in the white cup and put it back where it was')
+    why = cg.no_reachable_reason(intent, WHITE_FAR)                                      # the blue cup stands on the serving spot
+    assert why and 'serving spot' in why and 'blue cup' in why and 'move it away' in why
+    clear = {'cup_00': cup(0.217, -0.485, color='white'), 'cup_02': cup(0.2, 0.3, color='blue')}
+    assert cg.no_reachable_reason(intent, clear) is None                                 # elsewhere on the table it is no obstacle
+    here = {'cup_00': cup(0.44, 0.03, color='white')}
+    assert cg.no_reachable_reason(intent, here) is None                                  # a cup that already stands there needs no staging: nothing to be in the way of
+    assert cg.no_reachable_reason(cg.parse('give me coffee'), {'cup_02': cup(0.44, 0.03, color='blue'), 'cup_05': cup(0.3, 0.3, color='white')}) is None   # the plain command uses the cup that is there
