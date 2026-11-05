@@ -556,12 +556,62 @@ class ArmControllerNode(Node):
             out[link] = (ps.pose.position.x, ps.pose.position.y, ps.pose.position.z)
         return out
 
+    AVOID_LINKS = ('end_effector_link', 'robotiq_140_base_link', 'left_inner_finger_pad', 'right_inner_finger_pad', 'left_outer_finger', 'right_outer_finger',
+                   'bracelet_link', 'spherical_wrist_1_link', 'spherical_wrist_2_link', 'forearm_link')
+    AVOID_LINK_RADIUS_M = 0.06    # a link's half thickness around its frame
+    AVOID_CLEARANCE_M = 0.02
+    AVOID_ABOVE_M = 0.05          # a link frame must be this far above an object's top to pass over it
+
+    def _objects_to_avoid(self):
+        """[(label, x, y, radius, top_z)] of the fresh objects on the table, for the swing and the descent beside an object (2026-11-05: a side swing with a turned wrist swept the wrist through the mug and
+        knocked it 7 cm; the path check only looked at the table)."""
+        out = []
+        try:
+            top0 = float(sg.load_geometry()[0]['table_top_z'])
+        except Exception:
+            top0 = -0.0125
+        for o in (self.latest_scene or {}).values():
+            if not isinstance(o, dict) or o.get('stale') or o.get('x') is None or o.get('y') is None:
+                continue
+            label = str(o.get('label'))
+            if o.get('size_x') and o.get('size_y'):
+                r, h = max(float(o['size_x']), float(o['size_y'])) / 2.0, 0.33
+            else:
+                r, h = ws.OBJECT_RADIUS_M.get(label, ws.DEFAULT_RADIUS_M), ws.OBJECT_HEIGHT_M.get(label, ws.DEFAULT_HEIGHT_M)
+            out.append((label, float(o['x']), float(o['y']), float(r), top0 + float(h)))
+        return out
+
+    def _links_clear_of_objects(self, positions, objects, geom=None):
+        """(True, 'ok') or (False, reason): no arm link frame comes within the object's radius + AVOID_LINK_RADIUS_M + AVOID_CLEARANCE_M of its axis while lower than AVOID_ABOVE_M over its top."""
+        for link in self.AVOID_LINKS:
+            if link not in positions:
+                continue
+            lx, ly, lz = positions[link]
+            for label, ox, oy, r, top in objects:
+                d = math.hypot(lx - ox, ly - oy)
+                if d < r + self.AVOID_LINK_RADIUS_M + self.AVOID_CLEARANCE_M and lz < top + self.AVOID_ABOVE_M:
+                    return False, f'{link} would pass within {d * 100:.0f} cm of the {label} at ({ox:.2f},{oy:+.2f}) at z={lz:.2f}: it would knock it over'
+        return True, 'ok'
+
+    def _avoiding_objects(self):
+        import contextlib
+
+        @contextlib.contextmanager
+        def ctx():
+            prev, self._avoid_scene = getattr(self, '_avoid_scene', False), True
+            try:
+                yield
+            finally:
+                self._avoid_scene = prev
+        return ctx()
+
     def _check_trajectory(self, traj, geom):
         """FK every (sampled) waypoint and make sure the gripper/wrist links
         stay above the table and in front of the rear limit."""
         pts = traj.points
         if not pts:
             return False, 'planner returned an empty trajectory'
+        avoid = self._objects_to_avoid() if getattr(self, '_avoid_scene', False) else []
         floors = None
         for i in sg.sample_indices(len(pts)):
             try:
@@ -573,6 +623,10 @@ class ArmControllerNode(Node):
             ok, why = sg.check_link_positions(positions, geom, floors)
             if not ok:
                 return False, f'{why} (waypoint {i + 1}/{len(pts)})'
+            if avoid:
+                ok, why = self._links_clear_of_objects(positions, avoid, geom)
+                if not ok:
+                    return False, f'{why} (waypoint {i + 1}/{len(pts)})'
         return True, 'ok'
 
     # ── IK / planning ────────────────────────────────────────────────
@@ -1698,16 +1752,22 @@ class ArmControllerNode(Node):
                 q_before = np.array(self._current_joint_vector())
             except RuntimeError:
                 q_before = None
-            if not self._guarded_move(geom, 'side: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S):
-                # A swing that was refused (unsafe path, too long, no plan) BEFORE the arm moved is not a failed pick: try the next direction, or straight down.
+            with self._avoiding_objects():
+                swung = self._guarded_move(geom, 'side: swing to the high pre-pose', joint_positions=goal, max_duration_s=self.SIDE_SWING_MAX_S)
+            if not swung:
+                # A swing that was refused (unsafe path, too long, no plan, or it would sweep an object) BEFORE the arm moved is not a failed pick: try the next direction, or straight down.
                 try:
                     moved = q_before is None or float(np.max(np.abs(np.array(self._current_joint_vector()) - q_before))) > 0.05
                 except RuntimeError:
                     moved = True
+                if not moved:
+                    self._side_no_solution = True                     # the pick then goes home and asks again from a new hover branch (up to 3 attempts)
                 return False if moved else None
             tilt_state['on'] = {'tilt': go.SIDE_TILT_DEG, 'az': az, 'pre': pre, 'grasp': grasp_fl, 'side': True, 'in_extra': extra}
             self._side_swing_done = True
-            return (self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), 'side: down beside the object', min_flange_z=float(pre[2]) - 0.02)
+            with self._avoiding_objects():
+                down_ok = self._move_verified(float(pre[0]), float(pre[1]), float(pre[2]), 'side: down beside the object', min_flange_z=float(pre[2]) - 0.02)
+            return (down_ok
                     and self._move_verified(float(grasp_fl[0]), float(grasp_fl[1]), float(grasp_fl[2]), 'side: in around the object', min_flange_z=float(grasp_fl[2]) - 0.02))
 
         def descend():
