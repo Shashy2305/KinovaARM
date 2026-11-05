@@ -107,3 +107,32 @@ def test_a_slow_smooth_rise_below_a_newton_metre_is_not_a_touch_but_a_firm_conta
     st = world(node, monkeypatch, contact_z=t - 0.008)                               # a firm contact (2.5 Nm jump) stops it
     monkeypatch.setattr(node, '_effort_vector', lambda seconds=0.25: [b + (2.5 if st['z'] <= t - 0.008 + 1e-9 else 0.01) for b in BASE])
     assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and st['moves'][-1][0] == pytest.approx(t - 0.008)
+
+
+def test_a_one_step_jump_of_half_a_newton_metre_is_the_touch_and_a_side_held_mug_is_lifted_a_little_before_the_release(node, monkeypatch):
+    # 2026-11-05: 0.12 -> 0.78 Nm in one step was the first touch of a side-held mug; the arm went on to the bottom of the range, pressed it and it tilted
+    t = 0.071
+    st = world(node, monkeypatch, contact_z=None)
+    trace = {0.071 + 0.010: 0.1}
+
+    def jumpy(seconds=0.25):
+        z = st['z']
+        v = 0.12 + 0.02 * abs(z) if z > t - 0.006 else 0.78                                  # quiet drift, then a 0.66 Nm jump once 6 mm under the computed height
+        return [b + v for b in BASE]
+    monkeypatch.setattr(node, '_effort_vector', jumpy)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower', relieve_m=0.0015) is True
+    zs = [z for z, _ in st['moves']]
+    assert zs[-2] == pytest.approx(t - 0.006) and zs[-1] == pytest.approx(t - 0.006 + 0.0015)           # stopped at the step with the jump, then lifted 1.5 mm
+    assert st['moves'][-1][1].endswith('(relieve)')
+    st2 = world(node, monkeypatch, contact_z=t - 0.004)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and st2['moves'][-1][0] == pytest.approx(t - 0.004)   # no relieve asked (the tray put): released where it touched
+
+
+def test_noise_of_a_few_tenths_of_a_newton_metre_per_step_is_not_a_jump(node, monkeypatch):
+    t = 0.071
+    st = world(node, monkeypatch, contact_z=None)
+    seq = iter([0.21, 0.36, 0.23, 0.17, 0.37, 0.45, 0.10, 0.15, 0.23, 0.12, 0.40, 0.18, 0.30, 0.25, 0.2, 0.2])      # the real no-contact traces of 2026-11-05
+    monkeypatch.setattr(node, '_effort_vector', lambda seconds=0.25: [b + next(seq, 0.2) for b in BASE])
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower', relieve_m=0.0015) is True
+    assert st['moves'][-1][0] == pytest.approx(t - 0.012)                                                    # went to the bottom: no false trigger, no relieve
+    assert acn.ArmControllerNode.TOUCH_JUMP_NM >= 0.5 and acn.ArmControllerNode.TOUCH_RELIEVE_M < 0.003

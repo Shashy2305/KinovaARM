@@ -2506,6 +2506,8 @@ class ArmControllerNode(Node):
     TOUCH_START_ABOVE_M = 0.010   # the touch-down starts this far over where the object should stand ...
     TOUCH_STEP_M = 0.002          # ... lowers it in steps of this ...
     TOUCH_MAX_BELOW_M = 0.012     # ... and never goes further below that height than this (6 mm before 2026-11-05; a side-held mug was still 1 cm up when it stopped)
+    TOUCH_JUMP_NM = 0.55          # ... or when the change between two consecutive steps is this big (2026-11-05: the side-held mug's first touch read +0.66 Nm in one step, 0.12 -> 0.78; drift and noise move at most 0.3-0.4 per step)
+    TOUCH_RELIEVE_M = 0.0015      # a side-held mug is lifted this much after the touch before it is let go: pressed into the table it tilted in the pads (2026-11-05)
     TOUCH_CONFIRM_S = 0.4         # a touch must still be there this long after it was first seen
     TOUCH_DELTA_NM = 1.0         # the object has touched down when a joint torque differs by this from its value before the first step. Measured 2026-11-05: rest noise 0.02 Nm, but a slow smooth rise of 0.4-0.6 Nm over the last steps of a side-held mug's descent was not a touch (the mug was still up); firm contacts read 1-4 Nm (tray 2.6-3.0, top-held mug 1.0-3.9)
     TOUCH_JOINTS = ('joint_2', 'joint_4', 'joint_6')
@@ -2522,7 +2524,7 @@ class ArmControllerNode(Node):
             return None
         return [sum(col) / len(rows) for col in zip(*rows)]
 
-    def _touch_down(self, x, y, z_target, min_flange_z, label='lower'):
+    def _touch_down(self, x, y, z_target, min_flange_z, label='lower', relieve_m=0.0):
         """Lower the held object onto its spot until it TOUCHES (2026-11-03: set down from a little too high it slammed onto the table; the heights it works from are inferred, the joint torques are
         measured). Goes to TOUCH_START_ABOVE_M over z_target, then down in TOUCH_STEP_M steps, comparing the torques of joints 2 / 4 / 6 with their values before the first step; stops at the first
         step that changes one by TOUCH_DELTA_NM, or at z_target - TOUCH_MAX_BELOW_M (never below min_flange_z). Without torque readings it is the plain move to z_target. True when the arm is where it
@@ -2541,6 +2543,7 @@ class ArmControllerNode(Node):
             return self._move_verified(x, y, z_target, label, min_flange_z=min_flange_z)
         z = z_top
         trace = []                                            # (mm under the start height, largest torque change in Nm) per step: logged, so the threshold can be tuned from real touches
+        prev_worst = 0.0
         while z > z_stop + 1e-6:
             z = max(z_stop, z - self.TOUCH_STEP_M)
             if not self._move_verified(x, y, z, f'{label} step', min_flange_z=min_flange_z):
@@ -2551,15 +2554,20 @@ class ArmControllerNode(Node):
                 break
             worst = max(abs(a - b) for a, b in zip(now, base))
             trace.append((round((z_top - z) * 1000.0, 1), round(worst, 2)))
-            if worst >= self.TOUCH_DELTA_NM:
+            jumped = worst - prev_worst >= self.TOUCH_JUMP_NM and worst >= 0.5
+            prev_worst = worst
+            if worst >= self.TOUCH_DELTA_NM or jumped:
                 # 2026-11-05: a torque change of 0.36 Nm right after the first 2 mm step was settling, not contact (the mug was released 1.2 cm up). A touch persists: look again after a moment.
                 time.sleep(self.TOUCH_CONFIRM_S)
                 again = self._effort_vector(0.2)
-                if again is None or max(abs(a - b) for a, b in zip(again, base)) < self.TOUCH_DELTA_NM:
+                if again is None or max(abs(a - b) for a, b in zip(again, base)) < min(self.TOUCH_DELTA_NM, 0.7 * worst):
                     continue
                 worst = max(abs(a - b) for a, b in zip(again, base))
                 self.get_logger().info(f'{label}: torque change per 2 mm step (mm under the start, Nm): {trace}')
-                self.get_logger().info(f'{label}: touched down at flange z={z:.3f} ({(z_target - z) * 1000:+.0f} mm from the computed height {z_target:.3f}; torque change {worst:.2f} Nm)')
+                self.get_logger().info(f'{label}: touched down at flange z={z:.3f} ({(z_target - z) * 1000:+.0f} mm from the computed height {z_target:.3f}; torque change {worst:.2f} Nm)'
+                                       + (f'; lifting {relieve_m * 1000:.1f} mm before the release' if relieve_m else ''))
+                if relieve_m > 0.0 and not self._move_verified(x, y, z + relieve_m, f'{label} (relieve)', min_flange_z=min_flange_z):
+                    return False
                 self._log_event('touch_down', z=round(z, 4), computed=round(float(z_target), 4), torque_nm=round(worst, 3))
                 return True
         self.get_logger().info(f'{label}: torque change per 2 mm step (mm under the start, Nm): {trace}')
@@ -2766,7 +2774,7 @@ class ArmControllerNode(Node):
         steps.append(('check the opening fingers are clear of the neighbours', place_fingers_clear))
         def lower_gently():
             with self._gentle():
-                return self._touch_down(fx, fy, set_z, low_floor, 'lower')
+                return self._touch_down(fx, fy, set_z, low_floor, 'lower', relieve_m=self.TOUCH_RELIEVE_M if horizontal_hold else 0.0)
         steps.append(('lower', lower_gently))
         for name, action in steps:
             self._publish_pp_status(f'place: {name}')
