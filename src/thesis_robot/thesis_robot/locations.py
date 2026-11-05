@@ -105,7 +105,7 @@ def approach_clearance(poses, rects):
 
 COFFEE_FILE = os.path.expanduser('~/.ros/coffee.yaml')
 COFFEE_DEFAULTS = {'tray_location': 'coffee_tray_grasp', 'serve_xy': [0.50, -0.10], 'wait_s': 15.0, 'pick_az': 90.0, 'serve_search_m': 0.12,
-                   'window_x_m': 0.04, 'window_y_m': 0.02, 'stage_tries': 3, 'serve_clear_m': 0.12}   # window: how far from serve_xy a cup may stand for the side pick (the IK scan of 2026-11-03: reachable only there)
+                   'window_x_m': 0.04, 'window_y_m': 0.02, 'stage_tries': 3, 'serve_clear_m': 0.12, 'deliver_xy': None}   # window: how far from serve_xy a cup may stand for the side pick (the IK scan of 2026-11-03: reachable only there)
 
 
 def coffee_config(path=None):
@@ -125,6 +125,7 @@ def coffee_config(path=None):
         cfg['window_y_m'] = max(0.005, float(cfg['window_y_m']))
         cfg['stage_tries'] = max(1, min(5, int(cfg['stage_tries'])))
         cfg['serve_clear_m'] = max(0.05, float(cfg['serve_clear_m']))
+        cfg['deliver_xy'] = [float(cfg['deliver_xy'][0]), float(cfg['deliver_xy'][1])] if cfg.get('deliver_xy') else None      # where the finished coffee is delivered (None: it stays at serve_xy)
     except (TypeError, ValueError, IndexError):
         return dict(COFFEE_DEFAULTS)
     return cfg

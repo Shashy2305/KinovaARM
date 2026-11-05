@@ -1,3 +1,6 @@
+deliver_xy:
+- 0.22
+- -0.47
 pick_az: 90
 serve_search_m: 0.12
 serve_xy:

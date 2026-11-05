@@ -220,6 +220,14 @@ def no_reachable_reason(intent, scene, x_range=(0.10, 0.60), y_range=(-0.35, 0.3
         cup = _coffee_cup(scene, cfg, colour)
         if cup is None:
             return (f'there is no {colour} cup the arm can reach on the table' if colour else 'there is no cup the arm can reach on the table') + ': put one within reach and try again'
+        dest = cfg.get('deliver_xy')
+        if dest and not intent.get('return'):
+            for oid, o in scene.items():
+                if oid == cup[0] or not isinstance(o, dict) or o.get('stale') or o.get('fixed') or o.get('x') is None or o.get('label') in (None, 'coffee machine'):
+                    continue
+                if math.hypot(float(o['x']) - dest[0], float(o['y']) - dest[1]) < cfg['serve_clear_m']:
+                    what = f'{o["color"]} {o["label"]}' if o.get('color') and o.get('color') != 'unknown' else str(o['label'])
+                    return f'the delivery spot ({dest[0]:.2f}, {dest[1]:+.2f}) is taken by a {what}: move it away first, the coffee is delivered there'
         if not in_coffee_window(cup[1], cfg):
             # the cup is brought to the serving spot first: something else standing there is in the way (2026-11-05: the planner moved the place target 15 cm away instead, and the routine went wrong)
             sx, sy = cfg['serve_xy']
@@ -389,12 +397,14 @@ def build_plan(intent, scene):
                 {'action': 'place', 'x': cfg['serve_xy'][0], 'y': cfg['serve_xy'][1], 'learn': 'serve'},
                 {'action': 'go_home'},
                 {'action': 'check_placed', 'label': 'cup', **named, **serve, 'learn': 'serve'}]
-        if intent.get('return') and outside:
-            # ... and "put it back": the same stage step in the other direction, from the serving spot to where the cup stood (the side-held route cannot reach that far, so it is carried from above), then a check
-            plan += [{'action': 'stage_object', 'object_id': cup[0], 'label': 'cup', **named, 'from': [serve['x'], serve['y']], 'x': origin[0], 'y': origin[1], 'tol_x': 0.04, 'tol_y': 0.04,
-                      'tries': cfg['stage_tries'], 'approach_z': 0.35, 'to_origin': True},
+        # Where the finished coffee goes: "put it back" = where the cup stood (when it was brought from elsewhere); otherwise the configured delivery point (the right side of the table near the boundary,
+        # 2026-11-05), if there is one; otherwise it stays at the spot the routine worked at. The side-held route cannot reach that far, so the cup is carried from above (the same stage step in the other direction).
+        dest = origin if (intent.get('return') and outside) else (cfg['deliver_xy'] if cfg.get('deliver_xy') else None)
+        if dest and math.hypot(dest[0] - serve['x'], dest[1] - serve['y']) > 0.08:
+            plan += [{'action': 'stage_object', 'object_id': cup[0], 'label': 'cup', **named, 'from': [serve['x'], serve['y']], 'x': round(dest[0], 3), 'y': round(dest[1], 3), 'tol_x': 0.04, 'tol_y': 0.04,
+                      'tries': cfg['stage_tries'], 'approach_z': 0.35, 'to_origin': bool(intent.get('return') and outside), 'deliver': True},
                      {'action': 'go_home'},
-                     {'action': 'check_placed', 'label': 'cup', **named, 'x': origin[0], 'y': origin[1]}]
+                     {'action': 'check_placed', 'label': 'cup', **named, 'x': round(dest[0], 3), 'y': round(dest[1], 3)}]
         return plan
     if k == 'sequence':
         out = []

@@ -316,3 +316,40 @@ def test_a_cup_standing_on_the_serving_spot_blocks_a_staged_coffee_run_with_a_pl
     here = {'cup_00': cup(0.44, 0.03, color='white')}
     assert cg.no_reachable_reason(intent, here) is None                                  # a cup that already stands there needs no staging: nothing to be in the way of
     assert cg.no_reachable_reason(cg.parse('give me coffee'), {'cup_02': cup(0.44, 0.03, color='blue'), 'cup_05': cup(0.3, 0.3, color='white')}) is None   # the plain command uses the cup that is there
+
+
+# ---- 2026-11-05: the delivery point is on the right of the base near the boundary, not at the spot the routine works at ----------------------------------------------------
+def test_with_a_delivery_point_every_coffee_ends_there_and_put_it_back_still_means_where_it_stood(coffee_files):
+    cfg = yaml.safe_load(open(coffee_files))
+    cfg['deliver_xy'] = [0.22, -0.47]
+    coffee_files.write_text(yaml.safe_dump(cfg))
+    scene = {'cup_00': cup(0.466, -0.033, color='white')}
+    plan = cg.build_plan(cg.parse('give me coffee in the white cup'), scene)
+    assert [s['action'] for s in plan][-3:] == ['stage_object', 'go_home', 'check_placed']
+    last, chk = plan[-3], plan[-1]
+    assert (last['x'], last['y']) == (0.22, -0.47) and last['from'] == [0.45, 0.0] and last['deliver'] is True and last['to_origin'] is False
+    assert (chk['x'], chk['y']) == (0.22, -0.47) and chk['colour'] == 'white'
+    assert cg.check(cg.parse('give me coffee in the white cup'), plan, scene) == (True, '')
+    far = {'cup_00': cup(0.30, -0.30, color='white')}
+    back = cg.build_plan(cg.parse('give me coffee in the white cup and put it back where it was'), far)
+    assert (back[-3]['x'], back[-3]['y']) == (0.30, -0.30) and back[-3]['to_origin'] is True                 # "put it back": where it stood, not the delivery point
+    near = cg.build_plan(cg.parse('give me coffee in the white cup and put it back where it was'), scene)
+    assert near[-1]['action'] == 'check_placed' and (near[-1]['x'], near[-1]['y']) == (0.45, 0.0)             # it stood within 8 cm of the work spot: nothing to bring back
+    inside = {'cup_00': cup(0.451, 0.01, color='white')}
+    plain = cg.build_plan(cg.parse('give me coffee'), inside)
+    assert (plain[-3]['x'], plain[-3]['y']) == (0.22, -0.47)                                                  # a cup that started at the work spot is still delivered to the delivery point
+
+
+def test_something_standing_on_the_delivery_point_is_refused_plainly_and_without_one_nothing_changes(coffee_files):
+    cfg = yaml.safe_load(open(coffee_files))
+    cfg['deliver_xy'] = [0.22, -0.47]
+    coffee_files.write_text(yaml.safe_dump(cfg))
+    intent = cg.parse('give me coffee')
+    scene = {'cup_02': cup(0.44, 0.03, color='blue'), 'cup_00': cup(0.218, -0.48, color='white')}
+    why = cg.no_reachable_reason(intent, scene)
+    assert why and 'delivery spot' in why and 'white cup' in why
+    assert cg.no_reachable_reason(intent, {'cup_02': cup(0.44, 0.03, color='blue')}) is None
+    cfg.pop('deliver_xy')
+    coffee_files.write_text(yaml.safe_dump(cfg))
+    plain = cg.build_plan(cg.parse('give me coffee'), {'cup_02': cup(0.44, 0.03, color='blue')})
+    assert plain[-1]['action'] == 'check_placed' and not any(s.get('deliver') for s in plain)               # no delivery point configured: as before
