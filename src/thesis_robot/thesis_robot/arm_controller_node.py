@@ -2480,6 +2480,7 @@ class ArmControllerNode(Node):
         if base is None:
             return self._move_verified(x, y, z_target, label, min_flange_z=min_flange_z)
         z = z_top
+        trace = []                                            # (mm under the start height, largest torque change in Nm) per step: logged, so the threshold can be tuned from real touches
         while z > z_stop + 1e-6:
             z = max(z_stop, z - self.TOUCH_STEP_M)
             if not self._move_verified(x, y, z, f'{label} step', min_flange_z=min_flange_z):
@@ -2489,6 +2490,7 @@ class ArmControllerNode(Node):
             if now is None:
                 break
             worst = max(abs(a - b) for a, b in zip(now, base))
+            trace.append((round((z_top - z) * 1000.0, 1), round(worst, 2)))
             if worst >= self.TOUCH_DELTA_NM:
                 # 2026-11-05: a torque change of 0.36 Nm right after the first 2 mm step was settling, not contact (the mug was released 1.2 cm up). A touch persists: look again after a moment.
                 time.sleep(self.TOUCH_CONFIRM_S)
@@ -2496,9 +2498,11 @@ class ArmControllerNode(Node):
                 if again is None or max(abs(a - b) for a, b in zip(again, base)) < self.TOUCH_DELTA_NM:
                     continue
                 worst = max(abs(a - b) for a, b in zip(again, base))
+                self.get_logger().info(f'{label}: torque change per 2 mm step (mm under the start, Nm): {trace}')
                 self.get_logger().info(f'{label}: touched down at flange z={z:.3f} ({(z_target - z) * 1000:+.0f} mm from the computed height {z_target:.3f}; torque change {worst:.2f} Nm)')
                 self._log_event('touch_down', z=round(z, 4), computed=round(float(z_target), 4), torque_nm=round(worst, 3))
                 return True
+        self.get_logger().info(f'{label}: torque change per 2 mm step (mm under the start, Nm): {trace}')
         self.get_logger().info(f'{label}: no touch-down felt down to z={z:.3f} (computed height {z_target:.3f}); releasing there')
         self._log_event('touch_down', z=round(z, 4), computed=round(float(z_target), 4), torque_nm=None)
         return True
