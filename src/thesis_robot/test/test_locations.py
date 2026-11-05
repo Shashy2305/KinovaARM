@@ -582,7 +582,7 @@ def test_the_set_down_is_slow_and_pauses_after_the_release_then_the_speed_is_bac
     assert seen['settles'] == 1 and node._gentle_scale == 1.0                                # one pause after the fingers open; normal speed again afterwards
 
 
-def test_a_cup_held_deeper_than_its_centre_is_set_down_with_the_pads_that_far_short_of_the_spot(node, side_world, files, monkeypatch):
+def test_a_cup_held_deeper_than_its_centre_is_set_down_with_the_pads_that_far_beyond_the_spot(node, side_world, files, monkeypatch):
     p = locs.approach_poses(locs.get('coffee_tray_grasp'))
     node._held = None
     monkeypatch.setattr(node, '_tf_pose', lambda target, source, stamp=None: (np.eye(3), [float(v) for v in locs.take_pose(locs.get('coffee_tray_grasp'), p)]))
@@ -605,10 +605,10 @@ def test_a_cup_held_deeper_than_its_centre_is_set_down_with_the_pads_that_far_sh
     deeper = [xyz for label, _s, xyz in seen['moves'] if label == 'lower'][0]
     from thesis_robot import grasp_options as go
     a = go.side_axis(held['az'])
-    assert (deeper[0] - plain[0], deeper[1] - plain[1]) == pytest.approx((-0.012 * a[0], -0.012 * a[1]), abs=1e-6)     # its centre lands on the spot: the pads stop 1.2 cm short
+    assert (deeper[0] - plain[0], deeper[1] - plain[1]) == pytest.approx((0.012 * a[0], 0.012 * a[1]), abs=1e-6)       # its centre sits 1.2 cm toward the palm from the pads, so the pads go 1.2 cm FURTHER for the centre to land on the spot (2026-11-05: the sign was wrong, the cup stopped 2.4 cm short)
 
 
-def test_the_tray_put_shifts_the_pads_back_by_how_deep_the_cup_was_gripped(node, side_world, coffee_files, monkeypatch):
+def test_the_tray_put_takes_the_pads_further_in_by_how_deep_the_cup_was_gripped(node, side_world, coffee_files, monkeypatch):
     from thesis_robot import grasp_options as go
     p = locs.approach_poses(locs.get('coffee_tray_grasp'))
     tilt = go.SIDE_TILT_DEG
@@ -624,5 +624,5 @@ def test_the_tray_put_shifts_the_pads_back_by_how_deep_the_cup_was_gripped(node,
         assert node._go_to_location('coffee_tray_grasp', 'put') is True
         ends.append([xyz for label, _s, xyz in seen['moves'] if label.endswith('lower onto the tray')][0])
     a = np.array(p['axis'][:2]) / np.linalg.norm(p['axis'][:2])
-    assert np.allclose(np.array(ends[1][:2]) - np.array(ends[0][:2]), -0.012 * a, atol=1e-6)
+    assert np.allclose(np.array(ends[1][:2]) - np.array(ends[0][:2]), 0.012 * a, atol=1e-6)                           # further in, not short of the tray (2026-11-05)
     assert np.allclose(ends[0][:2], p['grasp'][:2], atol=1e-6)                               # a cup gripped at its centre goes to the taught pose unchanged

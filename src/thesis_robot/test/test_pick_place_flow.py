@@ -1044,8 +1044,8 @@ def _place_flanges(go, nxt, up=True):
     out = set()
     for az in go.AZIMUTHS:
         a = go.side_axis(az)
-        e = go.side_in_extra('cup')                                    # a cup is gripped deeper than its seen centre, so the pads stop that far short of the spot
-        fl = go.side_poses((nxt[0] - e * a[0], nxt[1] - e * a[1]), pad_z, az)[2]
+        e = go.side_in_extra('cup')                                    # a cup is gripped deeper than its seen centre, so the pads go that far beyond the spot for its centre to land on it
+        fl = go.side_poses((nxt[0] + e * a[0], nxt[1] + e * a[1]), pad_z, az)[2]
         out.add(tuple(round(float(v), 3) for v in fl))
         out.add(tuple(round(float(v), 3) for v in fl + np.array([0.0, 0.0, 0.10])))
     return out

@@ -1298,10 +1298,11 @@ class ArmControllerNode(Node):
             return self._refuse(f'go_to_location: the carry to the tray passes within {self.CARRY_AVOID_M * 100:.0f} cm of a {blocked}')
         in_extra = float(held.get('in_extra', 0.0) or 0.0)
         if in_extra:
-            # gripped `in_extra` deeper than its centre: the pads stop that far short of the taught spot, so the cup's centre lands on it
+            # gripped `in_extra` deeper than its centre: the cup's centre sits that far toward the palm from the pad midpoint, so the pads go that much FURTHER than the taught spot for the centre to land on it
+            # (2026-11-05: the sign was the other way round and the cup stopped 2.4 cm short of the tray)
             shift = np.array([poses['axis'][0], poses['axis'][1], 0.0], float)
             shift = in_extra * shift / max(1e-9, np.linalg.norm(shift))
-            grasp, pre = grasp - shift, pre - shift
+            grasp, pre = grasp + shift, pre + shift
         lifted_z = float(grasp[2]) + self.TAKE_LIFT_M
         self.get_logger().info(f'go_to_location {name}: carrying the {held.get("label")} to the approach pose at flange z={carry_z:.3f}, then in and down')
         steps = []
@@ -1657,7 +1658,7 @@ class ArmControllerNode(Node):
                 # 'needs a 3.9 rad single-joint reconfiguration', and it stayed in the gripper). Better to pick it another way than to find out with the cup in the fingers.
                 nxt = getattr(self, '_next_place_xy', None)
                 if nxt is not None:
-                    _h, _p, place_fl, _a = go.side_poses((nxt[0] - extra * a_xy[0], nxt[1] - extra * a_xy[1]), pad_z, az)
+                    _h, _p, place_fl, _a = go.side_poses((nxt[0] + extra * a_xy[0], nxt[1] + extra * a_xy[1]), pad_z, az)
                     if not go.flange_inside(place_fl):
                         bad = 'place spot (the flange would leave the table side of the base)'
                     else:
@@ -2445,7 +2446,8 @@ class ArmControllerNode(Node):
     TOUCH_START_ABOVE_M = 0.010   # the touch-down starts this far over where the object should stand ...
     TOUCH_STEP_M = 0.002          # ... lowers it in steps of this ...
     TOUCH_MAX_BELOW_M = 0.006     # ... and never goes further below that height than this
-    TOUCH_DELTA_NM = 0.35         # the object has touched down when a joint torque differs by this from its value before the first step (rest noise is ~0.02 Nm; a base just touching a table with a 0.4 m lever: ~0.3-1 Nm)
+    TOUCH_CONFIRM_S = 0.4         # a touch must still be there this long after it was first seen
+    TOUCH_DELTA_NM = 0.5         # the object has touched down when a joint torque differs by this from its value before the first step (rest noise is ~0.02 Nm; a base just touching a table with a 0.4 m lever: ~0.3-1 Nm)
     TOUCH_JOINTS = ('joint_2', 'joint_4', 'joint_6')
 
     def _effort_vector(self, seconds=0.25):
@@ -2488,6 +2490,12 @@ class ArmControllerNode(Node):
                 break
             worst = max(abs(a - b) for a, b in zip(now, base))
             if worst >= self.TOUCH_DELTA_NM:
+                # 2026-11-05: a torque change of 0.36 Nm right after the first 2 mm step was settling, not contact (the mug was released 1.2 cm up). A touch persists: look again after a moment.
+                time.sleep(self.TOUCH_CONFIRM_S)
+                again = self._effort_vector(0.2)
+                if again is None or max(abs(a - b) for a, b in zip(again, base)) < self.TOUCH_DELTA_NM:
+                    continue
+                worst = max(abs(a - b) for a, b in zip(again, base))
                 self.get_logger().info(f'{label}: touched down at flange z={z:.3f} ({(z_target - z) * 1000:+.0f} mm from the computed height {z_target:.3f}; torque change {worst:.2f} Nm)')
                 self._log_event('touch_down', z=round(z, 4), computed=round(float(z_target), 4), torque_nm=round(worst, 3))
                 return True
@@ -2596,9 +2604,9 @@ class ArmControllerNode(Node):
         fx, fy = tx + off[0], ty + off[1]                  # flange target that puts the object on (tx, ty)
         in_extra = float((self._held or {}).get('in_extra', 0.0) or 0.0) if held_tilt >= 45.0 and not (here or x is None or y is None) else 0.0      # ('here': lowered where it is, no shift)
         if in_extra and self._held and 'az' in self._held:
-            # the object was gripped `in_extra` deeper than its centre: its centre sits that far past the pad midpoint, so the pads stop that far short of the spot
+            # the object was gripped `in_extra` deeper than its centre: its centre sits that far toward the palm from the pad midpoint, so the pads go that far FURTHER than the spot (2026-11-05: wrong sign before)
             a_h = go.side_axis(float(self._held['az']))
-            fx, fy = fx - in_extra * a_h[0], fy - in_extra * a_h[1]
+            fx, fy = fx + in_extra * a_h[0], fy + in_extra * a_h[1]
         grasp_z = self._held['grasp_z'] if self._held else float(z)
         # A low object was grasped below the normal fingertip floor (low_pick_tip_clearance_m); put it
         # down at the same height, not 2-3 cm above the table.

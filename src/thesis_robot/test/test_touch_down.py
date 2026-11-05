@@ -73,3 +73,21 @@ def test_a_small_torque_change_is_not_a_touch_and_joint_states_efforts_are_store
     node._on_joint_state(msg)
     assert node._je == {'joint_2': 3.9, 'joint_4': -10.4, 'joint_6': -2.2}
     assert acn.ArmControllerNode.TOUCH_DELTA_NM > 10 * 0.02                                                            # well above the rest noise measured on 2026-11-03 (std 0.015-0.023 Nm)
+
+
+def test_a_torque_blip_that_does_not_last_is_not_a_touch(node, monkeypatch):
+    # 2026-11-05: 0.36 Nm right after the first 2 mm step was settling; the mug was released 1.2 cm above the table
+    t = 0.071
+    st = world(node, monkeypatch, contact_z=None)
+    reads = {'n': 0}
+
+    def blip(seconds=0.25):
+        reads['n'] += 1
+        # the first read after the first step is high (settling), every other read is quiet
+        return [b + (0.9 if reads['n'] == 2 else 0.01) for b in BASE]
+    monkeypatch.setattr(node, '_effort_vector', blip)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True
+    assert st['moves'][-1][0] == pytest.approx(t - 0.006)                                                             # went all the way down: the blip was not taken for a touch
+    st = world(node, monkeypatch, contact_z=t - 0.002)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and st['moves'][-1][0] == pytest.approx(t - 0.002)   # a lasting change still stops it
+    assert acn.ArmControllerNode.TOUCH_DELTA_NM >= 0.5 and acn.ArmControllerNode.TOUCH_CONFIRM_S > 0
