@@ -23,7 +23,7 @@ def world(node, monkeypatch, contact_z=None, fail_at=None):
 
     def effort(seconds=0.25):
         touching = contact_z is not None and state['z'] <= contact_z + 1e-9
-        return [b + (0.8 if touching else 0.01) for b in BASE]
+        return [b + (2.0 if touching else 0.01) for b in BASE]
     monkeypatch.setattr(node, '_move_verified', move)
     monkeypatch.setattr(node, '_effort_vector', effort)
     monkeypatch.setattr(acn.time, 'sleep', lambda s: None)
@@ -41,10 +41,10 @@ def test_it_stops_at_the_first_step_that_feels_the_table(node, monkeypatch):
     assert min(zs) == zs[-1]                                                                                            # and not one step further
 
 
-def test_without_contact_it_stops_6_mm_under_the_computed_height_never_below_the_floor(node, monkeypatch):
+def test_without_contact_it_stops_12_mm_under_the_computed_height_never_below_the_floor(node, monkeypatch):
     t = 0.071
     st = world(node, monkeypatch, contact_z=None)
-    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and st['moves'][-1][0] == pytest.approx(t - 0.006)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and st['moves'][-1][0] == pytest.approx(t - 0.012)
     st = world(node, monkeypatch, contact_z=None)
     assert node._touch_down(0.4, 0.0, t, t - 0.002, 'lower') is True and st['moves'][-1][0] == pytest.approx(t - 0.002)    # the safety floor wins
 
@@ -84,10 +84,26 @@ def test_a_torque_blip_that_does_not_last_is_not_a_touch(node, monkeypatch):
     def blip(seconds=0.25):
         reads['n'] += 1
         # the first read after the first step is high (settling), every other read is quiet
-        return [b + (0.9 if reads['n'] == 2 else 0.01) for b in BASE]
+        return [b + (1.5 if reads['n'] == 2 else 0.01) for b in BASE]
     monkeypatch.setattr(node, '_effort_vector', blip)
     assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True
-    assert st['moves'][-1][0] == pytest.approx(t - 0.006)                                                             # went all the way down: the blip was not taken for a touch
+    assert st['moves'][-1][0] == pytest.approx(t - 0.012)                                                             # went all the way down: the blip was not taken for a touch
     st = world(node, monkeypatch, contact_z=t - 0.002)
     assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and st['moves'][-1][0] == pytest.approx(t - 0.002)   # a lasting change still stops it
-    assert acn.ArmControllerNode.TOUCH_DELTA_NM >= 0.5 and acn.ArmControllerNode.TOUCH_CONFIRM_S > 0
+    assert acn.ArmControllerNode.TOUCH_DELTA_NM >= 1.0 and acn.ArmControllerNode.TOUCH_CONFIRM_S > 0
+
+
+def test_a_slow_smooth_rise_below_a_newton_metre_is_not_a_touch_but_a_firm_contact_is(node, monkeypatch):
+    # 2026-11-05: 0.07, 0.37, 0.58 Nm over the last steps of a side-held mug's descent: the mug was still up when it stopped at 0.5 Nm
+    t = 0.071
+    st = world(node, monkeypatch, contact_z=None)
+
+    def ramp(seconds=0.25):
+        depth = max(0.0, (t + 0.010) - st['z'])                                      # metres under the start
+        return [b + 0.09 * depth * 1000 * 0.5 + 0.01 for b in BASE]                    # 0.045 Nm per mm: 0.54 Nm at 12 mm, 0.99 at 22 mm
+    monkeypatch.setattr(node, '_effort_vector', ramp)
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True
+    assert st['moves'][-1][0] == pytest.approx(t - 0.012)                              # it went all the way down: no stop on the ramp
+    st = world(node, monkeypatch, contact_z=t - 0.008)                               # a firm contact (2.5 Nm jump) stops it
+    monkeypatch.setattr(node, '_effort_vector', lambda seconds=0.25: [b + (2.5 if st['z'] <= t - 0.008 + 1e-9 else 0.01) for b in BASE])
+    assert node._touch_down(0.4, 0.0, t, t - 0.05, 'lower') is True and st['moves'][-1][0] == pytest.approx(t - 0.008)

@@ -2505,9 +2505,9 @@ class ArmControllerNode(Node):
 
     TOUCH_START_ABOVE_M = 0.010   # the touch-down starts this far over where the object should stand ...
     TOUCH_STEP_M = 0.002          # ... lowers it in steps of this ...
-    TOUCH_MAX_BELOW_M = 0.006     # ... and never goes further below that height than this
+    TOUCH_MAX_BELOW_M = 0.012     # ... and never goes further below that height than this (6 mm before 2026-11-05; a side-held mug was still 1 cm up when it stopped)
     TOUCH_CONFIRM_S = 0.4         # a touch must still be there this long after it was first seen
-    TOUCH_DELTA_NM = 0.5         # the object has touched down when a joint torque differs by this from its value before the first step (rest noise is ~0.02 Nm; a base just touching a table with a 0.4 m lever: ~0.3-1 Nm)
+    TOUCH_DELTA_NM = 1.0         # the object has touched down when a joint torque differs by this from its value before the first step. Measured 2026-11-05: rest noise 0.02 Nm, but a slow smooth rise of 0.4-0.6 Nm over the last steps of a side-held mug's descent was not a touch (the mug was still up); firm contacts read 1-4 Nm (tray 2.6-3.0, top-held mug 1.0-3.9)
     TOUCH_JOINTS = ('joint_2', 'joint_4', 'joint_6')
 
     def _effort_vector(self, seconds=0.25):
