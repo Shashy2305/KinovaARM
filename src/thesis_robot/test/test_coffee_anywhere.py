@@ -294,3 +294,14 @@ def test_the_whole_white_cup_plan_runs_through_the_executor_in_a_dry_run(node, c
     finally:
         node.dry_run = False
     assert len(seen) == 13 and seen.count('stage_object') == 2 and seen.count('check_placed') == 2
+
+
+def test_the_planner_does_not_rewrite_a_grammar_plan_because_the_command_says_put_it_back(coffee_files):
+    from thesis_robot import llm_planner_node as lp
+    command = 'give me coffee in the white cup and put it back where it was'
+    plan = cg.build_plan(cg.parse(command), WHITE_FAR)
+    assert len(plan) == 13
+    damaged = lp.normalize_place_here([dict(s) for s in plan], command)
+    assert len(damaged) < len(plan)                                                    # why the planner must not run it on a plan the grammar built itself (it kept one place)
+    src = open(lp.__file__).read()
+    assert 'if not grammar_planned:\n                # (2026-11-05' in src and 'plan = normalize_place_here(plan, command)' in src

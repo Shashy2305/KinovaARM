@@ -849,8 +849,10 @@ class LLMPlannerNode(Node):
             plan = fix_pick_heights(plan, self.latest_scene, z_floor)
             if not grammar_planned:
                 plan = trim_pick_extras(plan, command)
-            plan = normalize_place_here(plan, command)
-            plan = normalize_place_aside(plan, command, self.latest_scene)
+            if not grammar_planned:
+                # (2026-11-05: "give me coffee in the white cup and put it back where it was" contains "put it back": these two rewrote the grammar's 13-step plan into one "place here")
+                plan = normalize_place_here(plan, command)
+                plan = normalize_place_aside(plan, command, self.latest_scene)
             plan = fix_place_targets(plan, self.latest_scene)
             ok, reason, warnings = validate_plan(plan, self.latest_scene, z_floor)
             for w in warnings:
