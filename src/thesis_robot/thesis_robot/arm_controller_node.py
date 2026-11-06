@@ -5,7 +5,7 @@ Subscribes to:  /action_plan
                 /scene_snapshot  (object positions for `pick`, base_link)
 Publishes to:   /arm_status, /pick_place_status
 """
-import os, rclpy, json, math, time, threading
+import os, rclpy, json, math, random, time, threading
 import numpy as np
 import tf2_ros
 import tf2_geometry_msgs
@@ -15,6 +15,7 @@ from sensor_msgs.msg import CameraInfo, JointState
 from std_msgs.msg import String
 
 from thesis_robot import coffee_learn as learn
+from thesis_robot import exploration as explore
 from thesis_robot import locations as locs
 from thesis_robot import motion_utils as mu
 from thesis_robot import outcome_log as ol
@@ -66,6 +67,8 @@ class ArmControllerNode(Node):
         super().__init__('arm_controller')
 
         self.declare_parameter('dry_run', True)
+        self.declare_parameter('exploration_mode', False)   # True: every command draws its own values for a few motion parameters inside safe ranges (thesis_robot/exploration.py); OFF by default
+        self.declare_parameter('exploration_seed', 0)        # 0 = random; any other number makes the campaign reproducible
         self.declare_parameter('speed',   0.20)
         # pick geometry (metres)
         self.declare_parameter('grasp_z_offset',     0.0)   # added to object z for the grasp height
@@ -256,7 +259,50 @@ class ArmControllerNode(Node):
             self.executing = True
         threading.Thread(target=self._execute, args=(msg.data,), daemon=True).start()
 
+    def _explore_begin(self):
+        """With exploration_mode on: draw this command's parameter values (thesis_robot/exploration.py), apply them, remember what to restore. Everything else about the command is unchanged."""
+        self._explore_sample, self._explore_saved = None, {}
+        try:
+            if not bool(self.get_parameter('exploration_mode').value):
+                return
+            seed = int(self.get_parameter('exploration_seed').value)
+            if not hasattr(self, '_explore_rng') or self._explore_rng_seed != seed:
+                self._explore_rng, self._explore_rng_seed = random.Random(seed or None), seed
+            draw = explore.sample(self._explore_rng)
+            saved = {}
+            for attr, key in (('GENTLE_VEL_SCALE', 'gentle_vel_scale'), ('PLACE_SETTLE_S', 'place_settle_s'), ('TOUCH_STEP_M', 'touch_step_m'), ('TOUCH_RELIEVE_M', 'touch_relieve_m'),
+                              ('TAKE_LIFT_M', 'take_lift_m')):
+                saved[attr] = self.__dict__.get(attr)                      # (None = it was the class constant: restoring deletes the instance value)
+                setattr(self, attr, draw[key])
+            saved['_explore_vel'] = None
+            self._explore_vel = draw['smooth_vel_scale']
+            saved['SIDE_IN_EXTRA_cup'] = go.SIDE_IN_EXTRA_M.get('cup')
+            go.SIDE_IN_EXTRA_M['cup'] = draw['cup_in_extra_m']
+            saved['TAKE_IN_M'] = locs.TAKE_IN_M
+            locs.TAKE_IN_M = draw['take_in_m']
+            self._explore_saved, self._explore_sample = saved, draw
+            self.get_logger().info(f'exploration: this command runs with {draw}')
+        except Exception as e:
+            self.get_logger().warn(f'exploration: not applied ({e})')
+            self._explore_end()
+
+    def _explore_end(self):
+        saved = getattr(self, '_explore_saved', None) or {}
+        for attr in ('GENTLE_VEL_SCALE', 'PLACE_SETTLE_S', 'TOUCH_STEP_M', 'TOUCH_RELIEVE_M', 'TAKE_LIFT_M'):
+            if attr in saved:
+                if saved[attr] is None:
+                    self.__dict__.pop(attr, None)
+                else:
+                    setattr(self, attr, saved[attr])
+        if 'SIDE_IN_EXTRA_cup' in saved and saved['SIDE_IN_EXTRA_cup'] is not None:
+            go.SIDE_IN_EXTRA_M['cup'] = saved['SIDE_IN_EXTRA_cup']
+        if 'TAKE_IN_M' in saved:
+            locs.TAKE_IN_M = saved['TAKE_IN_M']
+        self._explore_vel = None
+        self._explore_saved, self._explore_sample = {}, None
+
     def _execute(self, plan_json):
+        self._explore_begin()
         try:
             data    = json.loads(plan_json)
             plan    = data.get('plan', [])
@@ -295,6 +341,7 @@ class ArmControllerNode(Node):
             self.get_logger().error(f'Execution error: {e}')
             self._publish_status(f'ERROR: {str(e)[:80]}')
         finally:
+            self._explore_end()
             with self._lock:
                 self.executing = False
             mode = 'DRY RUN' if self.dry_run else 'LIVE'
@@ -898,7 +945,8 @@ class ArmControllerNode(Node):
             if not self.get_parameter('outcome_log').value:
                 self._attempt = None
                 return
-            self._attempt = ol.Attempt(kind, live=not (self.dry_run or self.moveit2 is None), **fields)
+            extra = {'explore': self._explore_sample} if getattr(self, '_explore_sample', None) else {}
+            self._attempt = ol.Attempt(kind, live=not (self.dry_run or self.moveit2 is None), **extra, **fields)
         except Exception:
             self._attempt = None
 
@@ -917,7 +965,7 @@ class ArmControllerNode(Node):
             self._outcomes.append({
                 'kind': 'command', 'live': not (self.dry_run or self.moveit2 is None), 'command': command,
                 'model': model, 'plan': plan, 'ok': bool(ok), 'failed_step': failed_step, 'reason': reason,
-                'seconds': round(time.monotonic() - t0, 1)})
+                'seconds': round(time.monotonic() - t0, 1), **({'explore': self._explore_sample} if getattr(self, '_explore_sample', None) else {})})
         except Exception as e:
             self.get_logger().warn(f'outcome log: {e}')
 
@@ -934,7 +982,7 @@ class ArmControllerNode(Node):
             last = traj.points[-1].time_from_start
             old_t = last.sec + last.nanosec * 1e-9
             swing = max(abs(pos[-1][j] - pos[0][j]) for j in range(len(JOINT_NAMES)))
-            vs = float(self.get_parameter('smooth_vel_scale').value)
+            vs = float(getattr(self, '_explore_vel', None) or self.get_parameter('smooth_vel_scale').value)
             if swing >= float(self.get_parameter('smooth_free_min_rad').value):
                 vs = max(vs, float(self.get_parameter('smooth_free_vel_scale').value))
             vs *= getattr(self, '_gentle_scale', 1.0)

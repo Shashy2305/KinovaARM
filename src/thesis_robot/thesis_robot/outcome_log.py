@@ -17,6 +17,8 @@ import os
 import threading
 import time
 
+from thesis_robot import code_version
+
 DEFAULT_DIR = os.path.expanduser('~/.ros/outcomes')
 MAX_FILE_BYTES = 20 * 1024 * 1024
 
@@ -32,6 +34,11 @@ class OutcomeLog:
     def append(self, record):
         rec = {'ts': round(time.time(), 3), 'iso': time.strftime('%Y-%m-%dT%H:%M:%S')}
         rec.update(record)
+        if 'code' not in rec:
+            try:
+                rec['code'] = code_version.tag()                   # which commit and settings wrote this record (never allowed to stop a log)
+            except Exception:
+                pass
         line = json.dumps(rec, default=_json_default, separators=(',', ':'))
         with self._lock:
             os.makedirs(self.dir, exist_ok=True)
