@@ -5,7 +5,8 @@
 #   scripts/bag_recorder.sh stop       close it cleanly
 #   scripts/bag_recorder.sh status     what is running, the newest bag and its size
 #
-# Rolls over to a new file every hour (--max-bag-duration), zstd-compressed. About 15 MB per hour of idle arm, a few times that while moving. Only LISTENS; never commands the arm.
+# DO NOT open the bag that is being written (not even to read it with sqlite): the lock stopped a recorder once (2026-11-05). Stop it first, then read.
+# Rolls over to a new file every hour (--max-bag-duration), zstd-compressed. About 35 MB per hour compressed with the arm idle, a few times that while moving. Only LISTENS; never commands the arm.
 # (no set -u: the ROS setup files read unset variables)
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIR="$HOME/.ros/bags"
