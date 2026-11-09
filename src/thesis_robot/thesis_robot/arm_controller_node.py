@@ -2533,7 +2533,8 @@ class ArmControllerNode(Node):
 
     # Where the finger joint stops on the BODY of an object (0 open, 0.695 fully closed; about 140 mm * (1 - f / 0.695)): a cup 7-9 cm across stops at 0.27-0.35 (measured 0.295 and 0.327 on the blue
     # mug); a pinch of a rim or handle (0.5-1.5 cm) stops at 0.58-0.67 and used to count as "holding" (2026-11-05: the white cup was lifted by its handle and dropped during the carry).
-    GRIP_FINGER_RANGE = {'cup': (0.15, 0.46), 'mug': (0.15, 0.46)}
+    # mouse: 0.40-0.55 from the logged finger_last on 38 live ok picks (2026-11-05 label audit, reward_model_rlproject/analysis/task6_label_audit/report.md) -- 36 of 38 cluster at 0.49-0.50.
+    GRIP_FINGER_RANGE = {'cup': (0.15, 0.46), 'mug': (0.15, 0.46), 'mouse': (0.40, 0.55)}
 
     def _grip_plausible(self, label):
         """False only when the finger reading is known and outside the range of an object's body; unknown readings or labels pass (the plain holding test still applies)."""
