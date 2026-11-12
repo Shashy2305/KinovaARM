@@ -67,8 +67,9 @@ class ArmControllerNode(Node):
         super().__init__('arm_controller')
 
         self.declare_parameter('dry_run', True)
-        self.declare_parameter('exploration_mode', False)   # True: every command draws its own values for a few motion parameters inside safe ranges (thesis_robot/exploration.py); OFF by default
+        self.declare_parameter('exploration_mode', False)   # True: every command draws its own values for grasp method/height/hover plus a few motion parameters, inside safe ranges (thesis_robot/exploration.py); OFF by default
         self.declare_parameter('exploration_seed', 0)        # 0 = random; any other number makes the campaign reproducible
+        self.declare_parameter('exploration_confirm_phrase', '')  # must equal EXPLORE_CONFIRM_PHRASE ('EXPLORE') or exploration_mode is ignored -- a second, explicit step, same pattern as the dashboard's go_live
         self.declare_parameter('speed',   0.20)
         # pick geometry (metres)
         self.declare_parameter('grasp_z_offset',     0.0)   # added to object z for the grasp height
@@ -259,19 +260,40 @@ class ArmControllerNode(Node):
             self.executing = True
         threading.Thread(target=self._execute, args=(msg.data,), daemon=True).start()
 
+    EXPLORE_CONFIRM_PHRASE = 'EXPLORE'
+
     def _explore_begin(self):
-        """With exploration_mode on: draw this command's parameter values (thesis_robot/exploration.py), apply them, remember what to restore. Everything else about the command is unchanged."""
+        """With exploration_mode on: draw this command's parameter values (thesis_robot/exploration.py), apply them, remember what to restore. Everything else about the command is unchanged.
+
+        Two-step confirmation, same pattern as the dashboard's go_live: exploration_mode alone does
+        nothing. `exploration_confirm_phrase` must also equal EXPLORE_CONFIRM_PHRASE, checked once per
+        session (the running process's lifetime) and logged loudly on the first draw only, so turning
+        the parameter on by itself (e.g. a stale launch file) can never silently start randomizing."""
         self._explore_sample, self._explore_saved = None, {}
         try:
             if not bool(self.get_parameter('exploration_mode').value):
                 return
+            if str(self.get_parameter('exploration_confirm_phrase').value) != self.EXPLORE_CONFIRM_PHRASE:
+                if not getattr(self, '_explore_confirm_warned', False):
+                    self.get_logger().error(
+                        f"exploration_mode is on but exploration_confirm_phrase is not '{self.EXPLORE_CONFIRM_PHRASE}' "
+                        "-- running with today's normal (non-random) behaviour. Set exploration_confirm_phrase:="
+                        f"{self.EXPLORE_CONFIRM_PHRASE} to actually start the campaign.")
+                    self._explore_confirm_warned = True
+                return
+            if not getattr(self, '_explore_session_confirmed', False):
+                self.get_logger().warn(
+                    'EXPLORATION MODE ACTIVE for this session: grasp method, grasp height, hover height and '
+                    'motion timing will be randomized within their safe ranges for every command, restored '
+                    'after each one. Shashwat must be present with a hand on the e-stop.')
+                self._explore_session_confirmed = True
             seed = int(self.get_parameter('exploration_seed').value)
             if not hasattr(self, '_explore_rng') or self._explore_rng_seed != seed:
                 self._explore_rng, self._explore_rng_seed = random.Random(seed or None), seed
-            draw = explore.sample(self._explore_rng)
+            draw = explore.sample(self._explore_rng, seed=self._explore_rng_seed)
             saved = {}
             for attr, key in (('GENTLE_VEL_SCALE', 'gentle_vel_scale'), ('PLACE_SETTLE_S', 'place_settle_s'), ('TOUCH_STEP_M', 'touch_step_m'), ('TOUCH_RELIEVE_M', 'touch_relieve_m'),
-                              ('TAKE_LIFT_M', 'take_lift_m')):
+                              ('TAKE_LIFT_M', 'take_lift_m'), ('grasp_z_offset', 'grasp_z_offset'), ('hover_above_m', 'hover_above_m')):
                 saved[attr] = self.__dict__.get(attr)                      # (None = it was the class constant: restoring deletes the instance value)
                 setattr(self, attr, draw[key])
             saved['_explore_vel'] = None
@@ -280,6 +302,7 @@ class ArmControllerNode(Node):
             go.SIDE_IN_EXTRA_M['cup'] = draw['cup_in_extra_m']
             saved['TAKE_IN_M'] = locs.TAKE_IN_M
             locs.TAKE_IN_M = draw['take_in_m']
+            self._explore_method_draw = draw['method']                    # consumed by choose_method(); None once _explore_end() runs
             self._explore_saved, self._explore_sample = saved, draw
             self.get_logger().info(f'exploration: this command runs with {draw}')
         except Exception as e:
@@ -288,7 +311,7 @@ class ArmControllerNode(Node):
 
     def _explore_end(self):
         saved = getattr(self, '_explore_saved', None) or {}
-        for attr in ('GENTLE_VEL_SCALE', 'PLACE_SETTLE_S', 'TOUCH_STEP_M', 'TOUCH_RELIEVE_M', 'TAKE_LIFT_M'):
+        for attr in ('GENTLE_VEL_SCALE', 'PLACE_SETTLE_S', 'TOUCH_STEP_M', 'TOUCH_RELIEVE_M', 'TAKE_LIFT_M', 'grasp_z_offset', 'hover_above_m'):
             if attr in saved:
                 if saved[attr] is None:
                     self.__dict__.pop(attr, None)
@@ -299,6 +322,7 @@ class ArmControllerNode(Node):
         if 'TAKE_IN_M' in saved:
             locs.TAKE_IN_M = saved['TAKE_IN_M']
         self._explore_vel = None
+        self._explore_method_draw = None
         self._explore_saved, self._explore_sample = {}, None
 
     def _execute(self, plan_json):
@@ -1708,7 +1732,15 @@ class ArmControllerNode(Node):
         def choose_method():
             """Rank the ways to grasp THIS object, here, now: from the side, straight down, leaning. With side_grasp off nothing changes."""
             only_az = getattr(self, '_pick_side_az', None)               # the plan asked for a side grasp toward exactly this azimuth (the coffee routine)
-            mode = 'only' if only_az is not None else str(self.get_parameter('side_grasp').value)
+            explore_method = getattr(self, '_explore_method_draw', None)  # exploration mode drew 'top' or 'side' for this command (thesis_robot/exploration.py)
+            if only_az is not None:
+                mode = 'only'                                             # the coffee routine's fixed azimuth always wins over an exploration draw
+            elif explore_method == 'side':
+                mode = 'only'                                             # same path as the existing side_grasp:=only config -- if nothing fits, the existing "no way to grasp it here" refusal below is the correct outcome, not a crash
+            elif explore_method == 'top':
+                mode = 'off'                                              # same path as the existing side_grasp:=off config
+            else:
+                mode = str(self.get_parameter('side_grasp').value)
             if mode == 'off' or self.dry_run or self.moveit2 is None:
                 return True
             obstacles = self._scene_obstacles(exclude_id=object_id)

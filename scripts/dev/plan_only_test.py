@@ -34,6 +34,7 @@ h = types.SimpleNamespace(moveit2=m, get_logger=node.get_logger, get_node_names_
 for name in ('_move_group_count', '_ensure_safety_scene', '_fk_link_positions', '_check_trajectory', '_ik', '_solve_goal_joints', '_plan_joint_goal'):
     setattr(h, name, functools.partial(getattr(A, name), h))
 h._current_joint_vector = lambda: list(HOME_JOINTS)      # pretend the arm is at home (planning only)
+h.TURN_MARGIN_RAD = A.TURN_MARGIN_RAD                     # class constant; a SimpleNamespace stub does not inherit it
 time.sleep(3.0)
 A._ensure_safety_scene(h, GEOM); print('table + wall applied to the live scene', flush=True)
 
