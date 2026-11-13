@@ -180,10 +180,11 @@ LEARN_MIN_N = 2.0
 
 
 def pick_samples(records, label, method):
-    """[(x, y, ok)] of the live picks of this class done with this method (the 'xy' of the record is where the object was)."""
+    """[(x, y, ok)] of the live picks of this class done with this method (the 'xy' of the record is where the object was). Picks made in exploration mode (random parameters, on purpose) are not
+    evidence about how well the method works with its normal settings, so they are left out."""
     out = []
     for r in records or ():
-        if r.get('kind') != 'pick' or not r.get('live', True) or r.get('label') != label or r.get('method') != method:
+        if r.get('kind') != 'pick' or not r.get('live', True) or r.get('label') != label or r.get('method') != method or r.get('explore'):
             continue
         xy = r.get('xy')
         if xy and len(xy) >= 2:

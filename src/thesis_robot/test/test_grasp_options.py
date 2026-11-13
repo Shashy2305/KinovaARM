@@ -230,3 +230,12 @@ def test_a_success_outside_the_seed_zone_makes_the_side_grasp_a_candidate_there(
     win = [rec('side', 0.56, 0.0, True)] * 3
     out = go.rank_methods('cup', (0.58, 0.02), TABLE_TOP, [], 0.05, False, records=win)
     assert 'side' in [o['method'] for o in out]
+
+
+def test_pick_samples_skip_exploration_picks():
+    from thesis_robot import grasp_options as go
+    records = [
+        {'kind': 'pick', 'live': True, 'label': 'cup', 'method': 'side', 'xy': [0.4, 0.0], 'ok': True},
+        {'kind': 'pick', 'live': True, 'label': 'cup', 'method': 'side', 'xy': [0.4, 0.0], 'ok': False, 'explore': {'seed': 1, 'method': 'side'}},
+    ]
+    assert go.pick_samples(records, 'cup', 'side') == [(0.4, 0.0, True)]
