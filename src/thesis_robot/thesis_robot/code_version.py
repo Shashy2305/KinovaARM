@@ -11,6 +11,14 @@ Every new outcome record (pick, place, command) carries a small `code` dict:
             (~/.ros/coffee.yaml, ~/.ros/locations.yaml, ~/.ros/fixed_obstacles.yaml)
 
 The dict is cached for CACHE_S seconds, so logging stays cheap. When git is missing or the code is not in a repository it says 'unknown'.
+
+Added 2026-11-13 (RL-project schema, handoff doc's "Schema for new records"): three more constants every
+new outcome record also carries as top-level fields (not nested in `code`, since they are per-process or
+per-schema-version facts, not a code/settings tag): `SCHEMA_VERSION` (bump when a record's field set
+changes shape), `SESSION_ID` (one value for this controller process's whole lifetime -- a fresh value
+every restart, so records from before/after a restart are never silently pooled together), and
+`GRIP_CHECK_VERSION` (which grip-check logic was in force: 1 = the plain is_holding() test alone, 2 =
+object-aware, cup/mug only (commit e3e13e6), 3 = object-aware, cup/mug and mouse (commit ac04d23)).
 """
 import hashlib
 import os
@@ -18,6 +26,9 @@ import subprocess
 import time
 
 CACHE_S = 30.0
+SCHEMA_VERSION = 2
+GRIP_CHECK_VERSION = 3
+SESSION_ID = f'sess_{int(time.time())}_{os.getpid()}'
 CONFIG_FILES = ('~/.ros/coffee.yaml', '~/.ros/locations.yaml', '~/.ros/fixed_obstacles.yaml')
 _cache = {'t': 0.0, 'value': None}
 

@@ -123,6 +123,8 @@ class ArmControllerNode(Node):
         self.declare_parameter('use_unknown_obstacles', False)
         self.declare_parameter('unknown_obstacles_min_cameras', 2)
         self.declare_parameter('outcome_log', True)   # one JSON line per pick/place/command in ~/.ros/outcomes
+        self.declare_parameter('scene_id', '')        # set between table layouts (ros2 param set /arm_controller scene_id <name>); stamped on every record until changed; '' = not tagged yet
+        self.declare_parameter('policy_id', '')        # empty until the policy-runner mode (Task 3) sets it; '' = the heuristic controller, not a learned policy
         # Re-time every verified path along a minimum-jerk curve (zero speed AND acceleration at both ends, no
         # acceleration steps) instead of the planner's trapezoid. Settable at run time for A/B tests.
         self.declare_parameter('smooth_trajectories', True)
@@ -338,6 +340,7 @@ class ArmControllerNode(Node):
             t_cmd = time.monotonic()
 
             for i, step in enumerate(plan):
+                self._current_step_index = i                     # read by _log_begin() for the pick/place this step may run
                 act = step.get('action', '')
                 # Mark steps as pre-calibrated if they use x_robot/y_robot coords
                 if 'x_robot' in str(step) or data.get('calibrated', False):
@@ -366,6 +369,7 @@ class ArmControllerNode(Node):
             self._publish_status(f'ERROR: {str(e)[:80]}')
         finally:
             self._explore_end()
+            self._current_step_index = None
             with self._lock:
                 self.executing = False
             mode = 'DRY RUN' if self.dry_run else 'LIVE'
@@ -964,12 +968,29 @@ class ArmControllerNode(Node):
         except Exception:
             pass
 
+    def _schema_fields(self):
+        """mode / params_source / policy_id / scene_id / pool for the record being written right now
+        (2026-11-13, RL-project handoff schema) -- one place both _log_begin and _log_command read, so
+        they can never disagree on what mode a record was written under."""
+        exploring = bool(getattr(self, '_explore_sample', None))
+        scene_id = str(self.get_parameter('scene_id').value or '')
+        return {
+            'mode': 'exploration' if exploring else 'default',
+            'params_source': 'random' if exploring else 'heuristic',
+            'policy_id': str(self.get_parameter('policy_id').value or ''),
+            'scene_id': scene_id,
+            'pool': ol.pool_for_scene(scene_id),
+        }
+
     def _log_begin(self, kind, **fields):
         try:
             if not self.get_parameter('outcome_log').value:
                 self._attempt = None
                 return
             extra = {'explore': self._explore_sample} if getattr(self, '_explore_sample', None) else {}
+            extra.update(self._schema_fields())
+            if kind in ('pick', 'place'):
+                extra['step_index'] = getattr(self, '_current_step_index', None)
             self._attempt = ol.Attempt(kind, live=not (self.dry_run or self.moveit2 is None), **extra, **fields)
         except Exception:
             self._attempt = None
@@ -989,7 +1010,8 @@ class ArmControllerNode(Node):
             self._outcomes.append({
                 'kind': 'command', 'live': not (self.dry_run or self.moveit2 is None), 'command': command,
                 'model': model, 'plan': plan, 'ok': bool(ok), 'failed_step': failed_step, 'reason': reason,
-                'seconds': round(time.monotonic() - t0, 1), **({'explore': self._explore_sample} if getattr(self, '_explore_sample', None) else {})})
+                'seconds': round(time.monotonic() - t0, 1), **self._schema_fields(),
+                **({'explore': self._explore_sample} if getattr(self, '_explore_sample', None) else {})})
         except Exception as e:
             self.get_logger().warn(f'outcome log: {e}')
 
