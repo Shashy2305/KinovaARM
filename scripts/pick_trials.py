@@ -19,6 +19,7 @@ import math
 import os
 import sys
 import time
+import urllib.request
 
 import rclpy
 from rclpy.node import Node
@@ -67,11 +68,22 @@ class Trials(Node):
     def __init__(self):
         super().__init__('pick_trials')
         self.scene, self.arm_status, self.held = {}, '', ''
+        self.origin = {}                      # first scene position seen per colour + label: every put-back goes THERE, so a constant offset between where the scene sees an object and where the arm puts it cannot walk the object across the table
         self.create_subscription(String, '/scene_snapshot', lambda m: self._set_scene(m.data), 5)
         self.create_subscription(String, '/arm_status', lambda m: setattr(self, 'arm_status', m.data), 5)
         self.create_subscription(String, '/gripper_held', lambda m: setattr(self, 'held', m.data),
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.pub = self.create_publisher(String, '/action_plan', 10)
+
+    def refresh_arm_status(self):
+        """/arm_status is published only when it changes, so a controller that was restarted and is idle never says READY again: ask the dashboard backend, which keeps the last message."""
+        if self.arm_status:
+            return
+        try:
+            with urllib.request.urlopen('http://localhost:8000/api/status', timeout=3) as r:
+                self.arm_status = str((json.load(r).get('ros') or {}).get('arm_status') or '')
+        except Exception:
+            pass
 
     def _set_scene(self, data):
         try:
@@ -109,7 +121,8 @@ class Trials(Node):
             return None
         o = self.scene[oid]
         plan[0]['object_id'] = oid
-        return [plan[0], {'action': 'place', 'x': round(o['x'], 4), 'y': round(o['y'], 4)}]
+        ox, oy = self.origin.setdefault((colour, label), (round(o['x'], 4), round(o['y'], 4)))
+        return [plan[0], {'action': 'place', 'x': ox, 'y': oy}]
 
 
 def summarise(rows):
@@ -150,6 +163,7 @@ def main():
                     stop = True
                     break
                 oid, o = found
+                node.refresh_arm_status()
                 if 'READY' not in node.arm_status or node.holding():
                     print(f'STOP: the arm is not ready/empty (status {node.arm_status!r}, held {node.held!r})')
                     stop = True

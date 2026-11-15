@@ -1,0 +1,9 @@
+trial  object      start (x,y)       pick                         place     secs   end drift
+--------------------------------------------------------------------------------------------------
+  1   blue cup    (0.313,-0.405)   ok top a1                    ok           65   3.5 cm
+  2   white cup   (0.341,-0.064)   ok side a1                   ok           82   3.8 cm
+  3   mouse       (0.541,-0.259)   ok top a1                    ok           60   4.5 cm
+picks that worked: 3/3
+  blue cup: 1/1
+  mouse: 1/1
+  white cup: 1/1
