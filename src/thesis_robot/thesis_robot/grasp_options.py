@@ -179,13 +179,28 @@ BLOCK_RATE = 0.35             # a place whose local rate is below this (with LEA
 LEARN_MIN_N = 2.0
 
 
+EARLY_STEPS = ('open gripper', 'raise', 'hover', 'turn the fingers away from any handle', 'centre on the object (wrist camera)')    # failing here says nothing about the grasp method
+
+
+def sample_method(r):
+    """The method a pick record is evidence about, or None. A normal pick logs its method. An exploration pick with the grasp forced to the top (side_grasp off) logs none, so the drawn method
+    is used, but only once the pick got past the early steps (a refusal at the hover is about the position, not the method). A forced SIDE grasp that was refused at 'choose how to grasp it'
+    (no side pose fits there) is evidence against the side grasp at that place."""
+    if r.get('method'):
+        return r['method']
+    draw = (r.get('explore') or {}).get('method')
+    if draw and r.get('failed_step') not in EARLY_STEPS:
+        return draw
+    return None
+
+
 def pick_samples(records, label, method):
-    """[(x, y, ok)] of the live picks of this class done with this method (the 'xy' of the record is where the object was). Picks made in exploration mode count too, provided they got as far as
-    choosing a method (an early refusal has no method and is skipped like any other): the exploration draws the method at random, so they are unbiased evidence about how each method works where
-    (the heuristic's own picks are biased toward what it already prefers). Their random heights and speeds are small, safe variations that hit both methods alike."""
+    """[(x, y, ok)] of the live picks of this class done with this method (the 'xy' of the record is where the object was). Picks made in exploration mode count too (see sample_method): the
+    exploration draws the method at random, so they are unbiased evidence about how each method works where, unlike the heuristic's own picks, which favour what it already prefers. Their
+    random heights and speeds are small, safe variations that hit both methods alike."""
     out = []
     for r in records or ():
-        if r.get('kind') != 'pick' or not r.get('live', True) or r.get('label') != label or r.get('method') != method:
+        if r.get('kind') != 'pick' or not r.get('live', True) or r.get('label') != label or sample_method(r) != method:
             continue
         xy = r.get('xy')
         if xy and len(xy) >= 2:
